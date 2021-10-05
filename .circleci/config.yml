@@ -27,7 +27,7 @@ jobs:
     parameters:
       build_type:
         type: enum
-        enum: ["debug", "release"]
+        enum: ["debug", "release", "valgrind"]
     environment:
       BUILD_TYPE: << parameters.build_type >>
     steps:
@@ -45,7 +45,7 @@ jobs:
           name: Restore postgres cache
           keys:
             # Restore ONLY if the rev key matches exactly
-            - v04-postgres-cache-<< parameters.build_type >>-{{ checksum "/tmp/cache-key-postgres" }}
+            - v06-postgres-cache-<< parameters.build_type >>-{{ checksum "/tmp/cache-key-postgres" }}
 
         # FIXME We could cache our own docker container, instead of installing packages every time.
       - run:
@@ -54,6 +54,10 @@ jobs:
             if [ ! -e tmp_install/bin/postgres ]; then
               sudo apt update
               sudo apt install build-essential libreadline-dev zlib1g-dev flex bison libseccomp-dev
+
+              if [ "${BUILD_TYPE}" = "valgrind" ]; then
+                sudo apt install valgrind
+              fi
             fi
 
         # Build postgres if the restore_cache didn't find a build.
@@ -65,12 +69,27 @@ jobs:
             if [ ! -e tmp_install/bin/postgres ]; then
               # "depth 1" saves some time by not cloning the whole repo
               git submodule update --init --depth 1
+
+              if [ "${BUILD_TYPE}" = "valgrind" ]; then
+                CFLAGS=-DUSE_VALGRIND
+                BUILD_TYPE=release
+              fi
               make postgres -j8
             fi
+      - when:
+          condition:
+            equal:
+              - << parameters.build_type >>
+              - valgrind
+          steps:
+            - run:
+                name: Add valgrind suppressions list
+                command: |
+                  cp vendor/postgres/src/tools/valgrind.supp tmp_install/valgrind.supp
 
       - save_cache:
           name: Save postgres cache
-          key: v04-postgres-cache-<< parameters.build_type >>-{{ checksum "/tmp/cache-key-postgres" }}
+          key: v06-postgres-cache-<< parameters.build_type >>-{{ checksum "/tmp/cache-key-postgres" }}
           paths:
             - tmp_install
 
@@ -80,7 +99,7 @@ jobs:
     parameters:
       build_type:
         type: enum
-        enum: ["debug", "release"]
+        enum: ["debug", "release", "valgrind"]
     steps:
       - run:
           name: apt install dependencies
@@ -102,7 +121,7 @@ jobs:
           name: Restore postgres cache
           keys:
             # Restore ONLY if the rev key matches exactly
-            - v04-postgres-cache-<< parameters.build_type >>-{{ checksum "/tmp/cache-key-postgres" }}
+            - v06-postgres-cache-<< parameters.build_type >>-{{ checksum "/tmp/cache-key-postgres" }}
 
       - restore_cache:
           name: Restore rust cache
@@ -120,6 +139,9 @@ jobs:
             BUILD_TYPE="<< parameters.build_type >>"
             if [[ $BUILD_TYPE == "debug" ]]; then
               echo "Build in debug mode"
+              cargo build --bins --tests
+            elif [[ $BUILD_TYPE == "valgrind" ]]; then
+              echo "Build in valgrind mode"
               cargo build --bins --tests
             elif [[ $BUILD_TYPE == "release" ]]; then
               echo "Build in release mode"
@@ -157,6 +179,9 @@ jobs:
             if [[ $BUILD_TYPE == "debug" ]]; then
               echo "Install debug mode"
               CARGO_FLAGS="--debug"
+            elif [[ $BUILD_TYPE == "valgrind" ]]; then
+              echo "Install valgrind mode"
+              CARGO_FLAGS=""
             elif [[ $BUILD_TYPE == "release" ]]; then
               echo "Install release mode"
               # The default is release mode; there is no --release flag.
@@ -194,8 +219,9 @@ jobs:
       #
       # Select the type of Rust build. Must be "release" or "debug".
       build_type:
-        type: string
+        type: enum
         default: "debug"
+        enum: [ "debug", "release", "valgrind" ]
       # This parameter is required, to prevent the mistake of running all tests in one job.
       test_selection:
         type: string
@@ -218,6 +244,46 @@ jobs:
           condition: << parameters.needs_postgres_source >>
           steps:
             - run: git submodule update --init --depth 1
+      - when:
+          condition:
+            equal:
+              - << parameters.build_type >>
+              - valgrind
+          steps:
+            - run:
+                name: Install and configure valgrind
+                command: |
+                  sudo apt update
+                  sudo apt install valgrind
+                  mv /tmp/zenith/pg_install/bin/postgres /tmp/zenith/pg_install/bin/postgres.orig
+
+                  cat \<<EOF > /tmp/zenith/pg_install/bin/postgres
+                  #!/bin/sh
+                  set -e
+
+                  # Author: Tom Lane, PostgreSQL Licence
+                  # Source: https://www.postgresql.org/message-id/159904.1608307376@sss.pgh.pa.us
+
+                  # Use this script as a wrapper to run PG under valgrind in "make check"
+                  # scenarios.  Rename the built postgres executable to postgres.orig
+                  # and then copy this script to $PGBLDROOT/src/backend/postgres.
+
+                  # Note: a disadvantage of this approach is that the backend will see
+                  # $PGBLDROOT/src/backend/ as its my_exec_path, hence will not pick up
+                  # anything in the temp install dir, but will go to the configured install
+                  # dir.  Must "make install" extensions and other stuff to work properly.
+
+                  exec valgrind \
+                      --quiet \
+                      --suppressions=/tmp/zenith/pg_install/valgrind.supp \
+                      --time-stamp=yes --error-exitcode=128 --trace-children=yes \
+                      --log-file=/tmp/test_output/valgrind-logs/%p.valgrind.log \
+                      /tmp/zenith/pg_install/bin/postgres.orig "\$@"
+                  EOF
+
+                  chmod +x /tmp/zenith/pg_install/bin/postgres
+                  mkdir -p /tmp/test_output/valgrind-logs/
+
       - run:
           name: Install pipenv & deps
           working_directory: test_runner
@@ -259,8 +325,9 @@ jobs:
           name: Delete all data but logs
           when: always
           command: |
-            du -sh /tmp/test_output/*
-            find /tmp/test_output -type f ! -name "pg.log" ! -name "pageserver.log" ! -name "wal_acceptor.log" ! -name "regression.diffs" ! -name "junit.xml" ! -name "*.filediff" ! -name "*.stdout" ! -name "*.stderr" -delete
+            du -a /tmp/test_output/valgrind-logs/
+            du -sh /tmp/test_output/
+            find /tmp/test_output -type f ! -name "pg.log" ! -name "pageserver.log" ! -name "wal_acceptor.log" ! -name "regression.diffs" ! -name "junit.xml" ! -name "*.filediff" ! -name "*.stdout" ! -name "*.stderr" ! -name "*.valgrind.log" -delete
             du -sh /tmp/test_output/*
       - store_artifacts:
           path: /tmp/test_output
@@ -338,19 +405,31 @@ workflows:
           name: build-postgres-<< matrix.build_type >>
           matrix:
             parameters:
-              build_type: ["debug", "release"]
+              build_type: [
+                  # "debug",
+                  # "release",
+                  "valgrind"
+              ]
       - build-zenith:
           name: build-zenith-<< matrix.build_type >>
           matrix:
             parameters:
-              build_type: ["debug", "release"]
+              build_type: [
+                # "debug",
+                # "release",
+                  "valgrind"
+              ]
           requires:
             - build-postgres-<< matrix.build_type >>
       - run-pytest:
           name: pg_regress-tests-<< matrix.build_type >>
           matrix:
             parameters:
-              build_type: ["debug", "release"]
+              build_type: [
+                # "debug",
+                # "release",
+                  "valgrind"
+              ]
           test_selection: batch_pg_regress
           needs_postgres_source: true
           requires:
@@ -359,36 +438,40 @@ workflows:
           name: other-tests-<< matrix.build_type >>
           matrix:
             parameters:
-              build_type: ["debug", "release"]
+              build_type: [
+                # "debug",
+                # "release",
+                  "valgrind"
+              ]
           test_selection: batch_others
           requires:
             - build-zenith-<< matrix.build_type >>
-      - run-pytest:
-          name: benchmarks
-          build_type: release
-          test_selection: performance
-          run_in_parallel: false
-          requires:
-            - build-zenith-release
-      - docker-image:
-          # Context gives an ability to login
-          context: Docker Hub
-          # Build image only for commits to main
-          filters:
-            branches:
-              only:
-                - main
-          requires:
-            - pg_regress-tests-release
-            - other-tests-release
-      - remote-ci-trigger:
-          # Context passes credentials for gh api
-          context: CI_ACCESS_TOKEN
-          remote_repo: "zenithdb/console"
-          requires:
-            # XXX: Successful build doesn't mean everything is OK, but
-            # the job to be triggered takes so much time to complete (~22 min)
-            # that it's better not to wait for the commented-out steps
-            - build-zenith-debug
-            # - pg_regress-tests-release
-            # - other-tests-release
+      # - run-pytest:
+      #     name: benchmarks
+      #     build_type: release
+      #     test_selection: performance
+      #     run_in_parallel: false
+      #     requires:
+      #       - build-zenith-release
+      # - docker-image:
+      #     # Context gives an ability to login
+      #     context: Docker Hub
+      #     # Build image only for commits to main
+      #     filters:
+      #       branches:
+      #         only:
+      #           - main
+      #     requires:
+      #       - pg_regress-tests-release
+      #       - other-tests-release
+      # - remote-ci-trigger:
+      #     # Context passes credentials for gh api
+      #     context: CI_ACCESS_TOKEN
+      #     remote_repo: "zenithdb/console"
+      #     requires:
+      #       # XXX: Successful build doesn't mean everything is OK, but
+      #       # the job to be triggered takes so much time to complete (~22 min)
+      #       # that it's better not to wait for the commented-out steps
+      #       - build-zenith-debug
+      #       # - pg_regress-tests-release
+      #       # - other-tests-release
