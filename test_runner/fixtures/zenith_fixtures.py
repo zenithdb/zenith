@@ -1700,6 +1700,7 @@ class SafekeeperMetrics:
     # As a consequence, values may differ from real original int64s.
     flush_lsn_inexact: Dict[Tuple[str, str], int] = field(default_factory=dict)
     commit_lsn_inexact: Dict[Tuple[str, str], int] = field(default_factory=dict)
+    flush_wal_count: Dict[Tuple[str, str], int] = field(default_factory=dict)
 
 
 class SafekeeperHttpClient(requests.Session):
@@ -1734,6 +1735,11 @@ class SafekeeperHttpClient(requests.Session):
                 all_metrics_text,
                 re.MULTILINE):
             metrics.commit_lsn_inexact[(match.group(1), match.group(2))] = int(match.group(3))
+        for match in re.finditer(
+                r'^safekeeper_flush_wal_seconds_count{tenant_id="([0-9a-f]+)",timeline_id="([0-9a-f]+)"} (\S+)$',
+                all_metrics_text,
+                re.MULTILINE):
+            metrics.flush_wal_count[(match.group(1), match.group(2))] = int(match.group(3))
         return metrics
 
 

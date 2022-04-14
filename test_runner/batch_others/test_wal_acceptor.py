@@ -12,10 +12,10 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from multiprocessing import Process, Value
 from pathlib import Path
-from fixtures.zenith_fixtures import PgBin, Postgres, Safekeeper, ZenithEnv, ZenithEnvBuilder, PortDistributor, SafekeeperPort, zenith_binpath, PgProtocol
+from fixtures.zenith_fixtures import PgBin, Postgres, Safekeeper, SafekeeperHttpClient, ZenithEnv, ZenithEnvBuilder, PortDistributor, SafekeeperPort, zenith_binpath, PgProtocol
 from fixtures.utils import etcd_path, lsn_to_hex, mkdir_if_needed, lsn_from_hex
 from fixtures.log_helper import log
-from typing import List, Optional, Any
+from typing import Dict, List, Optional, Any
 
 
 # basic test, write something in setup with wal acceptors, ensure that commits
@@ -396,20 +396,39 @@ class ProposerPostgres(PgProtocol):
         """ Path to postgresql.conf """
         return os.path.join(self.pgdata_dir, 'postgresql.conf')
 
+    def log_path(self) -> str:
+        """ Path to pg.log """
+        return os.path.join(self.pg_data_dir_path(), "pg.log")
+
     def create_dir_config(self, wal_acceptors: str):
         """ Create dir and config for running --sync-safekeepers """
 
         mkdir_if_needed(self.pg_data_dir_path())
         with open(self.config_file_path(), "w") as f:
             cfg = [
-                "synchronous_standby_names = 'walproposer'\n",
-                "shared_preload_libraries = 'zenith'\n",
+                "wal_keep_size=10TB\n",
+                "shared_preload_libraries=zenith\n",
+                "zenith.page_server_connstring=''\n",
+                "synchronous_commit=on\n",
+                "max_wal_senders=10\n",
+                "wal_log_hints=on\n",
+                "max_replication_slots=10\n",
+                "hot_standby=on\n",
+                "min_wal_size=20GB\n",
+                "max_wal_size=40GB\n",
+                "checkpoint_timeout=60min\n",
+                "log_checkpoints=on\n",
+                "max_connections=100\n",
+                "wal_sender_timeout=0\n",
+                "wal_level=replica\n",
                 f"zenith.zenith_timeline = '{self.timeline_id.hex}'\n",
                 f"zenith.zenith_tenant = '{self.tenant_id.hex}'\n",
                 f"zenith.page_server_connstring = ''\n",
                 f"wal_acceptors = '{wal_acceptors}'\n",
                 f"listen_addresses = '{self.listen_addr}'\n",
                 f"port = '{self.port}'\n",
+                "synchronous_standby_names = 'walproposer'\n",
+                "fsync=off\n",
             ]
 
             f.writelines(cfg)
@@ -441,8 +460,7 @@ class ProposerPostgres(PgProtocol):
     def start(self):
         """ Start postgres with pg_ctl """
 
-        log_path = os.path.join(self.pg_data_dir_path(), "pg.log")
-        args = ["pg_ctl", "-D", self.pg_data_dir_path(), "-l", log_path, "-w", "start"]
+        args = ["pg_ctl", "-D", self.pg_data_dir_path(), "-l", self.log_path(), "-w", "start"]
         self.pg_bin.run(args)
 
     def stop(self):
@@ -536,6 +554,16 @@ def test_timeline_status(zenith_env_builder: ZenithEnvBuilder):
     assert epoch_after_reboot > epoch
 
 
+@dataclass
+class SafekeeperProc:
+    """ An object representing a running safekeeper daemon. """
+    proc: 'subprocess.CompletedProcess[bytes]'
+    port: SafekeeperPort
+
+    def http_client(self) -> SafekeeperHttpClient:
+        return SafekeeperHttpClient(port=self.port.http)
+
+
 class SafekeeperEnv:
     def __init__(self,
                  repo_dir: Path,
@@ -547,7 +575,7 @@ class SafekeeperEnv:
         self.pg_bin = pg_bin
         self.num_safekeepers = num_safekeepers
         self.bin_safekeeper = os.path.join(str(zenith_binpath), 'safekeeper')
-        self.safekeepers: Optional[List[subprocess.CompletedProcess[Any]]] = None
+        self.safekeepers: Optional[List[SafekeeperProc]] = None
         self.postgres: Optional[ProposerPostgres] = None
         self.tenant_id: Optional[uuid.UUID] = None
         self.timeline_id: Optional[uuid.UUID] = None
@@ -571,7 +599,7 @@ class SafekeeperEnv:
 
         return self
 
-    def start_safekeeper(self, i):
+    def start_safekeeper(self, i) -> "SafekeeperProc":
         port = SafekeeperPort(
             pg=self.port_distributor.get_port(),
             http=self.port_distributor.get_port(),
@@ -594,10 +622,12 @@ class SafekeeperEnv:
         ]
 
         log.info(f'Running command "{" ".join(args)}"')
-        return subprocess.run(args, check=True)
 
-    def get_safekeeper_connstrs(self):
-        return ','.join([sk_proc.args[2] for sk_proc in self.safekeepers])
+        return SafekeeperProc(subprocess.run(args, check=True), port)
+
+    def get_safekeeper_connstrs(self) -> str:
+        assert self.safekeepers is not None
+        return ','.join([sk.proc.args[2] for sk in self.safekeepers])
 
     def create_postgres(self):
         pgdata_dir = os.path.join(self.repo_dir, "proposer_pgdata")
@@ -629,8 +659,8 @@ class SafekeeperEnv:
         if self.postgres is not None:
             self.postgres.stop()
         if self.safekeepers is not None:
-            for sk_proc in self.safekeepers:
-                self.kill_safekeeper(sk_proc.args[6])
+            for sk in self.safekeepers:
+                self.kill_safekeeper(sk.proc.args[6])
 
 
 def test_safekeeper_without_pageserver(test_output_dir: str,
