@@ -1,0 +1,151 @@
+name: "Build the app an artifact"
+description: "Custom download action"
+inputs:
+  build_type:
+    required: true
+  rust_toolchain:
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Fix git ownership
+      shell: bash -euxo pipefail {0}
+      run: |
+        # Workaround for `fatal: detected dubious ownership in repository at ...`
+        #
+        # Use both ${{ github.workspace }} and ${GITHUB_WORKSPACE} because they're different on host and in containers
+        #   Ref https://github.com/actions/checkout/issues/785
+        #
+        git config --global --add safe.directory ${{ github.workspace }}
+        git config --global --add safe.directory ${GITHUB_WORKSPACE}
+
+    - name: Set Postgres revision for caching
+      id: pg_ver
+      shell: bash -euxo pipefail {0}
+      run: echo ::set-output name=pg_rev::$(git rev-parse HEAD:vendor/postgres)
+
+    # Set some environment variables used by all the steps.
+    #
+    # CARGO_FLAGS is extra options to pass to "cargo build", "cargo test" etc.
+    #   It also includes --features, if any
+    #
+    # CARGO_FEATURES is passed to "cargo metadata". It is separate from CARGO_FLAGS,
+    #   because "cargo metadata" doesn't accept --release or --debug options
+    #
+    - name: Set env variables
+      env:
+        BUILD_TYPE: ${{ inputs.build_type }}
+        GIT_VERSION: ${{ github.sha }}
+      shell: bash -euxo pipefail {0}
+      run: |
+        if [[ $BUILD_TYPE == "debug" ]]; then
+          cov_prefix="scripts/coverage --profraw-prefix=$GITHUB_JOB --dir=/tmp/coverage run"
+          CARGO_FEATURES=""
+          CARGO_FLAGS=""
+        elif [[ $BUILD_TYPE == "release" ]]; then
+          cov_prefix=""
+          CARGO_FEATURES="--features profiling"
+          CARGO_FLAGS="--release $CARGO_FEATURES"
+        fi
+        echo "cov_prefix=${cov_prefix}" >> $GITHUB_ENV
+        echo "CARGO_FEATURES=${CARGO_FEATURES}" >> $GITHUB_ENV
+        echo "CARGO_FLAGS=${CARGO_FLAGS}" >> $GITHUB_ENV
+        echo "BUILD_TYPE=${BUILD_TYPE}" >> $GITHUB_ENV
+        echo "GIT_VERSION=${GIT_VERSION}" >> $GITHUB_ENV
+
+    # Don't include the ~/.cargo/registry/src directory. It contains just
+    # uncompressed versions of the crates in ~/.cargo/registry/cache
+    # directory, and it's faster to let 'cargo' to rebuild it from the
+    # compressed crates.
+    - name: Cache cargo deps
+      id: cache_cargo
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry/
+          !~/.cargo/registry/src
+          ~/.cargo/git/
+          target/
+        # Fall back to older versions of the key, if no cache for current Cargo.lock was found
+        key: |
+          v6-${{ runner.os }}-${{ matrix.build_type }}-cargo-${{ matrix.rust_toolchain }}-${{ hashFiles('Cargo.lock') }}
+          v6-${{ runner.os }}-${{ matrix.build_type }}-cargo-${{ matrix.rust_toolchain }}-
+
+    - name: Cache postgres build
+      id: cache_pg
+      uses: actions/cache@v3
+      with:
+        path: tmp_install/
+        key: v1-${{ runner.os }}-${{ inputs.build_type }}-pg-${{ steps.pg_ver.outputs.pg_rev }}-${{ hashFiles('Makefile') }}
+
+    - name: Build postgres
+      if: steps.cache_pg.outputs.cache-hit != 'true'
+      shell: bash -euxo pipefail {0}
+      run: mold -run make postgres -j$(nproc)
+
+    - name: Run cargo build
+      shell: bash -euxo pipefail {0}
+      run: |
+        ${cov_prefix} mold -run cargo build $CARGO_FLAGS --features failpoints --bins --tests
+
+    - name: Run cargo test
+      shell: bash -euxo pipefail {0}
+      run: |
+        ${cov_prefix} cargo test $CARGO_FLAGS
+
+    - name: Install rust binaries
+      shell: bash -euxo pipefail {0}
+      run: |
+        # Install target binaries
+        mkdir -p /tmp/neon/bin/
+        binaries=$(
+          ${cov_prefix} cargo metadata $CARGO_FEATURES --format-version=1 --no-deps |
+          jq -r '.packages[].targets[] | select(.kind | index("bin")) | .name'
+        )
+        for bin in $binaries; do
+          SRC=target/$BUILD_TYPE/$bin
+          DST=/tmp/neon/bin/$bin
+          cp "$SRC" "$DST"
+        done
+
+        # Install test executables and write list of all binaries (for code coverage)
+        if [[ $BUILD_TYPE == "debug" ]]; then
+          # Keep bloated coverage data files away from the rest of the artifact
+          mkdir -p /tmp/coverage/
+
+          mkdir -p /tmp/neon/test_bin/
+
+          test_exe_paths=$(
+            ${cov_prefix} cargo test $CARGO_FLAGS --message-format=json --no-run |
+            jq -r '.executable | select(. != null)'
+          )
+          for bin in $test_exe_paths; do
+            SRC=$bin
+            DST=/tmp/neon/test_bin/$(basename $bin)
+
+            # We don't need debug symbols for code coverage, so strip them out to make
+            # the artifact smaller.
+            strip "$SRC" -o "$DST"
+            echo "$DST" >> /tmp/coverage/binaries.list
+          done
+
+          for bin in $binaries; do
+            echo "/tmp/neon/bin/$bin" >> /tmp/coverage/binaries.list
+          done
+        fi
+
+    - name: Install postgres binaries
+      shell: bash -euxo pipefail {0}
+      run: cp -a tmp_install /tmp/neon/pg_install
+
+    - name: Upload Neon artifact
+      uses: ./.github/actions/upload
+      with:
+        name: neon-${{ runner.os }}-${{ inputs.build_type }}-${{ inputs.rust_toolchain }}-artifact
+        path: /tmp/neon
+
+    # XXX: keep this after the binaries.list is formed, so the coverage can properly work later
+    - name: Merge and upload coverage data
+      if: inputs.build_type == 'debug'
+      uses: ./.github/actions/save-coverage-data

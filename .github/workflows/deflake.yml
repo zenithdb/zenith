@@ -1,0 +1,87 @@
+name: Run test several times
+
+on:
+  push:
+    branches:
+      - "bayandin/deflake"
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        type: string
+        description: 'test name, full or part of it'
+        required: true
+      repetition:
+        type: number
+        default: 100
+        required: false
+      until-failure:
+        type: boolean
+        description: repeat test until it fails, no more than `repetition` times
+        required: false
+      build-type:
+        type: choice
+        options:
+        - debug
+        - release
+        default: debug
+      rust-toolchain:
+        tupe: string
+        default: '1.58'
+        required: true
+
+env:
+  TEST_FILTER: ${{ inputs.test-filter || 'test_timeline_physical_size_post_compaction' }}
+  REPETITION: ${{ inputs.repetition || '100' }}
+  UNTIL_FAILURE: ${{ inputs.until-failure || 'false'}}
+  BUILD_TYPE: ${{ inputs.build-type || 'debug' }}
+  RUST_TOOLCHAIN: ${{ inputs.rust-toolchain || '1.58' }}
+
+jobs:
+  deflake:
+    runs-on: dev
+    container:
+      image: 369495373322.dkr.ecr.eu-central-1.amazonaws.com/rust:pinned
+      options: --init
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: true
+          fetch-depth: 1
+
+      - name: Build Neon
+        uses: ./.github/actions/build
+        with:
+          build_type: ${{ env.BUILD_TYPE }}
+          rust_toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Calculate extra params
+        id: calculate-extra-params
+        run: |
+          EXTRA_PARAMS="-k ${TEST_FILTER} --count=${REPETITION}"
+          if [ "${UNTIL_FAILURE}" = "true" ]; then
+            EXTRA_PARAMS="-x ${EXTRA_PARAMS}"
+          fi
+
+          echo "::set-output name=EXTRA_PARAMS::${EXTRA_PARAMS}"
+
+      - name: DEBUG
+        shell: bash -euxo pipefail {0}
+        run: |
+          ps aux | grep pageserver
+          ps aux | grep postgres
+          ps aux | grep safekeeper
+
+      - name: Run test
+        uses: ./.github/actions/run-python-test-set
+        with:
+          build_type: ${{ env.BUILD_TYPE }}
+          rust_toolchain: ${{ env.RUST_TOOLCHAIN }}
+          test_selection:
+          extra_params: ${{ steps.calculate-extra-params.outputs.EXTRA_PARAMS }}
+          run_with_real_s3: true
+          real_s3_bucket: ci-tests-s3
+          real_s3_region: us-west-2
+          real_s3_access_key_id: "${{ secrets.AWS_ACCESS_KEY_ID_CI_TESTS_S3 }}"
+          real_s3_secret_access_key: "${{ secrets.AWS_SECRET_ACCESS_KEY_CI_TESTS_S3 }}"
