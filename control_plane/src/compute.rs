@@ -284,7 +284,7 @@ impl PostgresNode {
         conf.append("max_wal_senders", "10");
         // wal_log_hints is mandatory when running against pageserver (see gh issue#192)
         // TODO: is it possible to check wal_log_hints at pageserver side via XLOG_PARAMETER_CHANGE?
-        conf.append("wal_log_hints", "on");
+        conf.append("wal_log_hints", "off");
         conf.append("max_replication_slots", "10");
         conf.append("hot_standby", "on");
         conf.append("shared_buffers", "1MB");

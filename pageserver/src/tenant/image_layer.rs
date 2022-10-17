@@ -223,6 +223,10 @@ impl Layer for ImageLayer {
 
         Ok(())
     }
+
+    fn contains(&self, key: &Key) -> Result<bool> {
+        Ok(self.get_key_range().contains(key))
+    }
 }
 
 impl ImageLayer {

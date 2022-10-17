@@ -235,6 +235,11 @@ impl Layer for InMemoryLayer {
 
         Ok(())
     }
+
+    fn contains(&self, key: &Key) -> Result<bool> {
+        let inner = self.inner.read().unwrap();
+        Ok(inner.index.get(key).is_some())
+    }
 }
 
 impl InMemoryLayer {
@@ -358,8 +363,14 @@ impl InMemoryLayer {
             // Write all page versions
             for (lsn, pos) in vec_map.as_slice() {
                 cursor.read_blob_into_buf(*pos, &mut buf)?;
-                let will_init = Value::des(&buf)?.will_init();
-                delta_layer_writer.put_value_bytes(key, *lsn, &buf, will_init)?;
+                let value = Value::des(&buf)?;
+                delta_layer_writer.put_value_bytes(
+                    key,
+                    *lsn,
+                    &buf,
+                    value.will_init(),
+                    value.is_image(),
+                )?;
             }
         }
 

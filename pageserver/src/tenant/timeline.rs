@@ -3,7 +3,6 @@
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use bytes::Bytes;
 use fail::fail_point;
-use itertools::Itertools;
 use once_cell::sync::OnceCell;
 use tokio::task::spawn_blocking;
 use tracing::*;
@@ -122,7 +121,7 @@ pub struct Timeline {
 
     /// Layer removal lock.
     /// A lock to ensure that no layer of the timeline is removed concurrently by other tasks.
-    /// This lock is acquired in [`Timeline::gc`], [`Timeline::compact`],
+    /// This lock is acquired in [`Timeline::gc`], [`Timeline::reconstruct`],
     /// and [`Tenant::delete_timeline`].
     layer_removal_cs: Mutex<()>,
 
@@ -472,7 +471,7 @@ impl Timeline {
             CheckpointConfig::Forced => {
                 self.freeze_inmem_layer(false);
                 self.flush_frozen_layers(true)?;
-                self.compact()
+                self.reconstruct()
             }
         }
     }
@@ -507,13 +506,6 @@ impl Timeline {
         tenant_conf
             .compaction_target_size
             .unwrap_or(self.conf.default_tenant_conf.compaction_target_size)
-    }
-
-    fn get_compaction_threshold(&self) -> usize {
-        let tenant_conf = self.tenant_conf.read().unwrap();
-        tenant_conf
-            .compaction_threshold
-            .unwrap_or(self.conf.default_tenant_conf.compaction_threshold)
     }
 
     fn get_image_creation_threshold(&self) -> usize {
@@ -596,7 +588,7 @@ impl Timeline {
             last_received_wal: Mutex::new(None),
             rel_size_cache: RwLock::new(HashMap::new()),
         };
-        result.repartition_threshold = result.get_checkpoint_distance() / 10;
+        result.repartition_threshold = result.get_checkpoint_distance() * 3;
         result
     }
 
@@ -730,7 +722,7 @@ impl Timeline {
     pub fn layer_removal_guard(&self) -> anyhow::Result<MutexGuard<()>> {
         self.layer_removal_cs
             .try_lock()
-            .map_err(|e| anyhow!("cannot lock compaction critical section {e}"))
+            .map_err(|e| anyhow!("cannot lock reconstruction critical section {e}"))
     }
 
     /// Retrieve current logical size of the timeline.
@@ -1336,17 +1328,17 @@ impl Timeline {
         Ok((new_delta_path, LayerFileMetadata::new(sz)))
     }
 
-    pub fn compact(&self) -> anyhow::Result<()> {
+    pub fn reconstruct(&self) -> anyhow::Result<()> {
         let last_record_lsn = self.get_last_record_lsn();
 
         // Last record Lsn could be zero in case the timelie was just created
         if !last_record_lsn.is_valid() {
-            warn!("Skipping compaction for potentially just initialized timeline, it has invalid last record lsn: {last_record_lsn}");
+            warn!("Skipping reconstruction for potentially just initialized timeline, it has invalid last record lsn: {last_record_lsn}");
             return Ok(());
         }
 
         //
-        // High level strategy for compaction / image creation:
+        // High level strategy for reconstruction / image creation:
         //
         // 1. First, calculate the desired "partitioning" of the
         // currently in-use key space. The goal is to partition the
@@ -1370,13 +1362,13 @@ impl Timeline {
         // total in the delta file. Or perhaps: if creating an image
         // file would allow to delete some older files.
         //
-        // 3. After that, we compact all level0 delta files if there
-        // are too many of them.  While compacting, we also garbage
+        // 3. After that, we reconstruct all level0 delta files if there
+        // are too many of them.  While reconstructing, we also garbage
         // collect any page versions that are no longer needed because
         // of the new image layers we created in step 2.
         //
         // TODO: This high level strategy hasn't been implemented yet.
-        // Below are functions compact_level0() and create_image_layers()
+        // Below are functions reconstruct_level0() and create_image_layers()
         // but they are a bit ad hoc and don't quite work like it's explained
         // above. Rewrite it.
         let _layer_removal_cs = self.layer_removal_cs.lock().unwrap();
@@ -1403,20 +1395,20 @@ impl Timeline {
                         None,
                     );
                 }
-
-                // 3. Compact
-                let timer = self.metrics.compact_time_histo.start_timer();
-                self.compact_level0(target_file_size)?;
-                timer.stop_and_record();
             }
             Err(err) => {
                 // no partitioning? This is normal, if the timeline was just created
                 // as an empty timeline. Also in unit tests, when we use the timeline
                 // as a simple key-value store, ignoring the datadir layout. Log the
                 // error but continue.
-                error!("could not compact, repartitioning keyspace failed: {err:?}");
+                error!("could not reconstruct, repartitioning keyspace failed: {err:?}");
             }
         };
+
+        // 3. Reconstruct
+        let timer = self.metrics.reconstruct_time_histo.start_timer();
+        self.reconstruct_level0(target_file_size)?;
+        timer.stop_and_record();
 
         Ok(())
     }
@@ -1515,7 +1507,7 @@ impl Timeline {
         // We must also fsync the timeline dir to ensure the directory entries for
         // new layer files are durable
         //
-        // Compaction creates multiple image layers. It would be better to create them all
+        // Reconstruction creates multiple image layers. It would be better to create them all
         // and fsync them all in parallel.
         let all_paths = image_layers
             .iter()
@@ -1545,230 +1537,46 @@ impl Timeline {
     }
 
     ///
-    /// Collect a bunch of Level 0 layer files, and compact and reshuffle them as
+    /// Collect a bunch of Level 0 layer files, and reconstruct and reshuffle them as
     /// as Level 1 files.
     ///
-    fn compact_level0(&self, target_file_size: u64) -> Result<()> {
-        let layers = self.layers.read().unwrap();
-        let mut level0_deltas = layers.get_level0_deltas()?;
+    fn reconstruct_level0(&self, target_file_size: u64) -> Result<()> {
+        let mut layers = self.layers.write().unwrap();
+        let latest_delta_layer = layers.get_latest_delta_layer();
         drop(layers);
-
-        // Only compact if enough layers have accumulated.
-        if level0_deltas.is_empty() || level0_deltas.len() < self.get_compaction_threshold() {
-            return Ok(());
-        }
-
-        // Gather the files to compact in this iteration.
-        //
-        // Start with the oldest Level 0 delta file, and collect any other
-        // level 0 files that form a contiguous sequence, such that the end
-        // LSN of previous file matches the start LSN of the next file.
-        //
-        // Note that if the files don't form such a sequence, we might
-        // "compact" just a single file. That's a bit pointless, but it allows
-        // us to get rid of the level 0 file, and compact the other files on
-        // the next iteration. This could probably made smarter, but such
-        // "gaps" in the sequence of level 0 files should only happen in case
-        // of a crash, partial download from cloud storage, or something like
-        // that, so it's not a big deal in practice.
-        level0_deltas.sort_by_key(|l| l.get_lsn_range().start);
-        let mut level0_deltas_iter = level0_deltas.iter();
-
-        let first_level0_delta = level0_deltas_iter.next().unwrap();
-        let mut prev_lsn_end = first_level0_delta.get_lsn_range().end;
-        let mut deltas_to_compact = vec![Arc::clone(first_level0_delta)];
-        for l in level0_deltas_iter {
-            let lsn_range = l.get_lsn_range();
-
-            if lsn_range.start != prev_lsn_end {
-                break;
-            }
-            deltas_to_compact.push(Arc::clone(l));
-            prev_lsn_end = lsn_range.end;
-        }
-        let lsn_range = Range {
-            start: deltas_to_compact.first().unwrap().get_lsn_range().start,
-            end: deltas_to_compact.last().unwrap().get_lsn_range().end,
-        };
-
-        info!(
-            "Starting Level0 compaction in LSN range {}-{} for {} layers ({} deltas in total)",
-            lsn_range.start,
-            lsn_range.end,
-            deltas_to_compact.len(),
-            level0_deltas.len()
-        );
-        for l in deltas_to_compact.iter() {
-            info!("compact includes {}", l.filename().display());
-        }
-        // We don't need the original list of layers anymore. Drop it so that
-        // we don't accidentally use it later in the function.
-        drop(level0_deltas);
-
-        // This iterator walks through all key-value pairs from all the layers
-        // we're compacting, in key, LSN order.
-        let all_values_iter = deltas_to_compact
-            .iter()
-            .map(|l| l.iter())
-            .kmerge_by(|a, b| {
-                if let Ok((a_key, a_lsn, _)) = a {
-                    if let Ok((b_key, b_lsn, _)) = b {
-                        match a_key.cmp(b_key) {
-                            Ordering::Less => true,
-                            Ordering::Equal => a_lsn <= b_lsn,
-                            Ordering::Greater => false,
-                        }
-                    } else {
-                        false
-                    }
-                } else {
-                    true
-                }
-            });
-
-        // This iterator walks through all keys and is needed to calculate size used by each key
-        let mut all_keys_iter = deltas_to_compact
-            .iter()
-            .map(|l| l.key_iter())
-            .kmerge_by(|a, b| {
-                let (a_key, a_lsn, _) = a;
-                let (b_key, b_lsn, _) = b;
-                match a_key.cmp(b_key) {
-                    Ordering::Less => true,
-                    Ordering::Equal => a_lsn <= b_lsn,
-                    Ordering::Greater => false,
-                }
-            });
-
-        // Merge the contents of all the input delta layers into a new set
-        // of delta layers, based on the current partitioning.
-        //
-        // We split the new delta layers on the key dimension. We iterate through the key space, and for each key, check if including the next key to the current output layer we're building would cause the layer to become too large. If so, dump the current output layer and start new one.
-        // It's possible that there is a single key with so many page versions that storing all of them in a single layer file
-        // would be too large. In that case, we also split on the LSN dimension.
-        //
-        // LSN
-        //  ^
-        //  |
-        //  | +-----------+            +--+--+--+--+
-        //  | |           |            |  |  |  |  |
-        //  | +-----------+            |  |  |  |  |
-        //  | |           |            |  |  |  |  |
-        //  | +-----------+     ==>    |  |  |  |  |
-        //  | |           |            |  |  |  |  |
-        //  | +-----------+            |  |  |  |  |
-        //  | |           |            |  |  |  |  |
-        //  | +-----------+            +--+--+--+--+
-        //  |
-        //  +--------------> key
-        //
-        //
-        // If one key (X) has a lot of page versions:
-        //
-        // LSN
-        //  ^
-        //  |                                 (X)
-        //  | +-----------+            +--+--+--+--+
-        //  | |           |            |  |  |  |  |
-        //  | +-----------+            |  |  +--+  |
-        //  | |           |            |  |  |  |  |
-        //  | +-----------+     ==>    |  |  |  |  |
-        //  | |           |            |  |  +--+  |
-        //  | +-----------+            |  |  |  |  |
-        //  | |           |            |  |  |  |  |
-        //  | +-----------+            +--+--+--+--+
-        //  |
-        //  +--------------> key
-        // TODO: this actually divides the layers into fixed-size chunks, not
-        // based on the partitioning.
-        //
-        // TODO: we should also opportunistically materialize and
-        // garbage collect what we can.
-        let mut new_layers = Vec::new();
-        let mut prev_key: Option<Key> = None;
         let mut writer: Option<DeltaLayerWriter> = None;
-        let mut key_values_total_size = 0u64;
-        let mut dup_start_lsn: Lsn = Lsn::INVALID; // start LSN of layer containing values of the single key
-        let mut dup_end_lsn: Lsn = Lsn::INVALID; // end LSN of layer containing values of the single key
-        for x in all_values_iter {
-            let (key, lsn, value) = x?;
-            let same_key = prev_key.map_or(false, |prev_key| prev_key == key);
-            // We need to check key boundaries once we reach next key or end of layer with the same key
-            if !same_key || lsn == dup_end_lsn {
-                let mut next_key_size = 0u64;
-                let is_dup_layer = dup_end_lsn.is_valid();
-                dup_start_lsn = Lsn::INVALID;
-                if !same_key {
-                    dup_end_lsn = Lsn::INVALID;
-                }
-                // Determine size occupied by this key. We stop at next key or when size becomes larger than target_file_size
-                for (next_key, next_lsn, next_size) in all_keys_iter.by_ref() {
-                    next_key_size = next_size;
-                    if key != next_key {
-                        if dup_end_lsn.is_valid() {
-                            // We are writting segment with duplicates:
-                            // place all remaining values of this key in separate segment
-                            dup_start_lsn = dup_end_lsn; // new segments starts where old stops
-                            dup_end_lsn = lsn_range.end; // there are no more values of this key till end of LSN range
-                        }
-                        break;
-                    }
-                    key_values_total_size += next_size;
-                    // Check if it is time to split segment: if total keys size is larger than target file size.
-                    // We need to avoid generation of empty segments if next_size > target_file_size.
-                    if key_values_total_size > target_file_size && lsn != next_lsn {
-                        // Split key between multiple layers: such layer can contain only single key
-                        dup_start_lsn = if dup_end_lsn.is_valid() {
-                            dup_end_lsn // new segment with duplicates starts where old one stops
-                        } else {
-                            lsn // start with the first LSN for this key
-                        };
-                        dup_end_lsn = next_lsn; // upper LSN boundary is exclusive
-                        break;
-                    }
-                }
-                // handle case when loop reaches last key: in this case dup_end is non-zero but dup_start is not set.
-                if dup_end_lsn.is_valid() && !dup_start_lsn.is_valid() {
-                    dup_start_lsn = dup_end_lsn;
-                    dup_end_lsn = lsn_range.end;
-                }
-                if writer.is_some() {
-                    let written_size = writer.as_mut().unwrap().size();
-                    // check if key cause layer overflow...
-                    if is_dup_layer
-                        || dup_end_lsn.is_valid()
-                        || written_size + key_values_total_size > target_file_size
-                    {
-                        // ... if so, flush previous layer and prepare to write new one
-                        new_layers.push(writer.take().unwrap().finish(prev_key.unwrap().next())?);
+        let mut new_layers = Vec::new();
+        let mut last_key: Option<Key> = None;
+        if let Some(last_delta_layer) = latest_delta_layer {
+            let end_lsn = last_delta_layer.get_lsn_range().end;
+            let lsn_range = end_lsn..end_lsn + 1;
+            for (key, lsn, _) in last_delta_layer.key_iter(true) {
+                let value = self.get(key, lsn)?;
+                if let Some(curr_writer) = &writer {
+                    if curr_writer.size() > target_file_size {
+                        new_layers.push(writer.take().unwrap().finish(key)?);
                         writer = None;
                     }
                 }
-                // Remember size of key value because at next iteration we will access next item
-                key_values_total_size = next_key_size;
-            }
-            if writer.is_none() {
                 // Create writer if not initiaized yet
-                writer = Some(DeltaLayerWriter::new(
-                    self.conf,
-                    self.timeline_id,
-                    self.tenant_id,
-                    key,
-                    if dup_end_lsn.is_valid() {
-                        // this is a layer containing slice of values of the same key
-                        debug!("Create new dup layer {}..{}", dup_start_lsn, dup_end_lsn);
-                        dup_start_lsn..dup_end_lsn
-                    } else {
-                        debug!("Create new layer {}..{}", lsn_range.start, lsn_range.end);
-                        lsn_range.clone()
-                    },
-                )?);
+                if writer.is_none() {
+                    writer = Some(DeltaLayerWriter::new(
+                        self.conf,
+                        self.timeline_id,
+                        self.tenant_id,
+                        key,
+                        lsn_range.clone(),
+                    )?);
+                }
+                writer
+                    .as_mut()
+                    .unwrap()
+                    .put_value(key, end_lsn, Value::Image(value))?;
+                last_key = Some(key);
             }
-            writer.as_mut().unwrap().put_value(key, lsn, value)?;
-            prev_key = Some(key);
         }
         if let Some(writer) = writer {
-            new_layers.push(writer.finish(prev_key.unwrap().next())?);
+            new_layers.push(writer.finish(last_key.unwrap().next())?);
         }
 
         // Sync layers
@@ -1798,34 +1606,12 @@ impl Timeline {
             new_layer_paths.insert(new_delta_path, LayerFileMetadata::new(metadata.len()));
             layers.insert_historic(Arc::new(l));
         }
-
-        // Now that we have reshuffled the data to set of new delta layers, we can
-        // delete the old ones
-        let mut layer_paths_do_delete = HashSet::with_capacity(deltas_to_compact.len());
-        drop(all_keys_iter);
-        for l in deltas_to_compact {
-            if let Some(path) = l.local_path() {
-                self.metrics
-                    .current_physical_size_gauge
-                    .sub(path.metadata()?.len());
-                layer_paths_do_delete.insert(path);
-            }
-            l.delete()?;
-            layers.remove_historic(l);
-        }
-        drop(layers);
-
         if self.upload_layers.load(atomic::Ordering::Relaxed) {
             storage_sync::schedule_layer_upload(
                 self.tenant_id,
                 self.timeline_id,
                 new_layer_paths,
                 None,
-            );
-            storage_sync::schedule_layer_delete(
-                self.tenant_id,
-                self.timeline_id,
-                layer_paths_do_delete,
             );
         }
 
@@ -1834,10 +1620,10 @@ impl Timeline {
 
     /// Update information about which layer files need to be retained on
     /// garbage collection. This is separate from actually performing the GC,
-    /// and is updated more frequently, so that compaction can remove obsolete
+    /// and is updated more frequently, so that reconstruction can remove obsolete
     /// page versions more aggressively.
     ///
-    /// TODO: that's wishful thinking, compaction doesn't actually do that
+    /// TODO: that's wishful thinking, reconstruction doesn't actually do that
     /// currently.
     ///
     /// The caller specifies how much history is needed with the 3 arguments:

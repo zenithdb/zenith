@@ -95,6 +95,9 @@ impl From<&DeltaLayer> for Summary {
 // Flag indicating that this version initialize the page
 const WILL_INIT: u64 = 1;
 
+// Flag indicating page image
+const IS_IMAGE: u64 = 2;
+
 ///
 /// Struct representing reference to BLOB in layers. Reference contains BLOB
 /// offset, and for WAL records it also contains `will_init` flag. The flag
@@ -109,14 +112,21 @@ impl BlobRef {
         (self.0 & WILL_INIT) != 0
     }
 
-    pub fn pos(&self) -> u64 {
-        self.0 >> 1
+    pub fn is_image(&self) -> bool {
+        (self.0 & IS_IMAGE) != 0
     }
 
-    pub fn new(pos: u64, will_init: bool) -> BlobRef {
-        let mut blob_ref = pos << 1;
+    pub fn pos(&self) -> u64 {
+        self.0 >> 2
+    }
+
+    pub fn new(pos: u64, will_init: bool, is_image: bool) -> BlobRef {
+        let mut blob_ref = pos << 2;
         if will_init {
             blob_ref |= WILL_INIT;
+        }
+        if is_image {
+            blob_ref |= IS_IMAGE;
         }
         BlobRef(blob_ref)
     }
@@ -314,13 +324,13 @@ impl Layer for DeltaLayer {
         }
     }
 
-    fn key_iter<'a>(&'a self) -> Box<dyn Iterator<Item = (Key, Lsn, u64)> + 'a> {
+    fn key_iter<'a>(&'a self, skip_images: bool) -> Box<dyn Iterator<Item = (Key, Lsn, u64)> + 'a> {
         let inner = match self.load() {
             Ok(inner) => inner,
             Err(e) => panic!("Failed to load a delta layer: {e:?}"),
         };
 
-        match DeltaKeyIter::new(inner) {
+        match DeltaKeyIter::new(inner, skip_images) {
             Ok(iter) => Box::new(iter),
             Err(e) => panic!("Layer index is corrupted: {e:?}"),
         }
@@ -413,6 +423,30 @@ impl Layer for DeltaLayer {
         )?;
 
         Ok(())
+    }
+
+    fn contains(&self, key: &Key) -> Result<bool> {
+        // Open the file and lock the metadata in memory
+        let inner = self.load()?;
+
+        // Scan the page versions backwards, starting from `lsn`.
+        let file = inner.file.as_ref().unwrap();
+        let reader = DiskBtreeReader::<_, DELTA_KEY_SIZE>::new(
+            inner.index_start_blk,
+            inner.index_root_blk,
+            file,
+        );
+        let search_key = DeltaKey::from_key_lsn(key, Lsn(0));
+        let mut found = false;
+        reader.visit(
+            &search_key.0,
+            VisitDirection::Forwards,
+            |delta_key, _val| {
+                found = DeltaKey::extract_key_from_buf(delta_key) == *key;
+                false
+            },
+        )?;
+        Ok(found)
     }
 }
 
@@ -671,7 +705,13 @@ impl DeltaLayerWriter {
     /// The values must be appended in key, lsn order.
     ///
     pub fn put_value(&mut self, key: Key, lsn: Lsn, val: Value) -> Result<()> {
-        self.put_value_bytes(key, lsn, &Value::ser(&val)?, val.will_init())
+        self.put_value_bytes(
+            key,
+            lsn,
+            &Value::ser(&val)?,
+            val.will_init(),
+            val.is_image(),
+        )
     }
 
     pub fn put_value_bytes(
@@ -680,12 +720,12 @@ impl DeltaLayerWriter {
         lsn: Lsn,
         val: &[u8],
         will_init: bool,
+        is_image: bool,
     ) -> Result<()> {
         assert!(self.lsn_range.start <= lsn);
 
         let off = self.blob_writer.write_blob(val)?;
-
-        let blob_ref = BlobRef::new(off, will_init);
+        let blob_ref = BlobRef::new(off, will_init, is_image);
 
         let delta_key = DeltaKey::from_key_lsn(&key, lsn);
         self.tree.append(&delta_key.0, blob_ref.0)?;
@@ -874,7 +914,7 @@ impl Iterator for DeltaKeyIter {
 }
 
 impl<'a> DeltaKeyIter {
-    fn new(inner: RwLockReadGuard<'a, DeltaLayerInner>) -> Result<Self> {
+    fn new(inner: RwLockReadGuard<'a, DeltaLayerInner>, skip_images: bool) -> Result<Self> {
         let file = inner.file.as_ref().unwrap();
         let tree_reader = DiskBtreeReader::<_, DELTA_KEY_SIZE>::new(
             inner.index_start_blk,
@@ -883,29 +923,33 @@ impl<'a> DeltaKeyIter {
         );
 
         let mut all_keys: Vec<(DeltaKey, u64)> = Vec::new();
+        let mut last_pos = 0u64;
+        let mut last_delta: Option<DeltaKey> = None;
         tree_reader.visit(
             &[0u8; DELTA_KEY_SIZE],
             VisitDirection::Forwards,
             |key, value| {
-                let delta_key = DeltaKey::from_slice(key);
-                let pos = BlobRef(value).pos();
-                if let Some(last) = all_keys.last_mut() {
-                    if last.0.key() == delta_key.key() {
-                        return true;
-                    } else {
-                        // subtract offset of new key BLOB and first blob of this key
-                        // to get total size if values associated with this key
-                        let first_pos = last.1;
-                        last.1 = pos - first_pos;
+                let blob_ref = BlobRef(value);
+                if !blob_ref.is_image() || !skip_images {
+                    let next_delta = DeltaKey::from_slice(key);
+                    let pos = blob_ref.pos();
+                    if let Some(prev_delta) = last_delta.take() {
+                        if prev_delta.key() == next_delta.key() {
+                            last_delta = Some(next_delta);
+                            return true;
+                        }
+                        all_keys.push((prev_delta, pos - last_pos));
                     }
+                    last_delta = Some(next_delta);
+                    last_pos = pos;
                 }
-                all_keys.push((delta_key, pos));
                 true
             },
         )?;
-        if let Some(last) = all_keys.last_mut() {
+        if let Some(prev_delta) = last_delta.take() {
             // Last key occupies all space till end of layer
-            last.1 = std::fs::metadata(&file.file.path)?.len() - last.1;
+            let file_size = std::fs::metadata(&file.file.path)?.len();
+            all_keys.push((prev_delta, file_size - last_pos));
         }
         let iter = DeltaKeyIter {
             all_keys,

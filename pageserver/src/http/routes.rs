@@ -825,7 +825,9 @@ async fn timeline_compact_handler(request: Request<Body>) -> Result<Response<Bod
         .get_timeline(timeline_id)
         .with_context(|| format!("No timeline {timeline_id} in repository for tenant {tenant_id}"))
         .map_err(ApiError::NotFound)?;
-    timeline.compact().map_err(ApiError::InternalServerError)?;
+    timeline
+        .reconstruct()
+        .map_err(ApiError::InternalServerError)?;
 
     json_response(StatusCode::OK, ())
 }
