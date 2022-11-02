@@ -5,6 +5,7 @@ pub mod import_datadir;
 pub mod keyspace;
 pub mod metrics;
 pub mod page_cache;
+pub mod page_image_cache;
 pub mod page_service;
 pub mod pgdatadir_mapping;
 pub mod profiling;

@@ -18,6 +18,7 @@ use pageserver_api::models::{
     PagestreamFeMessage, PagestreamGetPageRequest, PagestreamGetPageResponse,
     PagestreamNblocksRequest, PagestreamNblocksResponse,
 };
+
 use std::io;
 use std::net::TcpListener;
 use std::str;
@@ -40,6 +41,7 @@ use crate::basebackup;
 use crate::config::{PageServerConf, ProfilingConfig};
 use crate::import_datadir::import_wal_from_tar;
 use crate::metrics::{LIVE_CONNECTIONS_COUNT, SMGR_QUERY_TIME};
+use crate::page_image_cache;
 use crate::profiling::profpoint_start;
 use crate::task_mgr;
 use crate::task_mgr::TaskKind;
@@ -580,8 +582,12 @@ impl PageServerHandler {
         // current profiling is based on a thread-local variable, so it doesn't work
         // across awaits
         let _profiling_guard = profpoint_start(self.conf, ProfilingConfig::PageRequests);
-        let page = timeline.get_rel_page_at_lsn(req.rel, req.blkno, lsn, req.latest)?;
 
+        let page = if req.latest {
+            page_image_cache::lookup(timeline, req.rel, req.blkno, lsn)
+        } else {
+            timeline.get_rel_page_at_lsn(req.rel, req.blkno, lsn, false)
+        }?;
         Ok(PagestreamBeMessage::GetPage(PagestreamGetPageResponse {
             page,
         }))

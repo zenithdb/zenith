@@ -34,6 +34,7 @@ use crate::tenant::{
 use crate::config::{PageServerConf, METADATA_FILE_NAME};
 use crate::keyspace::{KeyPartitioning, KeySpace};
 use crate::metrics::TimelineMetrics;
+use crate::page_image_cache;
 use crate::pgdatadir_mapping::BlockNumber;
 use crate::pgdatadir_mapping::LsnForTimestamp;
 use crate::pgdatadir_mapping::{is_rel_fsm_block_key, is_rel_vm_block_key};
@@ -2324,6 +2325,7 @@ impl<'a> TimelineWriter<'a> {
     /// This will implicitly extend the relation, if the page is beyond the
     /// current end-of-file.
     pub fn put(&self, key: Key, lsn: Lsn, value: &Value) -> anyhow::Result<()> {
+        page_image_cache::remove(key, self.tenant_id, self.timeline_id);
         self.tl.put_value(key, lsn, value)
     }
 

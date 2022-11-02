@@ -108,10 +108,10 @@ enum CacheKey {
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
-struct MaterializedPageHashKey {
-    tenant_id: TenantId,
-    timeline_id: TimelineId,
-    key: Key,
+pub struct MaterializedPageHashKey {
+    pub tenant_id: TenantId,
+    pub timeline_id: TimelineId,
+    pub key: Key,
 }
 
 #[derive(Clone)]
