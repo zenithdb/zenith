@@ -13,7 +13,6 @@ def test_pageserver_recovery(neon_env_builder: NeonEnvBuilder):
     neon_env_builder.pageserver_config_override = "tenant_config={checkpoint_distance = 1048576}"
 
     env = neon_env_builder.init()
-    env.pageserver.is_testing_enabled_or_skip()
 
     neon_env_builder.start()
 

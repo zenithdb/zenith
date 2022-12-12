@@ -7,12 +7,14 @@ use remote_storage::GenericRemoteStorage;
 use tracing::*;
 
 use super::models::{
-    LocalTimelineInfo, RemoteTimelineInfo, StatusResponse, TenantConfigRequest,
-    TenantCreateRequest, TenantCreateResponse, TenantInfo, TimelineCreateRequest, TimelineInfo,
+    ConfigureFailpointsRequest, LocalTimelineInfo, RemoteTimelineInfo, StatusResponse,
+    TenantConfigRequest, TenantCreateRequest, TenantCreateResponse, TenantInfo,
+    TimelineCreateRequest, TimelineGcRequest, TimelineInfo,
 };
 use crate::pgdatadir_mapping::LsnForTimestamp;
 use crate::tenant::Timeline;
 use crate::tenant_config::TenantConfOpt;
+use crate::CheckpointConfig;
 use crate::{config::PageServerConf, tenant_mgr};
 use utils::{
     auth::JwtAuth,
@@ -26,12 +28,6 @@ use utils::{
     id::{TenantId, TimelineId},
     lsn::Lsn,
 };
-
-// Imports only used for testing APIs
-#[cfg(feature = "testing")]
-use super::models::{ConfigureFailpointsRequest, TimelineGcRequest};
-#[cfg(feature = "testing")]
-use crate::CheckpointConfig;
 
 struct State {
     conf: &'static PageServerConf,
@@ -695,7 +691,6 @@ async fn tenant_config_handler(mut request: Request<Body>) -> Result<Response<Bo
     json_response(StatusCode::OK, ())
 }
 
-#[cfg(feature = "testing")]
 async fn failpoints_handler(mut request: Request<Body>) -> Result<Response<Body>, ApiError> {
     if !fail::has_failpoints() {
         return Err(ApiError::BadRequest(anyhow!(
@@ -729,7 +724,6 @@ async fn failpoints_handler(mut request: Request<Body>) -> Result<Response<Body>
 }
 
 // Run GC immediately on given timeline.
-#[cfg(feature = "testing")]
 async fn timeline_gc_handler(mut request: Request<Body>) -> Result<Response<Body>, ApiError> {
     let tenant_id: TenantId = parse_request_param(&request, "tenant_id")?;
     let timeline_id: TimelineId = parse_request_param(&request, "timeline_id")?;
@@ -748,7 +742,6 @@ async fn timeline_gc_handler(mut request: Request<Body>) -> Result<Response<Body
 }
 
 // Run compaction immediately on given timeline.
-#[cfg(feature = "testing")]
 async fn timeline_compact_handler(request: Request<Body>) -> Result<Response<Body>, ApiError> {
     let tenant_id: TenantId = parse_request_param(&request, "tenant_id")?;
     let timeline_id: TimelineId = parse_request_param(&request, "timeline_id")?;
@@ -769,7 +762,6 @@ async fn timeline_compact_handler(request: Request<Body>) -> Result<Response<Bod
 }
 
 // Run checkpoint immediately on given timeline.
-#[cfg(feature = "testing")]
 async fn timeline_checkpoint_handler(request: Request<Body>) -> Result<Response<Body>, ApiError> {
     let tenant_id: TenantId = parse_request_param(&request, "tenant_id")?;
     let timeline_id: TimelineId = parse_request_param(&request, "timeline_id")?;
@@ -814,22 +806,26 @@ pub fn make_router(
         }))
     }
 
+    // A wrapper around a handler function that returns an error if the server
+    // was not configured with testing_mode enabled. This is used to gate API
+    // functions that should only be used in tests, never in production.
     macro_rules! testing_api {
         ($handler_desc:literal, $handler:path $(,)?) => {{
-            #[cfg(not(feature = "testing"))]
-            async fn cfg_disabled(_req: Request<Body>) -> Result<Response<Body>, ApiError> {
-                Err(ApiError::BadRequest(anyhow!(concat!(
-                    "Cannot ",
-                    $handler_desc,
-                    " because pageserver was compiled without testing APIs",
-                ))))
+            use futures::FutureExt;
+            |req: Request<Body>| {
+                if conf.testing_mode {
+                    $handler(req).left_future()
+                } else {
+                    async {
+                        Err(ApiError::BadRequest(anyhow!(concat!(
+                            "Cannot ",
+                            $handler_desc,
+                            " because pageserver was configured without testing APIs",
+                        ))))
+                    }
+                    .right_future()
+                }
             }
-
-            #[cfg(feature = "testing")]
-            let handler = $handler;
-            #[cfg(not(feature = "testing"))]
-            let handler = cfg_disabled;
-            handler
         }};
     }
 

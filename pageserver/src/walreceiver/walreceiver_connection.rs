@@ -9,7 +9,6 @@ use std::{
 use anyhow::{bail, ensure, Context};
 use bytes::BytesMut;
 use chrono::{NaiveDateTime, Utc};
-use fail::fail_point;
 use futures::StreamExt;
 use postgres::{SimpleQueryMessage, SimpleQueryRow};
 use postgres_ffi::v14::xlog_utils::normalize_lsn;
@@ -20,6 +19,7 @@ use tokio::{pin, select, sync::watch, time};
 use tokio_postgres::{replication::ReplicationStream, Client};
 use tracing::{debug, error, info, trace, warn};
 
+use crate::fail_point;
 use crate::{metrics::LIVE_CONNECTIONS_COUNT, walreceiver::TaskStateUpdate};
 use crate::{
     task_mgr,

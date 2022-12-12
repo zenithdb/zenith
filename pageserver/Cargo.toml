@@ -5,10 +5,6 @@ edition = "2021"
 
 [features]
 default = []
-# Enables test-only APIs, incuding failpoints. In particular, enables the `fail_point!` macro,
-# which adds some runtime cost to run tests on outage conditions
-testing = ["fail/failpoints"]
-
 profiling = ["pprof"]
 
 [dependencies]
@@ -24,7 +20,7 @@ close_fds = "0.3.2"
 const_format = "0.2.21"
 crc32c = "0.6.0"
 crossbeam-utils = "0.8.5"
-fail = "0.5.0"
+fail = { version = "0.5", default-features = false, features = ["failpoints"] }
 futures = "0.3.13"
 git-version = "0.3.5"
 hex = "0.4.3"

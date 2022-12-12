@@ -53,6 +53,8 @@ pub mod defaults {
     pub const DEFAULT_CONCURRENT_TENANT_SIZE_LOGICAL_SIZE_QUERIES: usize =
         super::ConfigurableSemaphore::DEFAULT_INITIAL.get();
 
+    pub const DEFAULT_TESTING_MODE: bool = false;
+
     ///
     /// Default built-in configuration file.
     ///
@@ -74,6 +76,8 @@ pub mod defaults {
 #log_format = '{DEFAULT_LOG_FORMAT}'
 
 #concurrent_tenant_size_logical_size_queries = '{DEFAULT_CONCURRENT_TENANT_SIZE_LOGICAL_SIZE_QUERIES}'
+
+testing_mode = false
 
 # [tenant_config]
 #checkpoint_distance = {DEFAULT_CHECKPOINT_DISTANCE} # in bytes
@@ -143,6 +147,9 @@ pub struct PageServerConf {
 
     /// Number of concurrent [`Tenant::gather_size_inputs`] allowed.
     pub concurrent_tenant_size_logical_size_queries: ConfigurableSemaphore,
+
+    /// Enables failpoint support and extra mgmt APIs useful for testing.
+    pub testing_mode: bool,
 }
 
 /// We do not want to store this in a PageServerConf because the latter may be logged
@@ -222,6 +229,8 @@ struct PageServerConfigBuilder {
     log_format: BuilderValue<LogFormat>,
 
     concurrent_tenant_size_logical_size_queries: BuilderValue<ConfigurableSemaphore>,
+
+    testing_mode: BuilderValue<bool>,
 }
 
 impl Default for PageServerConfigBuilder {
@@ -252,6 +261,8 @@ impl Default for PageServerConfigBuilder {
             log_format: Set(LogFormat::from_str(DEFAULT_LOG_FORMAT).unwrap()),
 
             concurrent_tenant_size_logical_size_queries: Set(ConfigurableSemaphore::default()),
+
+            testing_mode: Set(DEFAULT_TESTING_MODE),
         }
     }
 }
@@ -332,6 +343,10 @@ impl PageServerConfigBuilder {
         self.concurrent_tenant_size_logical_size_queries = BuilderValue::Set(u);
     }
 
+    pub fn testing_mode(&mut self, testing_mode: bool) {
+        self.testing_mode = BuilderValue::Set(testing_mode);
+    }
+
     pub fn build(self) -> anyhow::Result<PageServerConf> {
         Ok(PageServerConf {
             listen_pg_addr: self
@@ -380,6 +395,7 @@ impl PageServerConfigBuilder {
                 .ok_or(anyhow!(
                     "missing concurrent_tenant_size_logical_size_queries"
                 ))?,
+            testing_mode: self.testing_mode.ok_or(anyhow!("missing testing_mode"))?,
         })
     }
 }
@@ -560,6 +576,7 @@ impl PageServerConf {
                     let permits = NonZeroUsize::new(permits).context("initial semaphore permits out of range: 0, use other configuration to disable a feature")?;
                     ConfigurableSemaphore::new(permits)
                 }),
+                "testing_mode" => builder.testing_mode(parse_toml_bool(key, item)?),
                 _ => bail!("unrecognized pageserver option '{key}'"),
             }
         }
@@ -645,9 +662,7 @@ impl PageServerConf {
         }
         if let Some(trace_read_requests) = item.get("trace_read_requests") {
             t_conf.trace_read_requests =
-                Some(trace_read_requests.as_bool().with_context(|| {
-                    "configure option trace_read_requests is not a bool".to_string()
-                })?);
+                Some(parse_toml_bool("trace_read_requests", trace_read_requests)?);
         }
 
         Ok(t_conf)
@@ -681,6 +696,7 @@ impl PageServerConf {
             broker_etcd_prefix: etcd_broker::DEFAULT_NEON_BROKER_ETCD_PREFIX.to_string(),
             log_format: LogFormat::from_str(defaults::DEFAULT_LOG_FORMAT).unwrap(),
             concurrent_tenant_size_logical_size_queries: ConfigurableSemaphore::default(),
+            testing_mode: true,
         }
     }
 }
@@ -692,6 +708,11 @@ fn parse_toml_string(name: &str, item: &Item) -> Result<String> {
         .as_str()
         .with_context(|| format!("configure option {name} is not a string"))?;
     Ok(s.to_string())
+}
+
+fn parse_toml_bool(name: &str, item: &Item) -> Result<bool> {
+    item.as_bool()
+        .with_context(|| format!("configure option {name} is not a boolean"))
 }
 
 fn parse_toml_u64(name: &str, item: &Item) -> Result<u64> {
@@ -870,6 +891,7 @@ log_format = 'json'
                 broker_etcd_prefix: etcd_broker::DEFAULT_NEON_BROKER_ETCD_PREFIX.to_string(),
                 log_format: LogFormat::from_str(defaults::DEFAULT_LOG_FORMAT).unwrap(),
                 concurrent_tenant_size_logical_size_queries: ConfigurableSemaphore::default(),
+                testing_mode: defaults::DEFAULT_TESTING_MODE,
             },
             "Correct defaults should be used when no config values are provided"
         );
@@ -916,6 +938,7 @@ log_format = 'json'
                 broker_etcd_prefix: etcd_broker::DEFAULT_NEON_BROKER_ETCD_PREFIX.to_string(),
                 log_format: LogFormat::Json,
                 concurrent_tenant_size_logical_size_queries: ConfigurableSemaphore::default(),
+                testing_mode: defaults::DEFAULT_TESTING_MODE,
             },
             "Should be able to parse all basic config values correctly"
         );

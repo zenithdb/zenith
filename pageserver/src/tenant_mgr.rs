@@ -12,16 +12,19 @@ use once_cell::sync::Lazy;
 use tokio::sync::RwLock;
 use tracing::*;
 
+use pageserver_api::models::TimelineGcRequest;
 use remote_storage::GenericRemoteStorage;
 use utils::crashsafe;
 
 use crate::config::PageServerConf;
+use crate::repository::GcResult;
 use crate::task_mgr::{self, TaskKind};
 use crate::tenant::{Tenant, TenantState};
 use crate::tenant_config::TenantConfOpt;
 use crate::IGNORED_TENANT_FILE_NAME;
 
 use utils::fs_ext::PathExt;
+use utils::http::error::ApiError;
 use utils::id::{TenantId, TimelineId};
 
 static TENANTS: Lazy<RwLock<HashMap<TenantId, Arc<Tenant>>>> =
@@ -460,13 +463,6 @@ where
     }
 }
 
-#[cfg(feature = "testing")]
-use {
-    crate::repository::GcResult, pageserver_api::models::TimelineGcRequest,
-    utils::http::error::ApiError,
-};
-
-#[cfg(feature = "testing")]
 pub async fn immediate_gc(
     tenant_id: TenantId,
     timeline_id: TimelineId,
@@ -494,7 +490,7 @@ pub async fn immediate_gc(
         &format!("timeline_gc_handler garbage collection run for tenant {tenant_id} timeline {timeline_id}"),
         false,
         async move {
-            fail::fail_point!("immediate_gc_task_pre");
+            crate::fail_point!("immediate_gc_task_pre");
             let result = tenant
                 .gc_iteration(Some(timeline_id), gc_horizon, pitr, true)
                 .instrument(info_span!("manual_gc", tenant = %tenant_id, timeline = %timeline_id))

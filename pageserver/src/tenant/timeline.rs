@@ -2,7 +2,6 @@
 
 use anyhow::{anyhow, bail, ensure, Context};
 use bytes::Bytes;
-use fail::fail_point;
 use itertools::Itertools;
 use once_cell::sync::OnceCell;
 use pageserver_api::models::TimelineState;
@@ -19,6 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::fail_point;
 use crate::storage_sync::index::IndexPart;
 use crate::storage_sync::RemoteTimelineClient;
 use crate::tenant::{

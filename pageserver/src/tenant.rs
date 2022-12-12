@@ -46,6 +46,7 @@ use std::time::{Duration, Instant};
 
 use self::metadata::TimelineMetadata;
 use crate::config::PageServerConf;
+use crate::fail_point;
 use crate::import_datadir;
 use crate::is_uninit_mark;
 use crate::metrics::{remove_tenant_metrics, STORAGE_TIME};
@@ -255,7 +256,7 @@ impl UninitializedTimeline<'_> {
         // Thus spawning flush loop manually and skipping flush_loop setup in initialize_with_lock
         raw_timeline.maybe_spawn_flush_loop();
 
-        fail::fail_point!("before-checkpoint-new-timeline", |_| {
+        fail_point!("before-checkpoint-new-timeline", |_| {
             bail!("failpoint before-checkpoint-new-timeline");
         });
 
@@ -2098,7 +2099,7 @@ impl Tenant {
         // Thus spawn flush loop manually and skip flush_loop setup in initialize_with_lock
         unfinished_timeline.maybe_spawn_flush_loop();
 
-        fail::fail_point!("before-checkpoint-new-timeline", |_| {
+        fail_point!("before-checkpoint-new-timeline", |_| {
             anyhow::bail!("failpoint before-checkpoint-new-timeline");
         });
 
@@ -2192,7 +2193,7 @@ impl Tenant {
             .context("Failed to create timeline data structure")?;
         crashsafe::create_dir_all(timeline_path).context("Failed to create timeline directory")?;
 
-        fail::fail_point!("after-timeline-uninit-mark-creation", |_| {
+        fail_point!("after-timeline-uninit-mark-creation", |_| {
             anyhow::bail!("failpoint after-timeline-uninit-mark-creation");
         });
 
@@ -2381,7 +2382,7 @@ fn try_create_target_tenant_dir(
             temporary_tenant_timelines_dir.display()
         )
     })?;
-    fail::fail_point!("tenant-creation-before-tmp-rename", |_| {
+    fail_point!("tenant-creation-before-tmp-rename", |_| {
         anyhow::bail!("failpoint tenant-creation-before-tmp-rename");
     });
 

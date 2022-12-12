@@ -148,6 +148,28 @@ pub fn is_uninit_mark(path: &Path) -> bool {
     }
 }
 
+///
+/// Wrapper around fail::fail_point! macro that returns quickly if testing_mode was
+/// disabled in the pageserver config. Also enabled in unit tests.
+///
+/// fail::fail_point! is fairly quick, but it does acquire an RwLock and perform a HashMap
+/// lookup. This macro is hopefully cheap enough that we don't need to worry about the
+/// overhead even in production, and even if the macro is used in hot spots. (This check
+/// compiles to two cmp instructions; get_unchecked() would shrink it to one.)
+///
+#[macro_export]
+macro_rules! fail_point {
+    ($($name:expr),*) => {{
+        if cfg!(test) || *$crate::TESTING_MODE.get().expect("testing_mode not initialized") {
+            fail::fail_point!($($name), *)
+        }
+    }};
+}
+
+/// This is set early in the pageserver startup, from the "testing_mode" setting in the
+/// config file.
+pub static TESTING_MODE: once_cell::sync::OnceCell<bool> = once_cell::sync::OnceCell::new();
+
 #[cfg(test)]
 mod backoff_defaults_tests {
     use super::*;

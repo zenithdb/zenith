@@ -12,7 +12,6 @@
 //!
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use bytes::{BufMut, BytesMut};
-use fail::fail_point;
 use itertools::Itertools;
 use std::fmt::Write as FmtWrite;
 use std::io;
@@ -22,6 +21,7 @@ use std::time::SystemTime;
 use tar::{Builder, EntryType, Header};
 use tracing::*;
 
+use crate::fail_point;
 use crate::tenant::Timeline;
 use pageserver_api::reltag::{RelTag, SlruKind};
 

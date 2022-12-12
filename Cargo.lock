@@ -4892,7 +4892,6 @@ dependencies = [
  "clap 4.0.15",
  "crossbeam-utils",
  "either",
- "fail",
  "futures-channel",
  "futures-task",
  "futures-util",

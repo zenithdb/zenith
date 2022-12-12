@@ -1,12 +1,12 @@
 //! Helper functions to upload files to remote storage with a RemoteStorage
 
 use anyhow::{bail, Context};
-use fail::fail_point;
 use std::path::Path;
 use tokio::fs;
 
 use super::index::IndexPart;
 use crate::config::PageServerConf;
+use crate::fail_point;
 use crate::storage_sync::LayerFileMetadata;
 use remote_storage::GenericRemoteStorage;
 use utils::id::{TenantId, TimelineId};

@@ -33,7 +33,7 @@ from _pytest.config import Config
 from _pytest.fixtures import FixtureRequest
 from fixtures.log_helper import log
 from fixtures.types import Lsn, TenantId, TimelineId
-from fixtures.utils import Fn, allure_attach_from_dir, etcd_path, get_self_dir, subprocess_capture
+from fixtures.utils import allure_attach_from_dir, etcd_path, get_self_dir, subprocess_capture
 
 # Type-related stuff
 from psycopg2.extensions import connection as PgConnection
@@ -587,6 +587,7 @@ class NeonEnvBuilder:
         auth_enabled: bool = False,
         rust_log_override: Optional[str] = None,
         default_branch_name: str = DEFAULT_BRANCH_NAME,
+        testing_mode: bool = True,
     ):
         self.repo_dir = repo_dir
         self.rust_log_override = rust_log_override
@@ -608,6 +609,7 @@ class NeonEnvBuilder:
         self.neon_binpath = neon_binpath
         self.pg_distrib_dir = pg_distrib_dir
         self.pg_version = pg_version
+        self.testing_mode = testing_mode
 
     def init(self) -> NeonEnv:
         # Cannot create more than one environment from one builder
@@ -858,6 +860,7 @@ class NeonEnv:
             http=self.port_distributor.get_port(),
         )
         pageserver_auth_type = "NeonJWT" if config.auth_enabled else "Trust"
+        pageserver_testing_mode = "true" if config.testing_mode else "false"
 
         toml += textwrap.dedent(
             f"""
@@ -866,6 +869,7 @@ class NeonEnv:
             listen_pg_addr = 'localhost:{pageserver_port.pg}'
             listen_http_addr = 'localhost:{pageserver_port.http}'
             auth_type = '{pageserver_auth_type}'
+            testing_mode = {pageserver_testing_mode}
         """
         )
 
@@ -978,6 +982,10 @@ def _shared_simple_env(
         pg_distrib_dir=pg_distrib_dir,
         pg_version=pg_version,
         run_id=run_id,
+        # Disable failpoint support. Failpoints could have unexpected consequences
+        # when the pageserver is shared by concurrent tests. Also, it might affect
+        # performance, and we use the shared simple env in performance tests.
+        testing_mode=False,
     ) as builder:
         env = builder.init_start()
 
@@ -1048,11 +1056,10 @@ class PageserverApiException(Exception):
 
 
 class PageserverHttpClient(requests.Session):
-    def __init__(self, port: int, is_testing_enabled_or_skip: Fn, auth_token: Optional[str] = None):
+    def __init__(self, port: int, auth_token: Optional[str] = None):
         super().__init__()
         self.port = port
         self.auth_token = auth_token
-        self.is_testing_enabled_or_skip = is_testing_enabled_or_skip
 
         if auth_token is not None:
             self.headers["Authorization"] = f"Bearer {auth_token}"
@@ -1071,8 +1078,6 @@ class PageserverHttpClient(requests.Session):
         self.get(f"http://localhost:{self.port}/v1/status").raise_for_status()
 
     def configure_failpoints(self, config_strings: Tuple[str, str] | List[Tuple[str, str]]):
-        self.is_testing_enabled_or_skip()
-
         if isinstance(config_strings, tuple):
             pairs = [config_strings]
         else:
@@ -1212,8 +1217,6 @@ class PageserverHttpClient(requests.Session):
     def timeline_gc(
         self, tenant_id: TenantId, timeline_id: TimelineId, gc_horizon: Optional[int]
     ) -> dict[str, Any]:
-        self.is_testing_enabled_or_skip()
-
         log.info(
             f"Requesting GC: tenant {tenant_id}, timeline {timeline_id}, gc_horizon {repr(gc_horizon)}"
         )
@@ -1229,8 +1232,6 @@ class PageserverHttpClient(requests.Session):
         return res_json
 
     def timeline_compact(self, tenant_id: TenantId, timeline_id: TimelineId):
-        self.is_testing_enabled_or_skip()
-
         log.info(f"Requesting compact: tenant {tenant_id}, timeline {timeline_id}")
         res = self.put(
             f"http://localhost:{self.port}/v1/tenant/{tenant_id}/timeline/{timeline_id}/compact"
@@ -1254,8 +1255,6 @@ class PageserverHttpClient(requests.Session):
         return res_json
 
     def timeline_checkpoint(self, tenant_id: TenantId, timeline_id: TimelineId):
-        self.is_testing_enabled_or_skip()
-
         log.info(f"Requesting checkpoint: tenant {tenant_id}, timeline {timeline_id}")
         res = self.put(
             f"http://localhost:{self.port}/v1/tenant/{tenant_id}/timeline/{timeline_id}/checkpoint"
@@ -1817,10 +1816,6 @@ class NeonPageserver(PgProtocol):
     ):
         self.stop(immediate=True)
 
-    def is_testing_enabled_or_skip(self):
-        if '"testing"' not in self.version:
-            pytest.skip("pageserver was built without 'testing' feature")
-
     def is_profiling_enabled_or_skip(self):
         if '"profiling"' not in self.version:
             pytest.skip("pageserver was built without 'profiling' feature")
@@ -1829,7 +1824,6 @@ class NeonPageserver(PgProtocol):
         return PageserverHttpClient(
             port=self.service_port.http,
             auth_token=auth_token,
-            is_testing_enabled_or_skip=self.is_testing_enabled_or_skip,
         )
 
     def assert_no_errors(self):

@@ -58,7 +58,6 @@ def new_pageserver_service(
     pageserver_client = PageserverHttpClient(
         port=http_port,
         auth_token=None,
-        is_testing_enabled_or_skip=lambda: True,  # TODO: check if testing really enabled
     )
     try:
         pageserver_process = start_in_background(
@@ -360,7 +359,6 @@ def test_tenant_relocation(
     new_pageserver_http = PageserverHttpClient(
         port=new_pageserver_http_port,
         auth_token=None,
-        is_testing_enabled_or_skip=env.pageserver.is_testing_enabled_or_skip,
     )
 
     with new_pageserver_service(

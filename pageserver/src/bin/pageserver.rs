@@ -35,10 +35,6 @@ project_git_version!(GIT_VERSION);
 const PID_FILE_NAME: &str = "pageserver.pid";
 
 const FEATURES: &[&str] = &[
-    #[cfg(feature = "testing")]
-    "testing",
-    #[cfg(feature = "fail/failpoints")]
-    "fail/failpoints",
     #[cfg(feature = "profiling")]
     "profiling",
 ];
@@ -178,6 +174,10 @@ fn initialize_config(
     let conf = PageServerConf::parse_and_validate(&toml, workdir)
         .context("Failed to parse pageserver configuration")?;
 
+    if pageserver::TESTING_MODE.set(conf.testing_mode).is_err() {
+        anyhow::bail!("testing_mode was already initialized");
+    }
+
     if update_config {
         info!("Writing pageserver config to '{}'", cfg_file_path.display());
 
@@ -206,16 +206,22 @@ fn start_pageserver(conf: &'static PageServerConf) -> anyhow::Result<()> {
 
     // If any failpoints were set from FAILPOINTS environment variable,
     // print them to the log for debugging purposes
-    let failpoints = fail::list();
-    if !failpoints.is_empty() {
-        info!(
-            "started with failpoints: {}",
-            failpoints
-                .iter()
-                .map(|(name, actions)| format!("{name}={actions}"))
-                .collect::<Vec<String>>()
-                .join(";")
-        )
+    if *pageserver::TESTING_MODE.get().unwrap() {
+        let failpoints = fail::list();
+        if !failpoints.is_empty() {
+            info!(
+                "started with testing mode enabled, failpoints: {}",
+                failpoints
+                    .iter()
+                    .map(|(name, actions)| format!("{name}={actions}"))
+                    .collect::<Vec<String>>()
+                    .join(";")
+            )
+        } else {
+            info!("started with testing mode enabled");
+        }
+    } else {
+        info!("started with testing mode disabled");
     }
 
     let lock_file_path = conf.workdir.join(PID_FILE_NAME);

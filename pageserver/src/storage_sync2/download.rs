@@ -97,7 +97,7 @@ pub async fn download_layer_file<'a>(
     })?;
     drop(destination_file);
 
-    fail::fail_point!("remote-storage-download-pre-rename", |_| {
+    crate::fail_point!("remote-storage-download-pre-rename", |_| {
         bail!("remote-storage-download-pre-rename failpoint triggered")
     });
 

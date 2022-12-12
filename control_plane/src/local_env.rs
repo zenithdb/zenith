@@ -156,6 +156,8 @@ pub struct PageServerConf {
 
     // jwt auth token used for communication with pageserver
     pub auth_token: String,
+
+    pub testing_mode: bool,
 }
 
 impl Default for PageServerConf {
@@ -166,6 +168,7 @@ impl Default for PageServerConf {
             listen_http_addr: String::new(),
             auth_type: AuthType::Trust,
             auth_token: String::new(),
+            testing_mode: false,
         }
     }
 }

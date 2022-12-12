@@ -11,6 +11,3 @@ opt-level = 3
 [profile.dev]
 # Turn on a small amount of optimization in Development mode.
 opt-level = 1
-
-[alias]
-build_testing = ["build", "--features", "testing"]

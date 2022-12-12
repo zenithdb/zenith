@@ -100,11 +100,11 @@ jobs:
         run: |
           if [[ $BUILD_TYPE == "debug" ]]; then
             cov_prefix="scripts/coverage --profraw-prefix=$GITHUB_JOB --dir=/tmp/coverage run"
-            CARGO_FEATURES="--features testing"
+            CARGO_FEATURES=""
             CARGO_FLAGS="--locked --timings $CARGO_FEATURES"
           elif [[ $BUILD_TYPE == "release" ]]; then
             cov_prefix=""
-            CARGO_FEATURES="--features testing,profiling"
+            CARGO_FEATURES="--features profiling"
             CARGO_FLAGS="--locked --timings --release $CARGO_FEATURES"
           fi
           echo "cov_prefix=${cov_prefix}" >> $GITHUB_ENV
@@ -539,9 +539,9 @@ jobs:
       # `neondatabase/neon` contains multiple binaries, all of them use the same input for the version into the same version formatting library.
       # Pick pageserver as currently the only binary with extra "version" features printed in the string to verify.
       # Regular pageserver version string looks like
-      #   Neon page server git-env:32d14403bd6ab4f4520a94cbfd81a6acef7a526c failpoints: true, features: []
+      #   Neon page server git-env:32d14403bd6ab4f4520a94cbfd81a6acef7a526c features: []
       # Bad versions might loop like:
-      #   Neon page server git-env:local failpoints: true, features: ["testing"]
+      #   Neon page server git-env:local features: [""]
       # Ensure that we don't have bad versions.
       - name: Verify image versions
         shell: bash # ensure no set -e for better error messages
@@ -552,11 +552,6 @@ jobs:
 
           if ! echo "$pageserver_version" | grep -qv 'git-env:local' ; then
             echo "Pageserver version should not be the default Dockerfile one"
-            exit 1
-          fi
-
-          if ! echo "$pageserver_version" | grep -qv '"testing"' ; then
-            echo "Pageserver version should have no testing feature enabled"
             exit 1
           fi
 

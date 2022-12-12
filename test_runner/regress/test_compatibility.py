@@ -327,7 +327,6 @@ def check_neon_works(
     auth_token = snapshot_config["pageserver"]["auth_token"]
     pageserver_http = PageserverHttpClient(
         port=pageserver_port,
-        is_testing_enabled_or_skip=lambda: True,  # TODO: check if testing really enabled
         auth_token=auth_token,
     )
 

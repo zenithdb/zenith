@@ -3,7 +3,7 @@
 First make a release build. The profiling flag is optional, used only for tests that
 generate flame graphs. The `-s` flag just silences a lot of output, and makes it
 easier to see if you have compile errors without scrolling up.
-`BUILD_TYPE=release CARGO_BUILD_FLAGS="--features=testing,profiling" make -s -j8`
+`BUILD_TYPE=release CARGO_BUILD_FLAGS="--features=profiling" make -s -j8`
 
 NOTE: the `profiling` flag only works on linux because we use linux-specific
 libc APIs like `libc::timer_t`.

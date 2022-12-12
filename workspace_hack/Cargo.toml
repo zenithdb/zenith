@@ -19,7 +19,6 @@ bytes = { version = "1", features = ["serde", "std"] }
 clap = { version = "4", features = ["color", "derive", "error-context", "help", "std", "string", "suggestions", "usage"] }
 crossbeam-utils = { version = "0.8", features = ["once_cell", "std"] }
 either = { version = "1", features = ["use_std"] }
-fail = { version = "0.5", default-features = false, features = ["failpoints"] }
 futures-channel = { version = "0.3", features = ["alloc", "futures-sink", "sink", "std"] }
 futures-task = { version = "0.3", default-features = false, features = ["alloc", "std"] }
 futures-util = { version = "0.3", features = ["alloc", "async-await", "async-await-macro", "channel", "futures-channel", "futures-io", "futures-macro", "futures-sink", "io", "memchr", "sink", "slab", "std"] }

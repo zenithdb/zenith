@@ -141,6 +141,9 @@ impl PageServerNode {
         init_config_overrides.push(&listen_http_addr_param);
         init_config_overrides.push(&listen_pg_addr_param);
         init_config_overrides.push(&broker_endpoints_param);
+        if self.env.pageserver.testing_mode {
+            init_config_overrides.push("testing_mode=true");
+        }
 
         if let Some(broker_etcd_prefix_param) = broker_etcd_prefix_param.as_deref() {
             init_config_overrides.push(broker_etcd_prefix_param);

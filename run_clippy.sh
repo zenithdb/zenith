@@ -13,7 +13,7 @@
 # avoid running regular linting script that checks every feature.
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # no extra features to test currently, add more here when needed
-    cargo clippy --locked --all --all-targets --features testing -- -A unknown_lints -D warnings
+    cargo clippy --locked --all --all-targets -- -A unknown_lints -D warnings
 else
     # * `-A unknown_lints` – do not warn about unknown lint suppressions
     #                        that people with newer toolchains might use
