@@ -150,18 +150,27 @@ fn start_safekeeper(mut conf: SafeKeeperConf, given_id: Option<NodeId>, init: bo
     // we need to release the lock file only when the current process is gone
     std::mem::forget(lock_file);
 
+    info!("Created PID file with PID {}", Pid::this().to_string());
+
     // Set or read our ID.
     set_id(&mut conf, given_id)?;
     if init {
         return Ok(());
     }
 
+    info!(
+        "Starting safekeeper http handler on {}",
+        conf.listen_http_addr
+    );
     let http_listener = tcp_listener::bind(conf.listen_http_addr.clone()).map_err(|e| {
         error!("failed to bind to address {}: {}", conf.listen_http_addr, e);
         e
     })?;
 
-    info!("Starting safekeeper on {}", conf.listen_pg_addr);
+    info!(
+        "Starting safekeeper pg protocol handler on {}",
+        conf.listen_pg_addr
+    );
     let pg_listener = tcp_listener::bind(conf.listen_pg_addr.clone()).map_err(|e| {
         error!("failed to bind to address {}: {}", conf.listen_pg_addr, e);
         e

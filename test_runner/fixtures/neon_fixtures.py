@@ -1590,7 +1590,17 @@ class NeonCli(AbstractNeonCli):
             s3_env_vars = self.env.remote_storage.access_env_vars()
             extra_env_vars = (extra_env_vars or {}) | s3_env_vars
 
-        return self.raw_cli(start_args, extra_env_vars=extra_env_vars)
+        try:
+            return self.raw_cli(start_args, extra_env_vars=extra_env_vars)
+        except Exception:
+            # A common reason for startup failure is that the port is already in use. We
+            # coordinate port assignment with PortDistributor, but it's a common mistake
+            # when writing a new test to use a hardcoded port, or assign the port without
+            # using the distributor, causing races where two tests runnign concurrently
+            # sometimes choose the same port. To help debug such cases, get a listing
+            # of all inuse ports and the processes holding them.
+            list_inuse_ports()
+            raise
 
     def pageserver_stop(self, immediate=False) -> "subprocess.CompletedProcess[str]":
         cmd = ["pageserver", "stop"]
@@ -1605,7 +1615,11 @@ class NeonCli(AbstractNeonCli):
         if self.env.remote_storage is not None and isinstance(self.env.remote_storage, S3Storage):
             s3_env_vars = self.env.remote_storage.access_env_vars()
 
-        return self.raw_cli(["safekeeper", "start", str(id)], extra_env_vars=s3_env_vars)
+        try:
+            return self.raw_cli(["safekeeper", "start", str(id)], extra_env_vars=s3_env_vars)
+        except Exception:
+            list_inuse_ports()  # see comment in  pageserver_start
+            raise
 
     def safekeeper_stop(
         self, id: Optional[int] = None, immediate=False
@@ -3001,3 +3015,24 @@ def fork_at_current_lsn(
     """
     current_lsn = pg.safe_psql("SELECT pg_current_wal_lsn()")[0][0]
     return env.neon_cli.create_branch(new_branch_name, ancestor_branch_name, tenant_id, current_lsn)
+
+
+def list_inuse_ports():
+    """
+    Print "netstat -tnlap" output to the test log. This is useful for debugging
+    port collisions in tests.
+    """
+
+    # This won't work on all platforms, because not all platforms have 'netstat',
+    # and the CLI arguments vary across platforms, too. macOS's netstat doesn't have
+    # the -p option, for example. So this is just best-effort.
+    res = subprocess.run(
+        ["netstat", "-tnlap"],
+        check=False,
+        universal_newlines=True,
+        capture_output=True,
+    )
+    if res.returncode:
+        log.info(f"netstat -tnlap failed with return code {res.returncode}")
+    log.info(f"netstat -tnlap stdout: \n{res.stdout}\n")
+    log.info(f"netstat -tnlap stderr: \n{res.stderr}\n")

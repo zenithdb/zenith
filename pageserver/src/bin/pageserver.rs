@@ -227,6 +227,8 @@ fn start_pageserver(conf: &'static PageServerConf) -> anyhow::Result<()> {
     // we need to release the lock file only when the current process is gone
     std::mem::forget(lock_file);
 
+    info!("Created PID file with PID {}", Pid::this().to_string());
+
     // TODO: Check that it looks like a valid repository before going further
 
     // bind sockets before daemonizing so we report errors early and do not return until we are listening
