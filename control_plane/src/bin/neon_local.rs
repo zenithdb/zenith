@@ -12,7 +12,7 @@ use control_plane::local_env::LocalEnv;
 use control_plane::pageserver::PageServerNode;
 use control_plane::safekeeper::SafekeeperNode;
 use control_plane::{broker, local_env};
-use pageserver_api::models::TimelineInfo;
+use pageserver_api::models::{TimelineAncestor, TimelineInfo};
 use pageserver_api::{
     DEFAULT_HTTP_LISTEN_ADDR as DEFAULT_PAGESERVER_HTTP_ADDR,
     DEFAULT_PG_LISTEN_ADDR as DEFAULT_PAGESERVER_PG_ADDR,
@@ -373,7 +373,6 @@ fn handle_tenant(tenant_match: &ArgMatches, env: &mut local_env::LocalEnv) -> an
                 new_tenant_id,
                 new_timeline_id,
                 None,
-                None,
                 Some(pg_version),
             )?;
             let new_timeline_id = timeline_info.timeline_id;
@@ -428,7 +427,7 @@ fn handle_timeline(timeline_match: &ArgMatches, env: &mut local_env::LocalEnv) -
                 .context("Failed to parse postgres version from the argument string")?;
 
             let timeline_info =
-                pageserver.timeline_create(tenant_id, None, None, None, Some(pg_version))?;
+                pageserver.timeline_create(tenant_id, None, None, Some(pg_version))?;
             let new_timeline_id = timeline_info.timeline_id;
 
             let last_record_lsn = timeline_info.last_record_lsn;
@@ -495,16 +494,30 @@ fn handle_timeline(timeline_match: &ArgMatches, env: &mut local_env::LocalEnv) -
                     anyhow!("Found no timeline id for branch name '{ancestor_branch_name}'")
                 })?;
 
-            let start_lsn = branch_match
+            let start_lsn = match branch_match
                 .get_one::<String>("ancestor-start-lsn")
                 .map(|lsn_str| Lsn::from_str(lsn_str))
                 .transpose()
-                .context("Failed to parse ancestor start Lsn from the request")?;
+                .context("Failed to parse ancestor start Lsn from the request")?
+            {
+                Some(x) => x,
+                None => {
+                    // Although race condition is possible here, we do not warn about it for clearer output.
+                    // The exact LSN of the new branch will be printed below. Still, may not help the user:
+                    // https://github.com/neondatabase/neon/issues/2063
+                    pageserver
+                        .timeline_info(tenant_id, ancestor_timeline_id)
+                        .unwrap()
+                        .last_record_lsn
+                }
+            };
             let timeline_info = pageserver.timeline_create(
                 tenant_id,
                 None,
-                start_lsn,
-                Some(ancestor_timeline_id),
+                Some(TimelineAncestor {
+                    timeline_id: ancestor_timeline_id,
+                    start_lsn,
+                }),
                 None,
             )?;
             let new_timeline_id = timeline_info.timeline_id;

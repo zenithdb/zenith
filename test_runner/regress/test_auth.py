@@ -2,7 +2,7 @@ from contextlib import closing
 
 import pytest
 from fixtures.neon_fixtures import NeonEnvBuilder, PageserverApiException, PgProtocol
-from fixtures.types import TenantId
+from fixtures.types import Lsn, TenantId
 
 
 def test_pageserver_auth(neon_env_builder: NeonEnvBuilder):
@@ -29,12 +29,21 @@ def test_pageserver_auth(neon_env_builder: NeonEnvBuilder):
     )
 
     # tenant can create branches
+    branching_lsn = Lsn(
+        tenant_http_client.timeline_detail(
+            tenant_id=env.initial_tenant, timeline_id=new_timeline_id
+        )["last_record_lsn"]
+    )
     tenant_http_client.timeline_create(
-        tenant_id=env.initial_tenant, ancestor_timeline_id=new_timeline_id
+        tenant_id=env.initial_tenant,
+        ancestor_timeline_id=new_timeline_id,
+        ancestor_start_lsn=branching_lsn,
     )
     # console can create branches for tenant
     pageserver_http_client.timeline_create(
-        tenant_id=env.initial_tenant, ancestor_timeline_id=new_timeline_id
+        tenant_id=env.initial_tenant,
+        ancestor_timeline_id=new_timeline_id,
+        ancestor_start_lsn=branching_lsn,
     )
 
     # fail to create branch using token with different tenant_id
@@ -42,7 +51,9 @@ def test_pageserver_auth(neon_env_builder: NeonEnvBuilder):
         PageserverApiException, match="Forbidden: Tenant id mismatch. Permission denied"
     ):
         invalid_tenant_http_client.timeline_create(
-            tenant_id=env.initial_tenant, ancestor_timeline_id=new_timeline_id
+            tenant_id=env.initial_tenant,
+            ancestor_timeline_id=new_timeline_id,
+            ancestor_start_lsn=branching_lsn,
         )
 
     # create tenant using management token

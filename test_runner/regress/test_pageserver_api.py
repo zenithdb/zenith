@@ -2,10 +2,13 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+import pytest
 from fixtures.neon_fixtures import (
     DEFAULT_BRANCH_NAME,
     NeonEnv,
     NeonEnvBuilder,
+    NeonPageserver,
+    PageserverApiException,
     PageserverHttpClient,
 )
 from fixtures.types import Lsn, TenantId, TimelineId
@@ -61,7 +64,9 @@ def test_pageserver_init_node_id(
     assert "has node id already, it cannot be overridden" in bad_update.stderr
 
 
-def check_client(client: PageserverHttpClient, initial_tenant: TenantId):
+def check_client(
+    pageserver: NeonPageserver, client: PageserverHttpClient, initial_tenant: TenantId
+):
     client.check_status()
 
     # check initial tenant is there
@@ -83,7 +88,8 @@ def check_client(client: PageserverHttpClient, initial_tenant: TenantId):
     assert len(timelines) > 0
 
     # check it is there
-    assert timeline_id in {TimelineId(b["timeline_id"]) for b in client.timeline_list(tenant_id)}
+    assert timeline_id in {TimelineId(b["timeline_id"]) for b in timelines}
+    last_lsn = None
     for timeline in timelines:
         timeline_id = TimelineId(timeline["timeline_id"])
         timeline_details = client.timeline_detail(
@@ -94,6 +100,42 @@ def check_client(client: PageserverHttpClient, initial_tenant: TenantId):
 
         assert TenantId(timeline_details["tenant_id"]) == tenant_id
         assert TimelineId(timeline_details["timeline_id"]) == timeline_id
+        last_lsn = Lsn(timeline["last_record_lsn"])
+    assert last_lsn
+
+    # Check it's impossible to create a timeline with only one of ancestor's properties.
+    new_timeline_id = TimelineId.generate()
+
+    message = "ancestor_start_lsn is not specified, this is prone to race conditions"
+    with pytest.raises(PageserverApiException, match=message):
+        pageserver.allowed_errors.append(f".*{message}.*")
+        client.timeline_create(
+            tenant_id=tenant_id, new_timeline_id=new_timeline_id, ancestor_timeline_id=timeline_id
+        )
+    assert new_timeline_id not in {
+        TimelineId(b["timeline_id"]) for b in client.timeline_list(tenant_id)
+    }
+
+    message = "ancestor_start_lsn is specified without ancestor_timeline_id"
+    with pytest.raises(PageserverApiException, match=message):
+        pageserver.allowed_errors.append(f".*{message}.*")
+        client.timeline_create(
+            tenant_id=tenant_id, new_timeline_id=new_timeline_id, ancestor_start_lsn=last_lsn
+        )
+    assert new_timeline_id not in {
+        TimelineId(b["timeline_id"]) for b in client.timeline_list(tenant_id)
+    }
+
+    # Check it's possible to create a timeline with a fully specified ancestor.
+    client.timeline_create(
+        tenant_id=tenant_id,
+        new_timeline_id=new_timeline_id,
+        ancestor_timeline_id=timeline_id,
+        ancestor_start_lsn=last_lsn,
+    )
+    assert new_timeline_id in {
+        TimelineId(b["timeline_id"]) for b in client.timeline_list(tenant_id)
+    }
 
 
 def test_pageserver_http_get_wal_receiver_not_found(neon_simple_env: NeonEnv):
@@ -174,7 +216,7 @@ def test_pageserver_http_get_wal_receiver_success(neon_simple_env: NeonEnv):
 def test_pageserver_http_api_client(neon_simple_env: NeonEnv):
     env = neon_simple_env
     with env.pageserver.http_client() as client:
-        check_client(client, env.initial_tenant)
+        check_client(env.pageserver, client, env.initial_tenant)
 
 
 def test_pageserver_http_api_client_auth_enabled(neon_env_builder: NeonEnvBuilder):
@@ -184,4 +226,4 @@ def test_pageserver_http_api_client_auth_enabled(neon_env_builder: NeonEnvBuilde
     pageserver_token = env.auth_keys.generate_pageserver_token()
 
     with env.pageserver.http_client(auth_token=pageserver_token) as client:
-        check_client(client, env.initial_tenant)
+        check_client(env.pageserver, client, env.initial_tenant)

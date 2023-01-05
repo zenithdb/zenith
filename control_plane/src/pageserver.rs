@@ -9,7 +9,8 @@ use std::{io, result};
 
 use anyhow::{bail, ensure, Context};
 use pageserver_api::models::{
-    TenantConfigRequest, TenantCreateRequest, TenantInfo, TimelineCreateRequest, TimelineInfo,
+    TenantConfigRequest, TenantCreateRequest, TenantInfo, TimelineAncestor, TimelineCreateRequest,
+    TimelineInfo,
 };
 use postgres_connection::{parse_host_port, PgConnectionConfig};
 use reqwest::blocking::{Client, RequestBuilder, Response};
@@ -199,13 +200,8 @@ impl PageServerNode {
         pg_version: u32,
     ) -> anyhow::Result<TimelineId> {
         let initial_tenant_id = self.tenant_create(new_tenant_id, HashMap::new())?;
-        let initial_timeline_info = self.timeline_create(
-            initial_tenant_id,
-            new_timeline_id,
-            None,
-            None,
-            Some(pg_version),
-        )?;
+        let initial_timeline_info =
+            self.timeline_create(initial_tenant_id, new_timeline_id, None, Some(pg_version))?;
         Ok(initial_timeline_info.timeline_id)
     }
 
@@ -507,12 +503,28 @@ impl PageServerNode {
         Ok(timeline_infos)
     }
 
+    pub fn timeline_info(
+        &self,
+        tenant_id: TenantId,
+        timeline_id: TimelineId,
+    ) -> anyhow::Result<TimelineInfo> {
+        self.http_request(
+            Method::GET,
+            format!("{}/tenant/{}/timeline/{}", self.http_base_url, tenant_id, timeline_id),
+        )
+            .send()?
+            .error_from_body()?
+            .json::<TimelineInfo>()
+            .with_context(|| {
+                format!("Failed to retrieve or parse timeline info response for tenant {tenant_id} and timeline {timeline_id}")
+            })
+    }
+
     pub fn timeline_create(
         &self,
         tenant_id: TenantId,
         new_timeline_id: Option<TimelineId>,
-        ancestor_start_lsn: Option<Lsn>,
-        ancestor_timeline_id: Option<TimelineId>,
+        ancestor: Option<TimelineAncestor>,
         pg_version: Option<u32>,
     ) -> anyhow::Result<TimelineInfo> {
         self.http_request(
@@ -521,8 +533,8 @@ impl PageServerNode {
         )
         .json(&TimelineCreateRequest {
             new_timeline_id,
-            ancestor_start_lsn,
-            ancestor_timeline_id,
+            ancestor_timeline_id: ancestor.as_ref().map(|x| x.timeline_id),
+            ancestor_start_lsn: ancestor.map(|x| x.start_lsn),
             pg_version,
         })
         .send()?

@@ -14,7 +14,7 @@
 use anyhow::{bail, Context};
 use bytes::Bytes;
 use futures::Stream;
-use pageserver_api::models::TimelineState;
+use pageserver_api::models::{TimelineAncestor, TimelineState};
 use remote_storage::DownloadError;
 use remote_storage::GenericRemoteStorage;
 use tokio::sync::watch;
@@ -1110,11 +1110,13 @@ impl Tenant {
     /// If the caller specified the timeline ID to use (`new_timeline_id`), and timeline with
     /// the same timeline ID already exists, returns None. If `new_timeline_id` is not given,
     /// a new unique ID is generated.
+    ///
+    /// `ancestor_start_lsn` should always be specified, because there is a race between branch
+    /// creation and updating the ancestor. The caller should take care of it.
     pub async fn create_timeline(
         &self,
         new_timeline_id: TimelineId,
-        ancestor_timeline_id: Option<TimelineId>,
-        mut ancestor_start_lsn: Option<Lsn>,
+        ancestor: Option<TimelineAncestor>,
         pg_version: u32,
     ) -> anyhow::Result<Option<Arc<Timeline>>> {
         anyhow::ensure!(
@@ -1127,22 +1129,22 @@ impl Tenant {
             return Ok(None);
         }
 
-        let loaded_timeline = match ancestor_timeline_id {
-            Some(ancestor_timeline_id) => {
+        let loaded_timeline = match ancestor {
+            Some(mut ancestor) => {
                 let ancestor_timeline = self
-                    .get_timeline(ancestor_timeline_id, false)
+                    .get_timeline(ancestor.timeline_id, false)
                     .context("Cannot branch off the timeline that's not present in pageserver")?;
 
-                if let Some(lsn) = ancestor_start_lsn.as_mut() {
-                    *lsn = lsn.align();
+                ancestor.start_lsn = ancestor.start_lsn.align();
 
+                {
                     let ancestor_ancestor_lsn = ancestor_timeline.get_ancestor_lsn();
-                    if ancestor_ancestor_lsn > *lsn {
+                    if ancestor_ancestor_lsn > ancestor.start_lsn {
                         // can we safely just branch from the ancestor instead?
                         bail!(
                             "invalid start lsn {} for ancestor timeline {}: less than timeline ancestor lsn {}",
-                            lsn,
-                            ancestor_timeline_id,
+                            ancestor.start_lsn,
+                            ancestor.timeline_id,
                             ancestor_ancestor_lsn,
                         );
                     }
@@ -1153,10 +1155,10 @@ impl Tenant {
                     // decoding the new WAL might need to look up previous pages, relation
                     // sizes etc. and that would get confused if the previous page versions
                     // are not in the repository yet.
-                    ancestor_timeline.wait_lsn(*lsn).await?;
+                    ancestor_timeline.wait_lsn(ancestor.start_lsn).await?;
                 }
 
-                self.branch_timeline(ancestor_timeline_id, new_timeline_id, ancestor_start_lsn)
+                self.branch_timeline(ancestor.timeline_id, new_timeline_id, ancestor.start_lsn)
                     .await?
             }
             None => self.bootstrap_timeline(new_timeline_id, pg_version).await?,
@@ -1970,11 +1972,14 @@ impl Tenant {
     }
 
     /// Branch an existing timeline
+    ///
+    /// `start_lsn` should always be specified, because race condition between get_last_record_lsn() and
+    /// branch creation is inevitable.
     async fn branch_timeline(
         &self,
         src: TimelineId,
         dst: TimelineId,
-        start_lsn: Option<Lsn>,
+        start_lsn: Lsn,
     ) -> anyhow::Result<Arc<Timeline>> {
         // We need to hold this lock to prevent GC from starting at the same time. GC scans the directory to learn
         // about timelines, so otherwise a race condition is possible, where we create new timeline and GC
@@ -2002,13 +2007,6 @@ impl Tenant {
         })?;
 
         let latest_gc_cutoff_lsn = src_timeline.get_latest_gc_cutoff_lsn();
-
-        // If no start LSN is specified, we branch the new timeline from the source timeline's last record LSN
-        let start_lsn = start_lsn.unwrap_or_else(|| {
-            let lsn = src_timeline.get_last_record_lsn();
-            info!("branching timeline {dst} from timeline {src} at last record LSN: {lsn}");
-            lsn
-        });
 
         // Check if the starting LSN is out of scope because it is less than
         // 1. the latest GC cutoff LSN or
@@ -2852,7 +2850,7 @@ mod tests {
 
         // Branch the history, modify relation differently on the new timeline
         tenant
-            .branch_timeline(TIMELINE_ID, NEW_TIMELINE_ID, Some(Lsn(0x30)))
+            .branch_timeline(TIMELINE_ID, NEW_TIMELINE_ID, Lsn(0x30))
             .await?;
         let newtline = tenant
             .get_timeline(NEW_TIMELINE_ID, true)
@@ -2942,7 +2940,7 @@ mod tests {
 
         // try to branch at lsn 25, should fail because we already garbage collected the data
         match tenant
-            .branch_timeline(TIMELINE_ID, NEW_TIMELINE_ID, Some(Lsn(0x25)))
+            .branch_timeline(TIMELINE_ID, NEW_TIMELINE_ID, Lsn(0x25))
             .await
         {
             Ok(_) => panic!("branching should have failed"),
@@ -2970,7 +2968,7 @@ mod tests {
             .initialize()?;
         // try to branch at lsn 0x25, should fail because initdb lsn is 0x50
         match tenant
-            .branch_timeline(TIMELINE_ID, NEW_TIMELINE_ID, Some(Lsn(0x25)))
+            .branch_timeline(TIMELINE_ID, NEW_TIMELINE_ID, Lsn(0x25))
             .await
         {
             Ok(_) => panic!("branching should have failed"),
@@ -3021,7 +3019,7 @@ mod tests {
         make_some_layers(tline.as_ref(), Lsn(0x20)).await?;
 
         tenant
-            .branch_timeline(TIMELINE_ID, NEW_TIMELINE_ID, Some(Lsn(0x40)))
+            .branch_timeline(TIMELINE_ID, NEW_TIMELINE_ID, Lsn(0x40))
             .await?;
         let newtline = tenant
             .get_timeline(NEW_TIMELINE_ID, true)
@@ -3048,7 +3046,7 @@ mod tests {
         make_some_layers(tline.as_ref(), Lsn(0x20)).await?;
 
         tenant
-            .branch_timeline(TIMELINE_ID, NEW_TIMELINE_ID, Some(Lsn(0x40)))
+            .branch_timeline(TIMELINE_ID, NEW_TIMELINE_ID, Lsn(0x40))
             .await?;
         let newtline = tenant
             .get_timeline(NEW_TIMELINE_ID, true)
@@ -3104,7 +3102,7 @@ mod tests {
             make_some_layers(tline.as_ref(), Lsn(0x20)).await?;
 
             tenant
-                .branch_timeline(TIMELINE_ID, NEW_TIMELINE_ID, Some(Lsn(0x40)))
+                .branch_timeline(TIMELINE_ID, NEW_TIMELINE_ID, Lsn(0x40))
                 .await?;
 
             let newtline = tenant
@@ -3395,9 +3393,7 @@ mod tests {
         let mut tline_id = TIMELINE_ID;
         for _ in 0..50 {
             let new_tline_id = TimelineId::generate();
-            tenant
-                .branch_timeline(tline_id, new_tline_id, Some(lsn))
-                .await?;
+            tenant.branch_timeline(tline_id, new_tline_id, lsn).await?;
             tline = tenant
                 .get_timeline(new_tline_id, true)
                 .expect("Should have the branched timeline");
@@ -3463,9 +3459,7 @@ mod tests {
         #[allow(clippy::needless_range_loop)]
         for idx in 0..NUM_TLINES {
             let new_tline_id = TimelineId::generate();
-            tenant
-                .branch_timeline(tline_id, new_tline_id, Some(lsn))
-                .await?;
+            tenant.branch_timeline(tline_id, new_tline_id, lsn).await?;
             tline = tenant
                 .get_timeline(new_tline_id, true)
                 .expect("Should have the branched timeline");

@@ -173,13 +173,14 @@ async fn timeline_create_handler(mut request: Request<Body>) -> Result<Response<
     let tenant = mgr::get_tenant(tenant_id, true)
         .await
         .map_err(ApiError::NotFound)?;
+    let ancestor = request_data.ancestor().map_err(ApiError::BadRequest)?;
+    let lsn = ancestor.as_ref().map(|x| x.start_lsn);
     match tenant.create_timeline(
         new_timeline_id,
-        request_data.ancestor_timeline_id.map(TimelineId::from),
-        request_data.ancestor_start_lsn,
+        ancestor,
         request_data.pg_version.unwrap_or(crate::DEFAULT_PG_VERSION)
     )
-    .instrument(info_span!("timeline_create", tenant = %tenant_id, new_timeline = ?request_data.new_timeline_id, timeline_id = %new_timeline_id, lsn=?request_data.ancestor_start_lsn, pg_version=?request_data.pg_version))
+    .instrument(info_span!("timeline_create", tenant = %tenant_id, new_timeline = ?request_data.new_timeline_id, timeline_id = %new_timeline_id, lsn=?lsn, pg_version=?request_data.pg_version))
     .await {
         Ok(Some(new_timeline)) => {
             // Created. Construct a TimelineInfo for it.

@@ -59,19 +59,50 @@ pub enum TimelineState {
     Broken,
 }
 
+// It is impossible to specify timeline as an ancestor without also
+// specifying the branching LSN.
+#[serde_as]
+#[derive(Serialize, Deserialize)]
+pub struct TimelineAncestor {
+    pub timeline_id: TimelineId,
+    pub start_lsn: Lsn,
+}
+
 #[serde_as]
 #[derive(Serialize, Deserialize)]
 pub struct TimelineCreateRequest {
     #[serde(default)]
     #[serde_as(as = "Option<DisplayFromStr>")]
     pub new_timeline_id: Option<TimelineId>,
-    #[serde(default)]
+
+    // TODO: replace with Option<TimelineAncestor>. It does not make sense
+    // to specify LSN without timeline, and specifying timeline without LSN
+    // invokes leads to a race condition.
     #[serde_as(as = "Option<DisplayFromStr>")]
     pub ancestor_timeline_id: Option<TimelineId>,
     #[serde(default)]
     #[serde_as(as = "Option<DisplayFromStr>")]
     pub ancestor_start_lsn: Option<Lsn>,
+
     pub pg_version: Option<u32>,
+}
+
+impl TimelineCreateRequest {
+    pub fn ancestor(&self) -> anyhow::Result<Option<TimelineAncestor>> {
+        match (self.ancestor_timeline_id, self.ancestor_start_lsn) {
+            (None, None) => Ok(None),
+            (Some(timeline_id), Some(start_lsn)) => Ok(Some(TimelineAncestor {
+                timeline_id,
+                start_lsn,
+            })),
+            (Some(_), None) => {
+                bail!("ancestor_start_lsn is not specified, this is prone to race conditions")
+            }
+            (None, Some(_)) => {
+                bail!("ancestor_start_lsn is specified without ancestor_timeline_id")
+            }
+        }
+    }
 }
 
 #[serde_as]

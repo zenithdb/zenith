@@ -483,6 +483,7 @@ paths:
         Create a timeline. Returns new timeline id on success.\
         If no new timeline id is specified in parameters, it would be generated. It's an error to recreate the same timeline.
         If no pg_version is specified, assume DEFAULT_PG_VERSION hardcoded in the pageserver.
+        If either of ancestor_timeline_id or ancestor_start_lsn is specified, both should be specified.
       requestBody:
         content:
           application/json:
