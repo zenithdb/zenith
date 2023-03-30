@@ -126,9 +126,7 @@ runs:
           # -n16 uses sixteen processes to run tests via pytest-xdist
           EXTRA_PARAMS="-n16 $EXTRA_PARAMS"
 
-          # --dist=loadgroup points tests marked with @pytest.mark.xdist_group
-          # to the same worker to make @pytest.mark.order work with xdist
-          EXTRA_PARAMS="--dist=loadgroup $EXTRA_PARAMS"
+          EXTRA_PARAMS="--dist=worksteal $EXTRA_PARAMS"
         fi
 
         if [[ "${{ inputs.run_with_real_s3 }}" == "true" ]]; then

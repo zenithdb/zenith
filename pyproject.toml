@@ -6,12 +6,12 @@ authors = []
 
 [tool.poetry.dependencies]
 python = "^3.9"
-pytest = "^6.2.5"
+pytest = "^7.2.2"
 psycopg2-binary = "^2.9.1"
 typing-extensions = "^4.1.0"
 PyJWT = {version = "^2.1.0", extras = ["crypto"]}
 requests = "^2.26.0"
-pytest-xdist = "^3.0.2"
+pytest-xdist = "^3.2.1"
 asyncpg = "^0.27.0"
 aiopg = "^1.3.1"
 Jinja2 = "^3.0.2"
