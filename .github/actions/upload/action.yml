@@ -8,7 +8,7 @@ inputs:
     description: "A directory or file to upload"
     required: true
   prefix:
-    description: "S3 prefix. Default is '${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}'"
+    description: "S3 prefix. Default is 'artifacts/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}'"
     required: false
 
 runs:
@@ -45,7 +45,7 @@ runs:
       env:
         SOURCE: ${{ inputs.path }}
         ARCHIVE: /tmp/uploads/${{ inputs.name }}.tar.zst
-        PREFIX: artifacts/${{ inputs.prefix || format('{0}/{1}', github.run_id, github.run_attempt) }}
+        PREFIX: ${{ inputs.prefix || format('artifacts/{0}/{1}', github.run_id, github.run_attempt) }}
       run: |
         BUCKET=neon-github-public-dev
         FILENAME=$(basename $ARCHIVE)

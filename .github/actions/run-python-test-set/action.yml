@@ -65,7 +65,7 @@ runs:
       with:
         name: neon-${{ runner.os }}-${{ inputs.build_type }}-artifact
         path: /tmp/neon-previous
-        prefix: latest
+        prefix: latest-artifacts
 
     - name: Download compatibility snapshot for Postgres 14
       if: inputs.build_type != 'remote'
@@ -73,7 +73,7 @@ runs:
       with:
         name: compatibility-snapshot-${{ inputs.build_type }}-pg14
         path: /tmp/compatibility_snapshot_pg14
-        prefix: latest
+        prefix: latest-artifacts
 
     - name: Checkout
       if: inputs.needs_postgres_source == 'true'
@@ -199,7 +199,7 @@ runs:
         name: compatibility-snapshot-${{ inputs.build_type }}-pg14-${{ github.run_id }}
         # The path includes a test name (test_create_snapshot) and directory that the test creates (compatibility_snapshot_pg14), keep the path in sync with the test
         path: /tmp/test_output/test_create_snapshot/compatibility_snapshot_pg14/
-        prefix: latest
+        prefix: latest-artifacts
 
     - name: Create Allure report
       if: ${{ !cancelled() }}

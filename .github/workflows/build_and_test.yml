@@ -981,7 +981,7 @@ jobs:
       - name: Promote compatibility snapshot for the release
         env:
           BUCKET: neon-github-public-dev
-          PREFIX: artifacts/latest
+          PREFIX: latest-artifacts
         run: |
           # Update compatibility snapshot for the release
           for build_type in debug release; do

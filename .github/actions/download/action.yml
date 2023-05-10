@@ -13,7 +13,7 @@ inputs:
     default: false
     required: false
   prefix:
-    description: "S3 prefix. Default is '${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}'"
+    description: "S3 prefix. Default is 'artifacts/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}'"
     required: false
 
 runs:
@@ -26,7 +26,7 @@ runs:
         TARGET: ${{ inputs.path }}
         ARCHIVE: /tmp/downloads/${{ inputs.name }}.tar.zst
         SKIP_IF_DOES_NOT_EXIST: ${{ inputs.skip-if-does-not-exist }}
-        PREFIX: artifacts/${{ inputs.prefix || format('{0}/{1}', github.run_id, github.run_attempt) }}
+        PREFIX: ${{ inputs.prefix || format('artifacts/{0}/{1}', github.run_id, github.run_attempt) }}
       run: |
         BUCKET=neon-github-public-dev
         FILENAME=$(basename $ARCHIVE)
