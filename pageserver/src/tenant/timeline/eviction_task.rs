@@ -30,7 +30,7 @@ use crate::{
     tenant::{
         config::{EvictionPolicy, EvictionPolicyLayerAccessThreshold},
         storage_layer::PersistentLayer,
-        LogicalSizeCalculationCause, Tenant,
+        Tenant,
     },
 };
 
@@ -294,16 +294,11 @@ impl Timeline {
         match state.last_layer_access_imitation {
             Some(ts) if ts.elapsed() < p.threshold => { /* no need to run */ }
             _ => {
-                self.imitate_timeline_cached_layer_accesses(cancel, ctx)
-                    .await;
+                self.imitate_timeline_cached_layer_accesses(ctx).await;
                 state.last_layer_access_imitation = Some(tokio::time::Instant::now())
             }
         }
         drop(state);
-
-        if cancel.is_cancelled() {
-            return ControlFlow::Break(());
-        }
 
         // This task is timeline-scoped, but the synthetic size calculation is tenant-scoped.
         // Make one of the tenant's timelines draw the short straw and run the calculation.
@@ -333,36 +328,8 @@ impl Timeline {
 
     /// Recompute the values which would cause on-demand downloads during restart.
     #[instrument(skip_all)]
-    async fn imitate_timeline_cached_layer_accesses(
-        &self,
-        cancel: &CancellationToken,
-        ctx: &RequestContext,
-    ) {
+    async fn imitate_timeline_cached_layer_accesses(&self, ctx: &RequestContext) {
         let lsn = self.get_last_record_lsn();
-
-        // imitiate on-restart initial logical size
-        let size = self
-            .calculate_logical_size(
-                lsn,
-                LogicalSizeCalculationCause::EvictionTaskImitation,
-                cancel.clone(),
-                ctx,
-            )
-            .instrument(info_span!("calculate_logical_size"))
-            .await;
-
-        match &size {
-            Ok(_size) => {
-                // good, don't log it to avoid confusion
-            }
-            Err(_) => {
-                // we have known issues for which we already log this on consumption metrics,
-                // gc, and compaction. leave logging out for now.
-                //
-                // https://github.com/neondatabase/neon/issues/2539
-            }
-        }
-
         // imitiate repartiting on first compactation
         if let Err(e) = self
             .collect_keyspace(lsn, ctx)
@@ -370,13 +337,7 @@ impl Timeline {
             .await
         {
             // if this failed, we probably failed logical size because these use the same keys
-            if size.is_err() {
-                // ignore, see above comment
-            } else {
-                warn!(
-                    "failed to collect keyspace but succeeded in calculating logical size: {e:#}"
-                );
-            }
+            warn!("failed to collect keyspace but succeeded in calculating logical size: {e:#}");
         }
     }
 
@@ -413,21 +374,9 @@ impl Timeline {
         // So, the chance of the worst case is quite low in practice.
         // It runs as a per-tenant task, but the eviction_task.rs is per-timeline.
         // So, we must coordinate with other with other eviction tasks of this tenant.
-        let limit = self
-            .conf
-            .eviction_task_immitated_concurrent_logical_size_queries
-            .inner();
-
         let mut throwaway_cache = HashMap::new();
-        let gather = crate::tenant::size::gather_inputs(
-            tenant,
-            limit,
-            None,
-            &mut throwaway_cache,
-            LogicalSizeCalculationCause::EvictionTaskImitation,
-            ctx,
-        )
-        .instrument(info_span!("gather_inputs"));
+        let gather = crate::tenant::size::gather_inputs(tenant, None, &mut throwaway_cache, ctx)
+            .instrument(info_span!("gather_inputs"));
 
         tokio::select! {
             _ = cancel.cancelled() => {}

@@ -304,7 +304,6 @@ pub struct TimelineInfo {
     /// Sum of the size of all layer files.
     /// If a layer is present in both local FS and S3, it counts only once.
     pub current_physical_size: Option<u64>, // is None when timeline is Unloaded
-    pub current_logical_size_non_incremental: Option<u64>,
 
     pub timeline_dir_layer_file_size_sum: Option<u64>,
 

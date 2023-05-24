@@ -8,7 +8,6 @@ use bytes::Bytes;
 use fail::fail_point;
 use futures::StreamExt;
 use itertools::Itertools;
-use once_cell::sync::OnceCell;
 use pageserver_api::models::{
     DownloadRemoteLayersTaskInfo, DownloadRemoteLayersTaskSpawnRequest,
     DownloadRemoteLayersTaskState, LayerMapInfo, LayerResidenceEventReason, LayerResidenceStatus,
@@ -16,7 +15,7 @@ use pageserver_api::models::{
 };
 use remote_storage::GenericRemoteStorage;
 use storage_broker::BrokerClientChannel;
-use tokio::sync::{oneshot, watch, Semaphore, TryAcquireError};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::*;
 use utils::id::TenantTimelineId;
@@ -49,9 +48,9 @@ use crate::tenant::{
 use crate::config::PageServerConf;
 use crate::keyspace::{KeyPartitioning, KeySpace, KeySpaceRandomAccum};
 use crate::metrics::{TimelineMetrics, UNEXPECTED_ONDEMAND_DOWNLOADS};
+use crate::pgdatadir_mapping::BlockNumber;
 use crate::pgdatadir_mapping::LsnForTimestamp;
 use crate::pgdatadir_mapping::{is_rel_fsm_block_key, is_rel_vm_block_key};
-use crate::pgdatadir_mapping::{BlockNumber, CalculateLogicalSizeError};
 use crate::tenant::config::{EvictionPolicy, TenantConfOpt};
 use pageserver_api::reltag::RelTag;
 
@@ -221,7 +220,7 @@ pub struct Timeline {
     repartition_threshold: u64,
 
     /// Current logical size of the "datadir", at the last LSN.
-    current_logical_size: LogicalSize,
+    current_logical_size: AtomicI64,
 
     /// Information about the last processed message by the WAL receiver,
     /// or None if WAL receiver has not received anything for this timeline
@@ -237,126 +236,6 @@ pub struct Timeline {
     state: watch::Sender<TimelineState>,
 
     eviction_task_timeline_state: tokio::sync::Mutex<EvictionTaskTimelineState>,
-}
-
-/// Internal structure to hold all data needed for logical size calculation.
-///
-/// Calculation consists of two stages:
-///
-/// 1. Initial size calculation. That might take a long time, because it requires
-/// reading all layers containing relation sizes at `initial_part_end`.
-///
-/// 2. Collecting an incremental part and adding that to the initial size.
-/// Increments are appended on walreceiver writing new timeline data,
-/// which result in increase or decrease of the logical size.
-struct LogicalSize {
-    /// Size, potentially slow to compute. Calculating this might require reading multiple
-    /// layers, and even ancestor's layers.
-    ///
-    /// NOTE: size at a given LSN is constant, but after a restart we will calculate
-    /// the initial size at a different LSN.
-    initial_logical_size: OnceCell<u64>,
-
-    /// Semaphore to track ongoing calculation of `initial_logical_size`.
-    initial_size_computation: Arc<tokio::sync::Semaphore>,
-
-    /// Latest Lsn that has its size uncalculated, could be absent for freshly created timelines.
-    initial_part_end: Option<Lsn>,
-
-    /// All other size changes after startup, combined together.
-    ///
-    /// Size shouldn't ever be negative, but this is signed for two reasons:
-    ///
-    /// 1. If we initialized the "baseline" size lazily, while we already
-    /// process incoming WAL, the incoming WAL records could decrement the
-    /// variable and temporarily make it negative. (This is just future-proofing;
-    /// the initialization is currently not done lazily.)
-    ///
-    /// 2. If there is a bug and we e.g. forget to increment it in some cases
-    /// when size grows, but remember to decrement it when it shrinks again, the
-    /// variable could go negative. In that case, it seems better to at least
-    /// try to keep tracking it, rather than clamp or overflow it. Note that
-    /// get_current_logical_size() will clamp the returned value to zero if it's
-    /// negative, and log an error. Could set it permanently to zero or some
-    /// special value to indicate "broken" instead, but this will do for now.
-    ///
-    /// Note that we also expose a copy of this value as a prometheus metric,
-    /// see `current_logical_size_gauge`. Use the `update_current_logical_size`
-    /// to modify this, it will also keep the prometheus metric in sync.
-    size_added_after_initial: AtomicI64,
-}
-
-/// Normalized current size, that the data in pageserver occupies.
-#[derive(Debug, Clone, Copy)]
-enum CurrentLogicalSize {
-    /// The size is not yet calculated to the end, this is an intermediate result,
-    /// constructed from walreceiver increments and normalized: logical data could delete some objects, hence be negative,
-    /// yet total logical size cannot be below 0.
-    Approximate(u64),
-    // Fully calculated logical size, only other future walreceiver increments are changing it, and those changes are
-    // available for observation without any calculations.
-    Exact(u64),
-}
-
-impl CurrentLogicalSize {
-    fn size(&self) -> u64 {
-        *match self {
-            Self::Approximate(size) => size,
-            Self::Exact(size) => size,
-        }
-    }
-}
-
-impl LogicalSize {
-    fn empty_initial() -> Self {
-        Self {
-            initial_logical_size: OnceCell::with_value(0),
-            //  initial_logical_size already computed, so, don't admit any calculations
-            initial_size_computation: Arc::new(Semaphore::new(0)),
-            initial_part_end: None,
-            size_added_after_initial: AtomicI64::new(0),
-        }
-    }
-
-    fn deferred_initial(compute_to: Lsn) -> Self {
-        Self {
-            initial_logical_size: OnceCell::new(),
-            initial_size_computation: Arc::new(Semaphore::new(1)),
-            initial_part_end: Some(compute_to),
-            size_added_after_initial: AtomicI64::new(0),
-        }
-    }
-
-    fn current_size(&self) -> anyhow::Result<CurrentLogicalSize> {
-        let size_increment: i64 = self.size_added_after_initial.load(AtomicOrdering::Acquire);
-        //                  ^^^ keep this type explicit so that the casts in this function break if
-        //                  we change the type.
-        match self.initial_logical_size.get() {
-            Some(initial_size) => {
-                initial_size.checked_add_signed(size_increment)
-                    .with_context(|| format!("Overflow during logical size calculation, initial_size: {initial_size}, size_increment: {size_increment}"))
-                    .map(CurrentLogicalSize::Exact)
-            }
-            None => {
-                let non_negative_size_increment = u64::try_from(size_increment).unwrap_or(0);
-                Ok(CurrentLogicalSize::Approximate(non_negative_size_increment))
-            }
-        }
-    }
-
-    fn increment_size(&self, delta: i64) {
-        self.size_added_after_initial
-            .fetch_add(delta, AtomicOrdering::SeqCst);
-    }
-
-    /// Make the value computed by initial logical size computation
-    /// available for re-use. This doesn't contain the incremental part.
-    fn initialized_size(&self, lsn: Lsn) -> Option<u64> {
-        match self.initial_part_end {
-            Some(v) if v == lsn => self.initial_logical_size.get().copied(),
-            _ => None,
-        }
-    }
 }
 
 pub struct WalReceiverInfo {
@@ -454,14 +333,6 @@ impl std::fmt::Display for PageReconstructError {
             Self::WalRedo(err) => err.fmt(f),
         }
     }
-}
-
-#[derive(Clone, Copy)]
-pub enum LogicalSizeCalculationCause {
-    Initial,
-    ConsumptionMetricsSyntheticSize,
-    EvictionTaskImitation,
-    TenantSizeHandler,
 }
 
 /// Public interface functions
@@ -848,23 +719,23 @@ impl Timeline {
     /// the initial size calculation has not been run (gets triggered on the first size access).
     ///
     /// return size and boolean flag that shows if the size is exact
-    pub fn get_current_logical_size(
-        self: &Arc<Self>,
-        ctx: &RequestContext,
-    ) -> anyhow::Result<(u64, bool)> {
-        let current_size = self.current_logical_size.current_size()?;
-        debug!("Current size: {current_size:?}");
+    pub fn get_current_logical_size(self: &Arc<Self>) -> u64 {
+        self.current_logical_size.load(AtomicOrdering::Relaxed) as u64
+    }
 
-        let mut is_exact = true;
-        let size = current_size.size();
-        if let (CurrentLogicalSize::Approximate(_), Some(initial_part_end)) =
-            (current_size, self.current_logical_size.initial_part_end)
-        {
-            is_exact = false;
-            self.try_spawn_size_init_task(initial_part_end, ctx);
+    /// Load from KV storage value of logical timeline size and store it in inmemory atomic variable
+    pub async fn load_inmem_logical_size(&self) -> anyhow::Result<()> {
+        let lsn = self.get_disk_consistent_lsn();
+        if lsn != Lsn::INVALID {
+            let ctx = RequestContext::todo_child(TaskKind::Startup, DownloadBehavior::Error);
+            match self.get_logical_size(lsn, &ctx).await {
+                Ok(size) => self
+                    .current_logical_size
+                    .store(size as i64, AtomicOrdering::Relaxed),
+                Err(e) => info!("Failed to load logical size: {:?}", e),
+            }
         }
-
-        Ok((size, is_exact))
+        Ok(())
     }
 
     /// Check if more than 'checkpoint_distance' of WAL has been accumulated in
@@ -1410,15 +1281,7 @@ impl Timeline {
                 latest_gc_cutoff_lsn: Rcu::new(metadata.latest_gc_cutoff_lsn()),
                 initdb_lsn: metadata.initdb_lsn(),
 
-                current_logical_size: if disk_consistent_lsn.is_valid() {
-                    // we're creating timeline data with some layer files existing locally,
-                    // need to recalculate timeline's logical size based on data in the layers.
-                    LogicalSize::deferred_initial(disk_consistent_lsn)
-                } else {
-                    // we're creating timeline data without any layers existing locally,
-                    // initial logical size is 0.
-                    LogicalSize::empty_initial()
-                },
+                current_logical_size: AtomicI64::new(0),
                 partitioning: Mutex::new((KeyPartitioning::new(), Lsn(0))),
                 repartition_threshold: 0,
 
@@ -1851,292 +1714,12 @@ impl Timeline {
         Ok(())
     }
 
-    fn try_spawn_size_init_task(self: &Arc<Self>, lsn: Lsn, ctx: &RequestContext) {
-        let permit = match Arc::clone(&self.current_logical_size.initial_size_computation)
-            .try_acquire_owned()
-        {
-            Ok(permit) => permit,
-            Err(TryAcquireError::NoPermits) => {
-                // computation already ongoing or finished with success
-                return;
-            }
-            Err(TryAcquireError::Closed) => unreachable!("we never call close"),
-        };
-        debug_assert!(self
-            .current_logical_size
-            .initial_logical_size
-            .get()
-            .is_none());
-
-        info!(
-            "spawning logical size computation from context of task kind {:?}",
-            ctx.task_kind()
-        );
-        // We need to start the computation task.
-        // It gets a separate context since it will outlive the request that called this function.
-        let self_clone = Arc::clone(self);
-        let background_ctx = ctx.detached_child(
-            TaskKind::InitialLogicalSizeCalculation,
-            DownloadBehavior::Download,
-        );
-        task_mgr::spawn(
-            task_mgr::BACKGROUND_RUNTIME.handle(),
-            task_mgr::TaskKind::InitialLogicalSizeCalculation,
-            Some(self.tenant_id),
-            Some(self.timeline_id),
-            "initial size calculation",
-            false,
-            // NB: don't log errors here, task_mgr will do that.
-            async move {
-                // no cancellation here, because nothing really waits for this to complete compared
-                // to spawn_ondemand_logical_size_calculation.
-                let cancel = CancellationToken::new();
-                let calculated_size = match self_clone
-                    .logical_size_calculation_task(lsn, LogicalSizeCalculationCause::Initial, &background_ctx, cancel)
-                    .await
-                {
-                    Ok(s) => s,
-                    Err(CalculateLogicalSizeError::Cancelled) => {
-                        // Don't make noise, this is a common task.
-                        // In the unlikely case that there is another call to this function, we'll retry
-                        // because initial_logical_size is still None.
-                        info!("initial size calculation cancelled, likely timeline delete / tenant detach");
-                        return Ok(());
-                    }
-                    Err(CalculateLogicalSizeError::Other(err)) => {
-                        if let Some(e @ PageReconstructError::AncestorStopping(_)) =
-                            err.root_cause().downcast_ref()
-                        {
-                            // This can happen if the timeline parent timeline switches to
-                            // Stopping state while we're still calculating the initial
-                            // timeline size for the child, for example if the tenant is
-                            // being detached or the pageserver is shut down. Like with
-                            // CalculateLogicalSizeError::Cancelled, don't make noise.
-                            info!("initial size calculation failed because the timeline or its ancestor is Stopping, likely because the tenant is being detached: {e:#}");
-                            return Ok(());
-                        }
-                        return Err(err.context("Failed to calculate logical size"));
-                    }
-                };
-
-                // we cannot query current_logical_size.current_size() to know the current
-                // *negative* value, only truncated to u64.
-                let added = self_clone
-                    .current_logical_size
-                    .size_added_after_initial
-                    .load(AtomicOrdering::Relaxed);
-
-                let sum = calculated_size.saturating_add_signed(added);
-
-                // set the gauge value before it can be set in `update_current_logical_size`.
-                self_clone.metrics.current_logical_size_gauge.set(sum);
-
-                match self_clone
-                    .current_logical_size
-                    .initial_logical_size
-                    .set(calculated_size)
-                {
-                    Ok(()) => (),
-                    Err(_what_we_just_attempted_to_set) => {
-                        let existing_size = self_clone
-                            .current_logical_size
-                            .initial_logical_size
-                            .get()
-                            .expect("once_cell set was lost, then get failed, impossible.");
-                        // This shouldn't happen because the semaphore is initialized with 1.
-                        // But if it happens, just complain & report success so there are no further retries.
-                        error!("Tried to update initial timeline size value to {calculated_size}, but the size was already set to {existing_size}, not changing")
-                    }
-                }
-                // now that `initial_logical_size.is_some()`, reduce permit count to 0
-                // so that we prevent future callers from spawning this task
-                permit.forget();
-                Ok(())
-            }.in_current_span(),
-        );
-    }
-
-    pub fn spawn_ondemand_logical_size_calculation(
-        self: &Arc<Self>,
-        lsn: Lsn,
-        cause: LogicalSizeCalculationCause,
-        ctx: RequestContext,
-        cancel: CancellationToken,
-    ) -> oneshot::Receiver<Result<u64, CalculateLogicalSizeError>> {
-        let (sender, receiver) = oneshot::channel();
-        let self_clone = Arc::clone(self);
-        // XXX if our caller loses interest, i.e., ctx is cancelled,
-        // we should stop the size calculation work and return an error.
-        // That would require restructuring this function's API to
-        // return the result directly, instead of a Receiver for the result.
-        let ctx = ctx.detached_child(
-            TaskKind::OndemandLogicalSizeCalculation,
-            DownloadBehavior::Download,
-        );
-        task_mgr::spawn(
-            task_mgr::BACKGROUND_RUNTIME.handle(),
-            task_mgr::TaskKind::OndemandLogicalSizeCalculation,
-            Some(self.tenant_id),
-            Some(self.timeline_id),
-            "ondemand logical size calculation",
-            false,
-            async move {
-                let res = self_clone
-                    .logical_size_calculation_task(lsn, cause, &ctx, cancel)
-                    .await;
-                let _ = sender.send(res).ok();
-                Ok(()) // Receiver is responsible for handling errors
-            }
-            .in_current_span(),
-        );
-        receiver
-    }
-
-    #[instrument(skip_all)]
-    async fn logical_size_calculation_task(
-        self: &Arc<Self>,
-        lsn: Lsn,
-        cause: LogicalSizeCalculationCause,
-        ctx: &RequestContext,
-        cancel: CancellationToken,
-    ) -> Result<u64, CalculateLogicalSizeError> {
-        debug_assert_current_span_has_tenant_and_timeline_id();
-
-        let mut timeline_state_updates = self.subscribe_for_state_updates();
-        let self_calculation = Arc::clone(self);
-
-        let mut calculation = pin!(async {
-            let cancel = cancel.child_token();
-            let ctx = ctx.attached_child();
-            self_calculation
-                .calculate_logical_size(lsn, cause, cancel, &ctx)
-                .await
-        });
-        let timeline_state_cancellation = async {
-            loop {
-                match timeline_state_updates.changed().await {
-                    Ok(()) => {
-                        let new_state = *timeline_state_updates.borrow();
-                        match new_state {
-                            // we're running this job for active timelines only
-                            TimelineState::Active => continue,
-                            TimelineState::Broken
-                            | TimelineState::Stopping
-                            | TimelineState::Loading => {
-                                break format!("aborted because timeline became inactive (new state: {new_state:?})")
-                            }
-                        }
-                    }
-                    Err(_sender_dropped_error) => {
-                        // can't happen, the sender is not dropped as long as the Timeline exists
-                        break "aborted because state watch was dropped".to_string();
-                    }
-                }
-            }
-        };
-
-        let taskmgr_shutdown_cancellation = async {
-            task_mgr::shutdown_watcher().await;
-            "aborted because task_mgr shutdown requested".to_string()
-        };
-
-        loop {
-            tokio::select! {
-                res = &mut calculation => { return res }
-                reason = timeline_state_cancellation => {
-                    debug!(reason = reason, "cancelling calculation");
-                    cancel.cancel();
-                    return calculation.await;
-                }
-                reason = taskmgr_shutdown_cancellation => {
-                    debug!(reason = reason, "cancelling calculation");
-                    cancel.cancel();
-                    return calculation.await;
-                }
-            }
-        }
-    }
-
-    /// Calculate the logical size of the database at the latest LSN.
-    ///
-    /// NOTE: counted incrementally, includes ancestors. This can be a slow operation,
-    /// especially if we need to download remote layers.
-    pub async fn calculate_logical_size(
-        &self,
-        up_to_lsn: Lsn,
-        cause: LogicalSizeCalculationCause,
-        cancel: CancellationToken,
-        ctx: &RequestContext,
-    ) -> Result<u64, CalculateLogicalSizeError> {
-        info!(
-            "Calculating logical size for timeline {} at {}",
-            self.timeline_id, up_to_lsn
-        );
-        // These failpoints are used by python tests to ensure that we don't delete
-        // the timeline while the logical size computation is ongoing.
-        // The first failpoint is used to make this function pause.
-        // Then the python test initiates timeline delete operation in a thread.
-        // It waits for a few seconds, then arms the second failpoint and disables
-        // the first failpoint. The second failpoint prints an error if the timeline
-        // delete code has deleted the on-disk state while we're still running here.
-        // It shouldn't do that. If it does it anyway, the error will be caught
-        // by the test suite, highlighting the problem.
-        fail::fail_point!("timeline-calculate-logical-size-pause");
-        fail::fail_point!("timeline-calculate-logical-size-check-dir-exists", |_| {
-            if !self
-                .conf
-                .metadata_path(self.timeline_id, self.tenant_id)
-                .exists()
-            {
-                error!("timeline-calculate-logical-size-pre metadata file does not exist")
-            }
-            // need to return something
-            Ok(0)
-        });
-        // See if we've already done the work for initial size calculation.
-        // This is a short-cut for timelines that are mostly unused.
-        if let Some(size) = self.current_logical_size.initialized_size(up_to_lsn) {
-            return Ok(size);
-        }
-        let storage_time_metrics = match cause {
-            LogicalSizeCalculationCause::Initial
-            | LogicalSizeCalculationCause::ConsumptionMetricsSyntheticSize
-            | LogicalSizeCalculationCause::TenantSizeHandler => &self.metrics.logical_size_histo,
-            LogicalSizeCalculationCause::EvictionTaskImitation => {
-                &self.metrics.imitate_logical_size_histo
-            }
-        };
-        let timer = storage_time_metrics.start_timer();
-        let logical_size = self
-            .get_current_logical_size_non_incremental(up_to_lsn, cancel, ctx)
-            .await?;
-        debug!("calculated logical size: {logical_size}");
-        timer.stop_and_record();
-        Ok(logical_size)
-    }
-
     /// Update current logical size, adding `delta' to the old value.
-    fn update_current_logical_size(&self, delta: i64) {
-        let logical_size = &self.current_logical_size;
-        logical_size.increment_size(delta);
-
-        // Also set the value in the prometheus gauge. Note that
-        // there is a race condition here: if this is is called by two
-        // threads concurrently, the prometheus gauge might be set to
-        // one value while current_logical_size is set to the
-        // other.
-        match logical_size.current_size() {
-            Ok(CurrentLogicalSize::Exact(new_current_size)) => self
-                .metrics
-                .current_logical_size_gauge
-                .set(new_current_size),
-            Ok(CurrentLogicalSize::Approximate(_)) => {
-                // don't update the gauge yet, this allows us not to update the gauge back and
-                // forth between the initial size calculation task.
-            }
-            // this is overflow
-            Err(e) => error!("Failed to compute current logical size for metrics update: {e:?}"),
-        }
+    fn update_current_logical_size(&self, delta: i64) -> u64 {
+        let prev_size = self
+            .current_logical_size
+            .fetch_add(delta, AtomicOrdering::SeqCst);
+        (prev_size + delta) as u64
     }
 
     fn find_layer(&self, layer_file_name: &str) -> Option<Arc<dyn PersistentLayer>> {
@@ -4437,7 +4020,7 @@ impl<'a> TimelineWriter<'a> {
         self.tl.finish_write(new_lsn);
     }
 
-    pub fn update_current_logical_size(&self, delta: i64) {
+    pub fn update_current_logical_size(&self, delta: i64) -> u64 {
         self.tl.update_current_logical_size(delta)
     }
 }

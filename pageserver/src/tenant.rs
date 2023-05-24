@@ -98,9 +98,7 @@ mod timeline;
 pub mod size;
 
 pub(crate) use timeline::debug_assert_current_span_has_tenant_and_timeline_id;
-pub use timeline::{
-    LocalLayerInfoForDiskUsageEviction, LogicalSizeCalculationCause, PageReconstructError, Timeline,
-};
+pub use timeline::{LocalLayerInfoForDiskUsageEviction, PageReconstructError, Timeline};
 
 // re-export this function so that page_cache.rs can use it.
 pub use crate::tenant::ephemeral_file::writeback as writeback_ephemeral_file;
@@ -1043,8 +1041,26 @@ impl Tenant {
         // The loops will shut themselves down when they notice that the tenant is inactive.
         self.activate(ctx)?;
 
+        self.load_logical_sizes().await?;
+
         info!("Done");
 
+        Ok(())
+    }
+
+    async fn load_logical_sizes(&self) -> anyhow::Result<()> {
+        let not_broken_timelines: Vec<Arc<Timeline>>;
+        {
+            let timelines_accessor = self.timelines.lock().unwrap();
+            not_broken_timelines = timelines_accessor
+                .values()
+                .filter(|timeline| timeline.current_state() != TimelineState::Broken)
+                .cloned()
+                .collect();
+        }
+        for timeline in not_broken_timelines {
+            timeline.load_inmem_logical_size().await?;
+        }
         Ok(())
     }
 
@@ -2516,7 +2532,6 @@ impl Tenant {
         ancestor: Option<Arc<Timeline>>,
     ) -> anyhow::Result<UninitializedTimeline> {
         let tenant_id = self.tenant_id;
-
         let remote_client = if let Some(remote_storage) = self.remote_storage.as_ref() {
             let remote_client = RemoteTimelineClient::new(
                 remote_storage.clone(),
@@ -2637,14 +2652,8 @@ impl Tenant {
         // `max_retention_period` overrides the cutoff that is used to calculate the size
         // (only if it is shorter than the real cutoff).
         max_retention_period: Option<u64>,
-        cause: LogicalSizeCalculationCause,
         ctx: &RequestContext,
     ) -> anyhow::Result<size::ModelInputs> {
-        let logical_sizes_at_once = self
-            .conf
-            .concurrent_tenant_size_logical_size_queries
-            .inner();
-
         // TODO: Having a single mutex block concurrent reads is not great for performance.
         //
         // But the only case where we need to run multiple of these at once is when we
@@ -2654,27 +2663,15 @@ impl Tenant {
         // See more for on the issue #2748 condenced out of the initial PR review.
         let mut shared_cache = self.cached_logical_sizes.lock().await;
 
-        size::gather_inputs(
-            self,
-            logical_sizes_at_once,
-            max_retention_period,
-            &mut shared_cache,
-            cause,
-            ctx,
-        )
-        .await
+        size::gather_inputs(self, max_retention_period, &mut shared_cache, ctx).await
     }
 
     /// Calculate synthetic tenant size and cache the result.
     /// This is periodically called by background worker.
     /// result is cached in tenant struct
     #[instrument(skip_all, fields(tenant_id=%self.tenant_id))]
-    pub async fn calculate_synthetic_size(
-        &self,
-        cause: LogicalSizeCalculationCause,
-        ctx: &RequestContext,
-    ) -> anyhow::Result<u64> {
-        let inputs = self.gather_size_inputs(None, cause, ctx).await?;
+    pub async fn calculate_synthetic_size(&self, ctx: &RequestContext) -> anyhow::Result<u64> {
+        let inputs = self.gather_size_inputs(None, ctx).await?;
 
         let size = inputs.calculate()?;
 

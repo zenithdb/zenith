@@ -20,7 +20,6 @@ use postgres_ffi::{Oid, TimestampTz, TransactionId};
 use serde::{Deserialize, Serialize};
 use std::collections::{hash_map, HashMap, HashSet};
 use std::ops::Range;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 use utils::{bin_ser::BeSer, lsn::Lsn};
 
@@ -137,6 +136,17 @@ impl Timeline {
             total_blocks += n_blocks as usize;
         }
         Ok(total_blocks)
+    }
+
+    /// Get timeline logical size
+    pub async fn get_logical_size(
+        &self,
+        lsn: Lsn,
+        ctx: &RequestContext,
+    ) -> Result<u64, PageReconstructError> {
+        let mut buf = self.get(LOGICAL_SIZE_KEY, lsn, ctx).await?;
+        let size = buf.get_u64_le();
+        Ok(size)
     }
 
     /// Get size of a relation file
@@ -489,46 +499,6 @@ impl Timeline {
         self.get(CHECKPOINT_KEY, lsn, ctx).await
     }
 
-    /// Does the same as get_current_logical_size but counted on demand.
-    /// Used to initialize the logical size tracking on startup.
-    ///
-    /// Only relation blocks are counted currently. That excludes metadata,
-    /// SLRUs, twophase files etc.
-    pub async fn get_current_logical_size_non_incremental(
-        &self,
-        lsn: Lsn,
-        cancel: CancellationToken,
-        ctx: &RequestContext,
-    ) -> Result<u64, CalculateLogicalSizeError> {
-        crate::tenant::debug_assert_current_span_has_tenant_and_timeline_id();
-
-        // Fetch list of database dirs and iterate them
-        let buf = self.get(DBDIR_KEY, lsn, ctx).await.context("read dbdir")?;
-        let dbdir = DbDirectory::des(&buf).context("deserialize db directory")?;
-
-        let mut total_size: u64 = 0;
-        for (spcnode, dbnode) in dbdir.dbdirs.keys() {
-            for rel in self
-                .list_rels(*spcnode, *dbnode, lsn, ctx)
-                .await
-                .context("list rels")?
-            {
-                if cancel.is_cancelled() {
-                    return Err(CalculateLogicalSizeError::Cancelled);
-                }
-                let relsize_key = rel_size_to_key(rel);
-                let mut buf = self
-                    .get(relsize_key, lsn, ctx)
-                    .await
-                    .with_context(|| format!("read relation size of {rel:?}"))?;
-                let relsize = buf.get_u32_le();
-
-                total_size += relsize as u64;
-            }
-        }
-        Ok(total_size * BLCKSZ as u64)
-    }
-
     ///
     /// Get a KeySpace that covers all the Keys that are in use at the given LSN.
     /// Anything that's not listed maybe removed from the underlying storage (from
@@ -816,6 +786,12 @@ impl<'a> DatadirModification<'a> {
 
     pub fn put_checkpoint(&mut self, img: Bytes) -> anyhow::Result<()> {
         self.put(CHECKPOINT_KEY, Value::Image(img));
+        Ok(())
+    }
+
+    pub fn put_logical_size(&mut self, size: u64) -> anyhow::Result<()> {
+        let buf = size.to_le_bytes();
+        self.put(LOGICAL_SIZE_KEY, Value::Image(Bytes::from(buf.to_vec())));
         Ok(())
     }
 
@@ -1131,7 +1107,8 @@ impl<'a> DatadirModification<'a> {
         result?;
 
         if pending_nblocks != 0 {
-            writer.update_current_logical_size(pending_nblocks * i64::from(BLCKSZ));
+            let size = writer.update_current_logical_size(pending_nblocks * i64::from(BLCKSZ));
+            self.put_logical_size(size)?;
             self.pending_nblocks = 0;
         }
 
@@ -1159,7 +1136,8 @@ impl<'a> DatadirModification<'a> {
         writer.finish_write(lsn);
 
         if pending_nblocks != 0 {
-            writer.update_current_logical_size(pending_nblocks * i64::from(BLCKSZ));
+            let size = writer.update_current_logical_size(pending_nblocks * i64::from(BLCKSZ));
+            self.put_logical_size(size)?;
         }
 
         Ok(())
@@ -1274,7 +1252,7 @@ static ZERO_PAGE: Bytes = Bytes::from_static(&[0u8; BLCKSZ as usize]);
 // 03 misc
 //    controlfile
 //    checkpoint
-//    pg_version
+//    logical_size
 //
 // Below is a full list of the keyspace allocation:
 //
@@ -1314,6 +1292,10 @@ static ZERO_PAGE: Bytes = Bytes::from_static(&[0u8; BLCKSZ as usize]);
 // Checkpoint:
 // 03 00000000 00000000 00000000 00   00000001
 //-- Section 01: relation data and metadata
+//
+// LogicalSize:
+// 03 00000000 00000000 00000000 00   00000002
+//
 
 const DBDIR_KEY: Key = Key {
     field1: 0x00,
@@ -1534,6 +1516,15 @@ const CHECKPOINT_KEY: Key = Key {
     field4: 0,
     field5: 0,
     field6: 1,
+};
+
+const LOGICAL_SIZE_KEY: Key = Key {
+    field1: 0x03,
+    field2: 0,
+    field3: 0,
+    field4: 0,
+    field5: 0,
+    field6: 3,
 };
 
 // Reverse mappings for a few Keys.

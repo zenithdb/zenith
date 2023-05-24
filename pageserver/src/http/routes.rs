@@ -27,7 +27,7 @@ use crate::tenant::config::TenantConfOpt;
 use crate::tenant::mgr::{TenantMapInsertError, TenantStateError};
 use crate::tenant::size::ModelInputs;
 use crate::tenant::storage_layer::LayerAccessStatsReset;
-use crate::tenant::{LogicalSizeCalculationCause, PageReconstructError, Timeline};
+use crate::tenant::{PageReconstructError, Timeline};
 use crate::{config::PageServerConf, tenant::mgr};
 use utils::{
     auth::JwtAuth,
@@ -169,36 +169,12 @@ impl From<crate::tenant::mgr::DeleteTimelineError> for ApiError {
 }
 
 // Helper function to construct a TimelineInfo struct for a timeline
-async fn build_timeline_info(
+fn build_timeline_info(
     timeline: &Arc<Timeline>,
-    include_non_incremental_logical_size: bool,
-    ctx: &RequestContext,
+    _ctx: &RequestContext,
 ) -> anyhow::Result<TimelineInfo> {
     crate::tenant::debug_assert_current_span_has_tenant_and_timeline_id();
 
-    let mut info = build_timeline_info_common(timeline, ctx)?;
-    if include_non_incremental_logical_size {
-        // XXX we should be using spawn_ondemand_logical_size_calculation here.
-        // Otherwise, if someone deletes the timeline / detaches the tenant while
-        // we're executing this function, we will outlive the timeline on-disk state.
-        info.current_logical_size_non_incremental = Some(
-            timeline
-                .get_current_logical_size_non_incremental(
-                    info.last_record_lsn,
-                    CancellationToken::new(),
-                    ctx,
-                )
-                .await?,
-        );
-    }
-    Ok(info)
-}
-
-fn build_timeline_info_common(
-    timeline: &Arc<Timeline>,
-    ctx: &RequestContext,
-) -> anyhow::Result<TimelineInfo> {
-    crate::tenant::debug_assert_current_span_has_tenant_and_timeline_id();
     let last_record_lsn = timeline.get_last_record_lsn();
     let (wal_source_connstr, last_received_msg_lsn, last_received_msg_ts) = {
         let guard = timeline.last_received_wal.lock().unwrap();
@@ -218,13 +194,7 @@ fn build_timeline_info_common(
         Lsn(0) => None,
         lsn @ Lsn(_) => Some(lsn),
     };
-    let current_logical_size = match timeline.get_current_logical_size(ctx) {
-        Ok((size, _)) => Some(size),
-        Err(err) => {
-            error!("Timeline info creation failed to get current logical size: {err:?}");
-            None
-        }
-    };
+    let current_logical_size = Some(timeline.get_current_logical_size());
     let current_physical_size = Some(timeline.layer_size_sum());
     let state = timeline.current_state();
     let remote_consistent_lsn = timeline.get_remote_consistent_lsn().unwrap_or(Lsn(0));
@@ -241,7 +211,6 @@ fn build_timeline_info_common(
         latest_gc_cutoff_lsn: *timeline.get_latest_gc_cutoff_lsn(),
         current_logical_size,
         current_physical_size,
-        current_logical_size_non_incremental: None,
         timeline_dir_layer_file_size_sum: None,
         wal_source_connstr,
         last_received_msg_lsn,
@@ -283,7 +252,7 @@ async fn timeline_create_handler(mut request: Request<Body>) -> Result<Response<
         .await {
             Ok(Some(new_timeline)) => {
                 // Created. Construct a TimelineInfo for it.
-                let timeline_info = build_timeline_info_common(&new_timeline, &ctx)
+                let timeline_info = build_timeline_info(&new_timeline, &ctx)
                     .map_err(ApiError::InternalServerError)?;
                 json_response(StatusCode::CREATED, timeline_info)
             }
@@ -297,8 +266,6 @@ async fn timeline_create_handler(mut request: Request<Body>) -> Result<Response<
 
 async fn timeline_list_handler(request: Request<Body>) -> Result<Response<Body>, ApiError> {
     let tenant_id: TenantId = parse_request_param(&request, "tenant_id")?;
-    let include_non_incremental_logical_size: Option<bool> =
-        parse_query_param(&request, "include-non-incremental-logical-size")?;
     check_permission(&request, Some(tenant_id))?;
 
     let ctx = RequestContext::new(TaskKind::MgmtRequest, DownloadBehavior::Download);
@@ -309,15 +276,11 @@ async fn timeline_list_handler(request: Request<Body>) -> Result<Response<Body>,
 
         let mut response_data = Vec::with_capacity(timelines.len());
         for timeline in timelines {
-            let timeline_info = build_timeline_info(
-                &timeline,
-                include_non_incremental_logical_size.unwrap_or(false),
-                &ctx,
-            )
-            .instrument(info_span!("build_timeline_info", timeline_id = %timeline.timeline_id))
-            .await
-            .context("Failed to convert tenant timeline {timeline_id} into the local one: {e:?}")
-            .map_err(ApiError::InternalServerError)?;
+            let timeline_info = build_timeline_info(&timeline, &ctx)
+                .context(
+                    "Failed to convert tenant timeline {timeline_id} into the local one: {e:?}",
+                )
+                .map_err(ApiError::InternalServerError)?;
 
             response_data.push(timeline_info);
         }
@@ -332,8 +295,6 @@ async fn timeline_list_handler(request: Request<Body>) -> Result<Response<Body>,
 async fn timeline_detail_handler(request: Request<Body>) -> Result<Response<Body>, ApiError> {
     let tenant_id: TenantId = parse_request_param(&request, "tenant_id")?;
     let timeline_id: TimelineId = parse_request_param(&request, "timeline_id")?;
-    let include_non_incremental_logical_size: Option<bool> =
-        parse_query_param(&request, "include-non-incremental-logical-size")?;
     check_permission(&request, Some(tenant_id))?;
 
     // Logical size calculation needs downloading.
@@ -346,14 +307,9 @@ async fn timeline_detail_handler(request: Request<Body>) -> Result<Response<Body
             .get_timeline(timeline_id, false)
             .map_err(ApiError::NotFound)?;
 
-        let timeline_info = build_timeline_info(
-            &timeline,
-            include_non_incremental_logical_size.unwrap_or(false),
-            &ctx,
-        )
-        .await
-        .context("get local timeline info")
-        .map_err(ApiError::InternalServerError)?;
+        let timeline_info = build_timeline_info(&timeline, &ctx)
+            .context("get local timeline info")
+            .map_err(ApiError::InternalServerError)?;
 
         Ok::<_, ApiError>(timeline_info)
     }
@@ -550,11 +506,7 @@ async fn tenant_size_handler(request: Request<Body>) -> Result<Response<Body>, A
 
     // this can be long operation
     let inputs = tenant
-        .gather_size_inputs(
-            retention_period,
-            LogicalSizeCalculationCause::TenantSizeHandler,
-            &ctx,
-        )
+        .gather_size_inputs(retention_period, &ctx)
         .await
         .map_err(ApiError::InternalServerError)?;
 

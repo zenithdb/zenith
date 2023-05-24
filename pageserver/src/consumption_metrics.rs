@@ -5,7 +5,7 @@
 //!
 use crate::context::{DownloadBehavior, RequestContext};
 use crate::task_mgr::{self, TaskKind, BACKGROUND_RUNTIME};
-use crate::tenant::{mgr, LogicalSizeCalculationCause};
+use crate::tenant::mgr;
 use anyhow;
 use chrono::Utc;
 use consumption_metrics::{idempotency_key, Event, EventChunk, EventType, CHUNK_SIZE};
@@ -113,7 +113,7 @@ pub async fn collect_metrics_iteration(
     cached_metrics: &mut HashMap<PageserverConsumptionMetricsKey, u64>,
     metric_collection_endpoint: &reqwest::Url,
     node_id: NodeId,
-    ctx: &RequestContext,
+    _ctx: &RequestContext,
     send_cached: bool,
 ) {
     let mut current_metrics: Vec<(PageserverConsumptionMetricsKey, u64)> = Vec::new();
@@ -164,30 +164,15 @@ pub async fn collect_metrics_iteration(
                     timeline_written_size,
                 ));
 
-                let span = info_span!("collect_metrics_iteration", tenant_id = %timeline.tenant_id, timeline_id = %timeline.timeline_id);
-                match span.in_scope(|| timeline.get_current_logical_size(ctx)) {
-                    // Only send timeline logical size when it is fully calculated.
-                    Ok((size, is_exact)) if is_exact => {
-                        current_metrics.push((
-                            PageserverConsumptionMetricsKey {
-                                tenant_id,
-                                timeline_id: Some(timeline.timeline_id),
-                                metric: TIMELINE_LOGICAL_SIZE,
-                            },
-                            size,
-                        ));
-                    }
-                    Ok((_, _)) => {}
-                    Err(err) => {
-                        error!(
-                            "failed to get current logical size for timeline {}: {err:?}",
-                            timeline.timeline_id
-                        );
-                        continue;
-                    }
-                };
+                current_metrics.push((
+                    PageserverConsumptionMetricsKey {
+                        tenant_id,
+                        timeline_id: Some(timeline.timeline_id),
+                        metric: TIMELINE_LOGICAL_SIZE,
+                    },
+                    timeline.get_current_logical_size(),
+                ));
             }
-
             let timeline_resident_size = timeline.get_resident_physical_size();
             tenant_resident_size += timeline_resident_size;
         }
@@ -336,7 +321,6 @@ pub async fn calculate_synthetic_size_worker(
                     if let Ok(tenant) = mgr::get_tenant(tenant_id, true).await
                     {
                         if let Err(e) = tenant.calculate_synthetic_size(
-                            LogicalSizeCalculationCause::ConsumptionMetricsSyntheticSize,
                             ctx).await {
                             error!("failed to calculate synthetic size for tenant {}: {}", tenant_id, e);
                         }

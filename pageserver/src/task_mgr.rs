@@ -237,11 +237,6 @@ pub enum TaskKind {
     /// See [`crate::disk_usage_eviction_task`].
     DiskUsageEviction,
 
-    // Initial logical size calculation
-    InitialLogicalSizeCalculation,
-
-    OndemandLogicalSizeCalculation,
-
     // Task that flushes frozen in-memory layers to disk
     LayerFlushTask,
 

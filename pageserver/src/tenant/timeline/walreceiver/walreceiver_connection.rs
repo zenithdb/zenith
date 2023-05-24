@@ -346,9 +346,7 @@ pub(super) async fn handle_walreceiver_connection(
 
             // Send the replication feedback message.
             // Regular standby_status_update fields are put into this message.
-            let (timeline_logical_size, _) = timeline
-                .get_current_logical_size(&ctx)
-                .context("Status update creation failed to get current logical size")?;
+            let timeline_logical_size = timeline.get_current_logical_size();
             let status_update = PageserverFeedback {
                 current_timeline_size: timeline_logical_size,
                 last_received_lsn,
