@@ -54,6 +54,9 @@ use bytes::{BufMut, Bytes, BytesMut};
 )]
 #[serde(tag = "slug", content = "data")]
 pub enum TenantState {
+    /// This tenant is not yet loaded
+    ///
+    NotLoaded,
     /// This tenant is being loaded from local disk.
     ///
     /// `set_stopping()` and `set_broken()` do not work in this state and wait for it to pass.
@@ -104,7 +107,7 @@ impl TenantState {
             Self::Attaching | Self::Activating(ActivatingFrom::Attaching) => Maybe,
             // tenant mgr startup distinguishes attaching from loading via marker file.
             // If it's loading, there is no attach marker file, i.e., attach had finished in the past.
-            Self::Loading | Self::Activating(ActivatingFrom::Loading) => Attached,
+            Self::NotLoaded | Self::Loading | Self::Activating(ActivatingFrom::Loading) => Attached,
             // We only reach Active after successful load / attach.
             // So, call atttachment status Attached.
             Self::Active => Attached,
@@ -907,6 +910,7 @@ mod tests {
     fn tenantstatus_activating_strum() {
         // tests added, because we use these for metrics
         let examples = [
+            (line!(), TenantState::NotLoaded, "NotLoaded"),
             (line!(), TenantState::Loading, "Loading"),
             (line!(), TenantState::Attaching, "Attaching"),
             (

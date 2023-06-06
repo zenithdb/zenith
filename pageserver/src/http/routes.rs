@@ -161,6 +161,12 @@ impl From<GetTenantError> for ApiError {
                 // (We can produce this variant only in `mgr::get_tenant(..., active=true)` calls).
                 ApiError::InternalServerError(anyhow::Error::new(e))
             }
+            e @ GetTenantError::NotLoaded(_, _) => {
+                ApiError::InternalServerError(anyhow::Error::new(e))
+            }
+            e @ GetTenantError::NotActivated(_, _) => {
+                ApiError::InternalServerError(anyhow::Error::new(e))
+            }
         }
     }
 }

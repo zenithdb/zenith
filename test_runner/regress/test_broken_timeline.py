@@ -21,6 +21,7 @@ def test_broken_timeline(neon_env_builder: NeonEnvBuilder):
             ".*will not become active. Current state: Broken.*",
             ".*failed to load metadata.*",
             ".*load failed.*load local timeline.*",
+            ".*load failed, setting tenant state to Broken.*",
         ]
     )
 
