@@ -223,6 +223,8 @@ pub struct TenantConfig {
     pub min_resident_size_override: Option<u64>,
     pub evictions_low_residence_duration_metric_threshold: Option<String>,
     pub gc_feedback: Option<bool>,
+    pub master_region: Option<String>,
+    pub master_broker_endpoint: Option<String>,
 }
 
 #[serde_as]
@@ -282,6 +284,8 @@ impl TenantConfigRequest {
             min_resident_size_override: None,
             evictions_low_residence_duration_metric_threshold: None,
             gc_feedback: None,
+            master_region: None,
+            master_broker_endpoint: None,
         };
         TenantConfigRequest { tenant_id, config }
     }

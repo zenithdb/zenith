@@ -348,7 +348,7 @@ pub async fn set_new_tenant_config(
     Tenant::persist_tenant_config(
         &tenant.tenant_id(),
         &tenant_config_path,
-        new_tenant_conf,
+        new_tenant_conf.clone(),
         false,
     )
     .map_err(SetNewTenantConfigError::Persist)?;

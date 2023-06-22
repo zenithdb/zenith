@@ -142,6 +142,7 @@ fn handle_metadata(
             meta.latest_gc_cutoff_lsn(),
             meta.initdb_lsn(),
             meta.pg_version(),
+            meta.replica_lsn(),
         );
         update_meta = true;
     }
@@ -154,6 +155,7 @@ fn handle_metadata(
             meta.latest_gc_cutoff_lsn(),
             meta.initdb_lsn(),
             meta.pg_version(),
+            meta.replica_lsn(),
         );
         update_meta = true;
     }
@@ -166,6 +168,7 @@ fn handle_metadata(
             *latest_gc_cuttoff,
             meta.initdb_lsn(),
             meta.pg_version(),
+            meta.replica_lsn(),
         );
         update_meta = true;
     }

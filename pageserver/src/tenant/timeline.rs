@@ -153,6 +153,16 @@ pub struct Timeline {
     /// See [`storage_sync`] module comment for details.
     pub remote_client: Option<Arc<RemoteTimelineClient>>,
 
+    /// Master remote storage client (for cross-region pageserver replica).
+    /// All layers created by replica are stored in local region S3 bucket, but
+    /// pageserver may need to download older layers from master S3 bucket.
+    pub master_client: Option<Arc<RemoteTimelineClient>>,
+
+    /// Remote consistent LSN at which cross-region replica was created.
+    /// All layers which start ls smaller than this point should be downloaded from master S3 bucket
+    /// (see master_client).
+    pub replica_lsn: Option<Lsn>,
+
     // What page versions do we hold in the repository? If we get a
     // request > last_record_lsn, we need to wait until we receive all
     // the WAL up to the request. The SeqWait provides functions for
@@ -1064,7 +1074,10 @@ impl Timeline {
     pub async fn download_layer(&self, layer_file_name: &str) -> anyhow::Result<Option<bool>> {
         let Some(layer) = self.find_layer(layer_file_name).await else { return Ok(None) };
         let Some(remote_layer) = layer.downcast_remote_layer() else { return  Ok(Some(false)) };
-        if self.remote_client.is_none() {
+        if self
+            .get_download_source(remote_layer.get_lsn_range().start)
+            .is_none()
+        {
             return Ok(Some(false));
         }
 
@@ -1378,6 +1391,17 @@ impl Timeline {
         }
     }
 
+    fn get_download_source(&self, layer_start_lsn: Lsn) -> Option<&Arc<RemoteTimelineClient>> {
+        self.replica_lsn
+            .map_or(self.remote_client.as_ref(), |replica_lsn| {
+                if layer_start_lsn < replica_lsn {
+                    self.master_client.as_ref()
+                } else {
+                    self.remote_client.as_ref()
+                }
+            })
+    }
+
     /// Open a Timeline handle.
     ///
     /// Loads the metadata for the timeline into memory, but not the layer map.
@@ -1391,6 +1415,8 @@ impl Timeline {
         tenant_id: TenantId,
         walredo_mgr: Arc<dyn WalRedoManager + Send + Sync>,
         remote_client: Option<RemoteTimelineClient>,
+        master_client: Option<RemoteTimelineClient>,
+        replica_lsn: Option<Lsn>,
         pg_version: u32,
         initial_logical_size_can_start: Option<completion::Barrier>,
         initial_logical_size_attempt: Option<completion::Completion>,
@@ -1425,6 +1451,9 @@ impl Timeline {
                 walreceiver: Mutex::new(None),
 
                 remote_client: remote_client.map(Arc::new),
+
+                master_client: master_client.map(Arc::new),
+                replica_lsn,
 
                 // initialize in-memory 'last_record_lsn' from 'disk_consistent_lsn'.
                 last_record_lsn: SeqWait::new(RecordLsn {
@@ -1726,7 +1755,7 @@ impl Timeline {
         Ok(())
     }
 
-    async fn create_remote_layers(
+    pub async fn create_remote_layers(
         &self,
         index_part: &IndexPart,
         local_layers: HashMap<LayerFileName, Arc<dyn PersistentLayer>>,
@@ -2972,6 +3001,7 @@ impl Timeline {
             *self.latest_gc_cutoff_lsn.read(),
             self.initdb_lsn,
             self.pg_version,
+            self.replica_lsn,
         );
 
         fail_point!("checkpoint-before-saving-metadata", |x| bail!(
@@ -3153,7 +3183,12 @@ impl Timeline {
                         layers.count_deltas(&img_range, &(img_lsn..lsn), Some(threshold))?;
 
                     max_deltas = max_deltas.max(num_deltas);
-                    if num_deltas >= threshold {
+                    // Create new image layers if there are at least `threshold` delta layers since last image layer...
+                    if num_deltas >= threshold
+					    // ...or it is master layer for cross-region replica: force generation of image layer in this case
+					    // to make replica independent from master.
+						|| img_lsn <= self.replica_lsn.unwrap_or(Lsn(0))
+                    {
                         debug!(
                             "key range {}-{}, has {} deltas on this timeline in LSN range {}..{}",
                             img_range.start, img_range.end, num_deltas, img_lsn, lsn
@@ -3487,6 +3522,13 @@ impl Timeline {
         stats.level0_deltas_count = Some(level0_deltas.len());
         stats.get_level0_deltas_plus_drop_lock_micros =
             stats.first_read_lock_acquisition_micros.till_now();
+
+        // Do not compact L0 delta from master for cross-regio replica
+        // because master and replica layers are distinguished by LSN
+        // and L0 and L1 layers have the same LSN range
+        if let Some(replica_lsn) = &self.replica_lsn {
+            level0_deltas.retain(|l| l.get_lsn_range().start >= *replica_lsn);
+        }
 
         // Only compact if enough layers have accumulated.
         let threshold = self.get_compaction_threshold();
@@ -4409,7 +4451,7 @@ impl Timeline {
             &format!("download layer {}", remote_layer.short_id()),
             false,
             async move {
-                let remote_client = self_clone.remote_client.as_ref().unwrap();
+                let remote_client = self_clone.get_download_source(remote_layer.get_lsn_range().start).unwrap();
 
                 // Does retries + exponential back-off internally.
                 // When this fails, don't layer further retry attempts here.

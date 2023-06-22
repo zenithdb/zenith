@@ -23,10 +23,7 @@ use crate::config::PageServerConf;
 use crate::virtual_file::VirtualFile;
 
 /// Use special format number to enable backward compatibility.
-const METADATA_FORMAT_VERSION: u16 = 4;
-
-/// Previous supported format versions.
-const METADATA_OLD_FORMAT_VERSION: u16 = 3;
+const METADATA_FORMAT_VERSION: u16 = 5;
 
 /// We assume that a write of up to METADATA_MAX_SIZE bytes is atomic.
 ///
@@ -40,7 +37,7 @@ const METADATA_MAX_SIZE: usize = 512;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimelineMetadata {
     hdr: TimelineMetadataHeader,
-    body: TimelineMetadataBodyV2,
+    body: TimelineMetadataBodyV3,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +70,28 @@ struct TimelineMetadataBodyV2 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct TimelineMetadataBodyV3 {
+    disk_consistent_lsn: Lsn,
+    // This is only set if we know it. We track it in memory when the page
+    // server is running, but we only track the value corresponding to
+    // 'last_record_lsn', not 'disk_consistent_lsn' which can lag behind by a
+    // lot. We only store it in the metadata file when we flush *all* the
+    // in-memory data so that 'last_record_lsn' is the same as
+    // 'disk_consistent_lsn'.  That's OK, because after page server restart, as
+    // soon as we reprocess at least one record, we will have a valid
+    // 'prev_record_lsn' value in memory again. This is only really needed when
+    // doing a clean shutdown, so that there is no more WAL beyond
+    // 'disk_consistent_lsn'
+    prev_record_lsn: Option<Lsn>,
+    ancestor_timeline: Option<TimelineId>,
+    ancestor_lsn: Lsn,
+    latest_gc_cutoff_lsn: Lsn,
+    initdb_lsn: Lsn,
+    pg_version: u32,
+    replica_lsn: Option<Lsn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct TimelineMetadataBodyV1 {
     disk_consistent_lsn: Lsn,
     // This is only set if we know it. We track it in memory when the page
@@ -101,6 +120,7 @@ impl TimelineMetadata {
         latest_gc_cutoff_lsn: Lsn,
         initdb_lsn: Lsn,
         pg_version: u32,
+        replica_lsn: Option<Lsn>,
     ) -> Self {
         Self {
             hdr: TimelineMetadataHeader {
@@ -108,7 +128,7 @@ impl TimelineMetadata {
                 size: 0,
                 format_version: METADATA_FORMAT_VERSION,
             },
-            body: TimelineMetadataBodyV2 {
+            body: TimelineMetadataBodyV3 {
                 disk_consistent_lsn,
                 prev_record_lsn,
                 ancestor_timeline,
@@ -116,35 +136,48 @@ impl TimelineMetadata {
                 latest_gc_cutoff_lsn,
                 initdb_lsn,
                 pg_version,
+                replica_lsn,
             },
         }
     }
 
     fn upgrade_timeline_metadata(metadata_bytes: &[u8]) -> anyhow::Result<Self> {
         let mut hdr = TimelineMetadataHeader::des(&metadata_bytes[0..METADATA_HDR_SIZE])?;
-
-        // backward compatible only up to this version
-        ensure!(
-            hdr.format_version == METADATA_OLD_FORMAT_VERSION,
-            "unsupported metadata format version {}",
-            hdr.format_version
-        );
-
         let metadata_size = hdr.size as usize;
 
-        let body: TimelineMetadataBodyV1 =
-            TimelineMetadataBodyV1::des(&metadata_bytes[METADATA_HDR_SIZE..metadata_size])?;
+        let body = match hdr.format_version {
+            3 => {
+                let body: TimelineMetadataBodyV1 =
+                    TimelineMetadataBodyV1::des(&metadata_bytes[METADATA_HDR_SIZE..metadata_size])?;
 
-        let body = TimelineMetadataBodyV2 {
-            disk_consistent_lsn: body.disk_consistent_lsn,
-            prev_record_lsn: body.prev_record_lsn,
-            ancestor_timeline: body.ancestor_timeline,
-            ancestor_lsn: body.ancestor_lsn,
-            latest_gc_cutoff_lsn: body.latest_gc_cutoff_lsn,
-            initdb_lsn: body.initdb_lsn,
-            pg_version: 14, // All timelines created before this version had pg_version 14
+                TimelineMetadataBodyV3 {
+                    disk_consistent_lsn: body.disk_consistent_lsn,
+                    prev_record_lsn: body.prev_record_lsn,
+                    ancestor_timeline: body.ancestor_timeline,
+                    ancestor_lsn: body.ancestor_lsn,
+                    latest_gc_cutoff_lsn: body.latest_gc_cutoff_lsn,
+                    initdb_lsn: body.initdb_lsn,
+                    pg_version: 14, // All timelines created before this version had pg_version 14
+                    replica_lsn: None,
+                }
+            }
+            4 => {
+                let body: TimelineMetadataBodyV2 =
+                    TimelineMetadataBodyV2::des(&metadata_bytes[METADATA_HDR_SIZE..metadata_size])?;
+
+                TimelineMetadataBodyV3 {
+                    disk_consistent_lsn: body.disk_consistent_lsn,
+                    prev_record_lsn: body.prev_record_lsn,
+                    ancestor_timeline: body.ancestor_timeline,
+                    ancestor_lsn: body.ancestor_lsn,
+                    latest_gc_cutoff_lsn: body.latest_gc_cutoff_lsn,
+                    initdb_lsn: body.initdb_lsn,
+                    pg_version: body.pg_version, // All timelines created before this version had pg_version 14
+                    replica_lsn: None,
+                }
+            }
+            _ => bail!("unsupported metadata format version {}", hdr.format_version),
         };
-
         hdr.format_version = METADATA_FORMAT_VERSION;
 
         Ok(Self { hdr, body })
@@ -174,7 +207,7 @@ impl TimelineMetadata {
             TimelineMetadata::upgrade_timeline_metadata(metadata_bytes)
         } else {
             let body =
-                TimelineMetadataBodyV2::des(&metadata_bytes[METADATA_HDR_SIZE..metadata_size])?;
+                TimelineMetadataBodyV3::des(&metadata_bytes[METADATA_HDR_SIZE..metadata_size])?;
             ensure!(
                 body.disk_consistent_lsn.is_aligned(),
                 "disk_consistent_lsn is not aligned"
@@ -226,6 +259,10 @@ impl TimelineMetadata {
 
     pub fn pg_version(&self) -> u32 {
         self.body.pg_version
+    }
+
+    pub fn replica_lsn(&self) -> Option<Lsn> {
+        self.body.replica_lsn
     }
 }
 
@@ -330,7 +367,7 @@ mod tests {
             hdr: TimelineMetadataHeader {
                 checksum: 0,
                 size: 0,
-                format_version: METADATA_OLD_FORMAT_VERSION,
+                format_version: 3,
             },
             body: TimelineMetadataBodyV1 {
                 disk_consistent_lsn: Lsn(0x200),

@@ -12,7 +12,7 @@ use utils::id::{TenantId, TimelineId};
 use super::index::LayerFileMetadata;
 
 /// Serializes and uploads the given index part data to the remote storage.
-pub(super) async fn upload_index_part<'a>(
+pub async fn upload_index_part<'a>(
     conf: &'static PageServerConf,
     storage: &'a GenericRemoteStorage,
     tenant_id: TenantId,

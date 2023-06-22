@@ -60,12 +60,11 @@ use crate::task_mgr;
 use crate::task_mgr::TaskKind;
 use crate::tenant::config::TenantConfOpt;
 use crate::tenant::metadata::load_metadata;
-use crate::tenant::remote_timeline_client::index::IndexPart;
-use crate::tenant::remote_timeline_client::MaybeDeletedIndexPart;
-use crate::tenant::remote_timeline_client::PersistIndexPartWithDeletedFlagError;
-use crate::tenant::storage_layer::DeltaLayer;
-use crate::tenant::storage_layer::ImageLayer;
-use crate::tenant::storage_layer::Layer;
+use crate::tenant::remote_timeline_client::index::{IndexPart, LayerFileMetadata};
+use crate::tenant::remote_timeline_client::{
+    MaybeDeletedIndexPart, PersistIndexPartWithDeletedFlagError,
+};
+use crate::tenant::storage_layer::{DeltaLayer, ImageLayer, Layer, LayerFileName};
 use crate::InitializationOrder;
 
 use crate::virtual_file::VirtualFile;
@@ -153,6 +152,9 @@ pub struct Tenant {
 
     // provides access to timeline data sitting in the remote storage
     remote_storage: Option<GenericRemoteStorage>,
+
+    // for cross-region replication: provide access to master S3 bucket
+    master_storage: Option<GenericRemoteStorage>,
 
     /// Cached logical sizes updated updated on each [`Tenant::gather_size_inputs`].
     cached_logical_sizes: tokio::sync::Mutex<HashMap<(TimelineId, Lsn), u64>>,
@@ -652,7 +654,7 @@ impl Tenant {
                 match tenant_clone.attach(&ctx).await {
                     Ok(()) => {
                         info!("attach finished, activating");
-                        tenant_clone.activate(broker_client, None, &ctx);
+                        tenant_clone.activate(broker_client, None, &ctx)?;
                     }
                     Err(e) => {
                         error!("attach failed, setting tenant state to Broken: {:?}", e);
@@ -939,7 +941,7 @@ impl Tenant {
                     Ok(()) => {
                         debug!("load finished, activating");
                         let background_jobs_can_start = init_order.as_ref().map(|x| &x.background_jobs_can_start);
-                        tenant_clone.activate(broker_client, background_jobs_can_start, &ctx);
+                        tenant_clone.activate(broker_client, background_jobs_can_start, &ctx)?;
                     }
                     Err(err) => {
                         error!("load failed, setting tenant state to Broken: {err:?}");
@@ -1317,6 +1319,7 @@ impl Tenant {
             initdb_lsn,
             initdb_lsn,
             pg_version,
+            None,
         );
         self.prepare_new_timeline(
             new_timeline_id,
@@ -1362,6 +1365,218 @@ impl Tenant {
         // The non-test code would call tl.activate() here.
         tl.set_state(TimelineState::Active);
         Ok(tl)
+    }
+
+    pub async fn create_timeline_replica(
+        &self,
+        timeline_id: TimelineId,
+        ctx: &RequestContext,
+    ) -> anyhow::Result<()> {
+        // We need to connect to broker in master's region to choose safekeeper to subscribe
+        let master_broker_endpoint = self
+            .tenant_conf
+            .read()
+            .unwrap()
+            .master_broker_endpoint
+            .as_ref()
+            .unwrap()
+            .clone();
+        let broker_client =
+            storage_broker::connect(master_broker_endpoint, self.conf.broker_keepalive_interval)?;
+
+        // Access to S3 bucket in master's region
+        let master_storage = self
+            .master_storage
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("master storage not specified"))?;
+        let master_client = RemoteTimelineClient::new(
+            master_storage.clone(),
+            self.conf,
+            self.tenant_id,
+            timeline_id,
+        );
+
+        // Access to local S3 bucket in this region
+        let remote_storage = self
+            .master_storage
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("remote storage not specified"))?;
+        let remote_client = RemoteTimelineClient::new(
+            remote_storage.clone(),
+            self.conf,
+            self.tenant_id,
+            timeline_id,
+        );
+
+        // Get list of all timelines from master. We actually do not need all - only
+        // ancestors of the target timeline.
+        let remote_timeline_ids = remote_timeline_client::list_remote_timelines(
+            master_storage,
+            self.conf,
+            self.tenant_id,
+        )
+        .await?;
+
+        // Download & parse index parts
+        let mut part_downloads = JoinSet::new();
+
+        for timeline_id in remote_timeline_ids {
+            let client = RemoteTimelineClient::new(
+                master_storage.clone(),
+                self.conf,
+                self.tenant_id,
+                timeline_id,
+            );
+            part_downloads.spawn(
+                async move {
+                    debug!("starting index part download");
+
+                    let index_part = client
+                        .download_index_file()
+                        .await
+                        .context("download index file")?;
+
+                    debug!("finished index part download");
+
+                    Result::<_, anyhow::Error>::Ok((timeline_id, client, index_part))
+                }
+                .map(move |res| {
+                    res.with_context(|| format!("download index part for timeline {timeline_id}"))
+                })
+                .instrument(info_span!("download_index_part", timeline=%timeline_id)),
+            );
+        }
+        // Wait for all the download tasks to complete & collect results.
+        let mut remote_index_and_client = HashMap::new();
+        while let Some(result) = part_downloads.join_next().await {
+            // NB: we already added timeline_id as context to the error
+            let result: Result<_, anyhow::Error> = result.context("joinset task join")?;
+            let (timeline_id, client, index_part) = result?;
+            debug!("successfully downloaded index part for timeline {timeline_id}");
+            match index_part {
+                MaybeDeletedIndexPart::IndexPart(index_part) => {
+                    remote_index_and_client.insert(timeline_id, (index_part, client));
+                }
+                MaybeDeletedIndexPart::Deleted(_) => {
+                    info!("timeline {} is deleted, skipping", timeline_id);
+                    continue;
+                }
+            }
+        }
+
+        let (index_part, _client) = remote_index_and_client
+            .get(&timeline_id)
+            .expect("timeline found at master");
+        let mut timeline_metadata = index_part.parse_metadata().context("parse_metadata")?;
+
+        // Convert IndexLayerMetadata to LayerFileMetadata
+        let mut layer_metadata: HashMap<LayerFileName, LayerFileMetadata> = index_part
+            .layer_metadata
+            .iter()
+            .map(|(fname, meta)| (fname.clone(), LayerFileMetadata::from(meta)))
+            .collect();
+
+        // Let replic_lsn be the largest end LSN
+        let replica_lsn = layer_metadata
+            .keys()
+            .map(|fname| fname.get_lsn_range().end)
+            .max()
+            .unwrap_or(timeline_metadata.ancestor_lsn());
+
+        let old_metadata = timeline_metadata.clone();
+
+        // Now collect layers of ancestor branches. We do not want to reconstruct exact branch
+        // hierarhy at replica, because in this case we need to maintain several timelines.
+        // Instead of it we just collect all layers which may be required for the current timeline.
+        while let Some(ancestor_id) = timeline_metadata.ancestor_timeline() {
+            let (index_part, _client) = remote_index_and_client
+                .get(&ancestor_id)
+                .expect("timeline found at master");
+            for (fname, meta) in &index_part.layer_metadata {
+                if fname.get_lsn_range().start < timeline_metadata.ancestor_lsn() {
+                    layer_metadata.insert(fname.clone(), LayerFileMetadata::from(meta));
+                }
+            }
+            timeline_metadata = index_part.parse_metadata().context("parse_metadata")?;
+        }
+        let new_metadata = TimelineMetadata::new(
+            old_metadata.disk_consistent_lsn(),
+            old_metadata.prev_record_lsn(),
+            None,
+            Lsn::INVALID,
+            old_metadata.latest_gc_cutoff_lsn(),
+            old_metadata.initdb_lsn(),
+            old_metadata.pg_version(),
+            Some(replica_lsn),
+        );
+
+        // Initialize data directories for new timeline
+        tokio::fs::create_dir_all(self.conf.timeline_path(&timeline_id, &self.tenant_id))
+            .await
+            .context("Failed to create new timeline directory")?;
+
+        // Save timeline metadata
+        save_metadata(self.conf, timeline_id, self.tenant_id, &new_metadata, true)
+            .context("Failed to create timeline metadata")?;
+
+        // construct new index_part.json with combined list of layers
+        let index_part = IndexPart::new(
+            layer_metadata,
+            old_metadata.disk_consistent_lsn(),
+            new_metadata.to_bytes()?,
+        );
+
+        remote_client.init_upload_queue(&index_part)?;
+
+        let timeline = Timeline::new(
+            self.conf,
+            Arc::clone(&self.tenant_conf),
+            &new_metadata,
+            None, // we do not need to restore branches hierarhy at replica
+            timeline_id,
+            self.tenant_id,
+            Arc::clone(&self.walredo_mgr),
+            Some(remote_client),
+            Some(master_client),
+            Some(replica_lsn),
+            old_metadata.pg_version(),
+            None, // no need to calcuate logical size at replica
+            None,
+        );
+
+        // Wait completion of index part upload */
+        timeline
+            .remote_client
+            .as_ref()
+            .unwrap()
+            .wait_completion()
+            .await
+            .context("wait for index part upload to complete")?;
+
+        /* Do we need to perform explicit upload?
+        // Upload this index_part.json to S3 bucket
+        upload_index_part(
+            self.conf,
+            &remote_storage,
+            self.tenant_id,
+            timeline_id,
+            &index_part,
+        )
+        .await?;
+         */
+
+        timeline
+            .create_remote_layers(
+                &index_part,
+                HashMap::new(), // no local layers
+                replica_lsn,
+            )
+            .await?;
+
+        // Start background works for this timeline
+        timeline.activate(broker_client, None, ctx);
+
+        Ok(())
     }
 
     /// Create a new timeline.
@@ -1444,7 +1659,7 @@ impl Tenant {
             }
         };
 
-        loaded_timeline.activate(broker_client, None, ctx);
+        loaded_timeline.activate(self.get_broker_channel(broker_client)?, None, ctx);
 
         if let Some(remote_client) = loaded_timeline.remote_client.as_ref() {
             // Wait for the upload of the 'index_part.json` file to finish, so that when we return
@@ -1876,6 +2091,21 @@ impl Tenant {
         self.current_state() == TenantState::Active
     }
 
+    fn get_broker_channel(
+        &self,
+        broker_client: BrokerClientChannel,
+    ) -> anyhow::Result<BrokerClientChannel> {
+        let tenent_config_guard = self.tenant_conf.read().unwrap();
+        if let Some(master_broker_endpoint) = &tenent_config_guard.master_broker_endpoint {
+            storage_broker::connect(
+                master_broker_endpoint.clone(),
+                self.conf.broker_keepalive_interval,
+            )
+        } else {
+            Ok(broker_client)
+        }
+    }
+
     /// Changes tenant status to active, unless shutdown was already requested.
     ///
     /// `background_jobs_can_start` is an optional barrier set to a value during pageserver startup
@@ -1885,7 +2115,7 @@ impl Tenant {
         broker_client: BrokerClientChannel,
         background_jobs_can_start: Option<&completion::Barrier>,
         ctx: &RequestContext,
-    ) {
+    ) -> anyhow::Result<()> {
         debug_assert_current_span_has_tenant_id();
 
         let mut activating = false;
@@ -1921,7 +2151,11 @@ impl Tenant {
             let mut activated_timelines = 0;
 
             for timeline in timelines_to_activate {
-                timeline.activate(broker_client.clone(), background_jobs_can_start, ctx);
+                timeline.activate(
+                    self.get_broker_channel(broker_client.clone())?,
+                    background_jobs_can_start,
+                    ctx,
+                );
                 activated_timelines += 1;
             }
 
@@ -1947,6 +2181,7 @@ impl Tenant {
                 );
             });
         }
+        Ok(())
     }
 
     /// Shutdown the tenant and join all of the spawned tasks.
@@ -2210,12 +2445,12 @@ fn tree_sort_timelines(
 
 impl Tenant {
     pub fn tenant_specific_overrides(&self) -> TenantConfOpt {
-        *self.tenant_conf.read().unwrap()
+        self.tenant_conf.read().unwrap().clone()
     }
 
     pub fn effective_config(&self) -> TenantConf {
         self.tenant_specific_overrides()
-            .merge(self.conf.default_tenant_conf)
+            .merge(self.conf.default_tenant_conf.clone())
     }
 
     pub fn get_checkpoint_distance(&self) -> u64 {
@@ -2329,6 +2564,16 @@ impl Tenant {
         let initial_logical_size_can_start = init_order.map(|x| &x.initial_logical_size_can_start);
         let initial_logical_size_attempt = init_order.map(|x| &x.initial_logical_size_attempt);
 
+        let master_client = if let Some(master_storage) = &self.master_storage {
+            Some(RemoteTimelineClient::new(
+                master_storage.clone(),
+                self.conf,
+                self.tenant_id,
+                new_timeline_id,
+            ))
+        } else {
+            None
+        };
         let pg_version = new_metadata.pg_version();
         Ok(Timeline::new(
             self.conf,
@@ -2339,6 +2584,8 @@ impl Tenant {
             self.tenant_id,
             Arc::clone(&self.walredo_mgr),
             remote_client,
+            master_client,
+            new_metadata.replica_lsn(),
             pg_version,
             initial_logical_size_can_start.cloned(),
             initial_logical_size_attempt.cloned(),
@@ -2354,6 +2601,18 @@ impl Tenant {
         remote_storage: Option<GenericRemoteStorage>,
     ) -> Tenant {
         let (state, mut rx) = watch::channel(state);
+
+        let master_storage = if let Some(remote_storage_config) = &conf.remote_storage_config {
+            if let Some(region) = &tenant_conf.master_region {
+                let master_storage_config =
+                    remote_storage_config.in_region(region.clone()).unwrap();
+                Some(GenericRemoteStorage::from_config(&master_storage_config).unwrap())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         tokio::spawn(async move {
             let mut current_state: &'static str = From::from(&*rx.borrow_and_update());
@@ -2393,6 +2652,7 @@ impl Tenant {
             gc_cs: tokio::sync::Mutex::new(()),
             walredo_mgr,
             remote_storage,
+            master_storage,
             state,
             cached_logical_sizes: tokio::sync::Mutex::new(HashMap::new()),
             cached_synthetic_tenant_size: Arc::new(AtomicU64::new(0)),
@@ -2814,6 +3074,7 @@ impl Tenant {
             *src_timeline.latest_gc_cutoff_lsn.read(), // FIXME: should we hold onto this guard longer?
             src_timeline.initdb_lsn,
             src_timeline.pg_version,
+            None, // no branches at replica
         );
 
         let uninitialized_timeline = self.prepare_new_timeline(
@@ -2899,6 +3160,7 @@ impl Tenant {
             pgdata_lsn,
             pgdata_lsn,
             pg_version,
+            None,
         );
         let raw_timeline = self.prepare_new_timeline(
             timeline_id,
