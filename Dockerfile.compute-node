@@ -10,10 +10,10 @@ ARG BUILD_TAG
 #
 #########################################################################################
 FROM debian:bullseye-slim AS build-deps
-RUN apt update &&  \
+RUN apt update && \
     apt install -y git autoconf automake libtool build-essential bison flex libreadline-dev \
     zlib1g-dev libxml2-dev libcurl4-openssl-dev libossp-uuid-dev wget pkg-config libssl-dev \
-    libicu-dev libxslt1-dev liblz4-dev libzstd-dev
+    libicu-dev libxslt1-dev liblz4-dev libzstd-dev python3 python3-dev python3-pip libpython3-dev
 
 #########################################################################################
 #
@@ -26,7 +26,7 @@ ARG PG_VERSION
 COPY vendor/postgres-${PG_VERSION} postgres
 RUN cd postgres && \
     export CONFIGURE_CMD="./configure CFLAGS='-O2 -g3' --enable-debug --with-openssl --with-uuid=ossp \
-    --with-icu --with-libxml --with-libxslt --with-lz4" && \
+    --with-icu --with-libxml --with-libxslt --with-lz4 --with-python" && \
     if [ "${PG_VERSION}" != "v14" ]; then \
         # zstd is available only from PG15
         export CONFIGURE_CMD="${CONFIGURE_CMD} --with-zstd"; \
@@ -41,9 +41,13 @@ RUN cd postgres && \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/autoinc.control && \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/bloom.control && \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/earthdistance.control && \
+    echo 'trusted = true' >> /usr/local/pgsql/share/extension/hstore_plpython3u.control && \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/insert_username.control && \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/intagg.control && \
+    echo 'trusted = true' >> /usr/local/pgsql/share/extension/jsonb_plpython3u.control && \
+    echo 'trusted = true' >> /usr/local/pgsql/share/extension/ltree_plpythonu.control && \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/moddatetime.control && \
+    echo 'trusted = true' >> /usr/local/pgsql/share/extension/plpython3u.control && \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/pg_stat_statements.control && \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/pgrowlocks.control && \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/pgstattuple.control && \
@@ -794,6 +798,7 @@ COPY --from=compute-tools --chown=postgres /home/nonroot/target/release-line-deb
 # libxml2, libxslt1.1 for xml2
 # libzstd1 for zstd
 # libboost*, libfreetype6, and zlib1g for rdkit
+# python3* for plpython3u
 RUN apt update &&  \
     apt install --no-install-recommends -y \
         gdb \
@@ -817,6 +822,8 @@ RUN apt update &&  \
         libcurl4-openssl-dev \
         locales \
         procps \
+        python3 \
+        python3-pip \
         zlib1g && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
     localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
