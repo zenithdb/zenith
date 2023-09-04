@@ -88,15 +88,49 @@ static LWLockId lfc_lock;
 static int   lfc_max_size;
 static int   lfc_size_limit;
 static int   lfc_free_space_watermark;
+static int   lfc_free_memory_watermark;
 static char* lfc_path;
 static  FileCacheControl* lfc_ctl;
 static shmem_startup_hook_type prev_shmem_startup_hook;
 #if PG_VERSION_NUM>=150000
 static shmem_request_hook_type prev_shmem_request_hook;
 #endif
-static int   lfc_shrinking_factor; /* power of two by which local cache size will be shrinked when lfc_free_space_watermark is reached */
+static int   lfc_shrinking_factor; /* power of two by which local cache size will be shrinked when lfc_free_space_watermark or lfc_free_memory_watermak are reached */
 
 void FileCacheMonitorMain(Datum main_arg);
+
+#ifdef __APPLE__
+
+#include <sys/types.h>
+#include <sys/sysctl.h>
+
+static size_t
+get_available_memory(void)
+{
+	size_t total;
+	size_t sizeof_total = sizeof(total);
+	if (sysctlbyname("hw.memsize", &total, &sizeof_total, NULL, 0) < 0)
+		elog(ERROR, "Failed to get amount of RAM: %m");
+
+	return total;
+}
+
+#else
+
+#include <sys/sysinfo.h>
+
+static size_t
+get_available_memory(void)
+{
+	struct sysinfo si;
+	if (sysinfo(&si) < 0)
+		elog(ERROR, "Failed to get amount of RAM: %m");
+
+	return si.totalram*si.mem_unit;
+}
+
+#endif
+
 
 static void
 lfc_shmem_startup(void)
@@ -195,10 +229,11 @@ lfc_change_limit_hook(int newval, void *extra)
 }
 
 /*
- * Local file system state monitor check available free space.
- * If it is lower than lfc_free_space_watermark then we shrink size of local cache
+ * Local file system state monitor check available free space and memory.
+ * If available disk space is lower than lfc_free_space_watermark or
+ * available memory is lower than lfc_free_memory_watermark then we shrink size of local cache
  * but throwing away least recently accessed chunks.
- * First time low space watermark is reached cache size is divided by two,
+ * First time the watermark is reached cache size is divided by two,
  * second time by four,... Finally we remove all chunks from local cache.
  *
  * Please notice that we are not changing lfc_cache_size: it is used to be adjusted by autoscaler.
@@ -228,23 +263,27 @@ FileCacheMonitorMain(Datum main_arg)
 	{
 		if (lfc_size_limit != 0)
 		{
-			struct statvfs sfs;
-			if (statvfs(lfc_path, &sfs) < 0)
+			bool shrink_cache = false;
+			if (lfc_free_space_watermark != 0)
 			{
-				elog(WARNING, "Failed to obtain status of %s: %m", lfc_path);
+				struct statvfs sfs;
+				if (statvfs(lfc_path, &sfs) < 0)
+					elog(WARNING, "Failed to obtain status of %s: %m", lfc_path);
+				else
+					shrink_cache |= sfs.f_bavail*sfs.f_bsize < lfc_free_space_watermark*MB;
+			}
+			if (lfc_free_memory_watermark != 0)
+				shrink_cache |= get_available_memory() < lfc_free_memory_watermark*MB;
+
+			if (shrink_cache)
+			{
+				if (lfc_shrinking_factor < 31) {
+					lfc_shrinking_factor += 1;
+				}
+				lfc_change_limit_hook(lfc_size_limit >> lfc_shrinking_factor, NULL);
 			}
 			else
-			{
-				if (sfs.f_bavail*sfs.f_bsize < lfc_free_space_watermark*MB)
-				{
-					if (lfc_shrinking_factor < 31) {
-						lfc_shrinking_factor += 1;
-					}
-					lfc_change_limit_hook(lfc_size_limit >> lfc_shrinking_factor, NULL);
-				}
-				else
-					lfc_shrinking_factor = 0; /* reset to initial value */
-			}
+				lfc_shrinking_factor = 0; /* reset to initial value */
 		}
 		pg_usleep(monitor_interval);
 	}
@@ -309,6 +348,19 @@ lfc_init(void)
 							NULL,
 							&lfc_free_space_watermark,
 							1024, /* 1GB */
+							0,
+							INT_MAX,
+							PGC_SIGHUP,
+							GUC_UNIT_MB,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("neon.free_memory_watermark",
+							"Minimal free memory in system after reaching which local file cache will be truncated",
+							NULL,
+							&lfc_free_memory_watermark,
+							0, /* disabled by default, because iurt makes sense only when local file cache is located i tmpfs  */
 							0,
 							INT_MAX,
 							PGC_SIGHUP,
