@@ -272,7 +272,7 @@ def list_prefix(
     """
     Note that this function takes into account prefix_in_bucket.
     """
-    # For local_fs we need to properly handle empty directories, which we currently dont, so for simplicity stick to s3 api.
+    # For local_fs we need to properly handle empty directories, which we currently don't, so for simplicity stick to s3 api.
     remote = neon_env_builder.pageserver_remote_storage
     assert isinstance(remote, S3Storage), "localfs is currently not supported"
     assert remote.client is not None
@@ -285,7 +285,7 @@ def list_prefix(
         # mock_s3 tests use special pageserver prefix for pageserver stuff
         prefix = "/".join((prefix_in_bucket, prefix))
 
-    # Note that this doesnt use pagination, so list is not guaranteed to be exhaustive.
+    # Note that this doesn't use pagination, so list is not guaranteed to be exhaustive.
     response = remote.client.list_objects_v2(
         Delimiter=delimiter,
         Bucket=remote.bucket_name,

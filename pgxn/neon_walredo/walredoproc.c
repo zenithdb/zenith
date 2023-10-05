@@ -405,7 +405,7 @@ CreateFakeSharedMemoryAndSemaphores()
 #else
 	/*
 	 * Postgres v14 doesn't have a separate CalculateShmemSize(). Use result of the
-	 * corresponging calculation in CreateSharedMemoryAndSemaphores()
+	 * corresponding calculation in CreateSharedMemoryAndSemaphores()
 	 */
 	size = 1409024;
 	numSemas = 10;

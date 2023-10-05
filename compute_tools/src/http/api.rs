@@ -232,7 +232,7 @@ async fn handle_configure_request(
 
         // XXX: wrap state update under lock in code blocks. Otherwise,
         // we will try to `Send` `mut state` into the spawned thread
-        // bellow, which will cause error:
+        // below, which will cause error:
         // ```
         // error: future cannot be sent between threads safely
         // ```

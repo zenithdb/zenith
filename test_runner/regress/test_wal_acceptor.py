@@ -276,7 +276,7 @@ def test_broker(neon_env_builder: NeonEnvBuilder):
 
     # FIXME: Is this expected?
     env.pageserver.allowed_errors.append(
-        ".*init_tenant_mgr: marking .* as locally complete, while it doesnt exist in remote index.*"
+        ".*init_tenant_mgr: marking .* as locally complete, while it doesn't exist in remote index.*"
     )
 
     endpoint = env.endpoints.create_start("test_broker")
@@ -320,7 +320,7 @@ def test_wal_removal(neon_env_builder: NeonEnvBuilder, auth_enabled: bool):
 
     # FIXME: Is this expected?
     env.pageserver.allowed_errors.append(
-        ".*init_tenant_mgr: marking .* as locally complete, while it doesnt exist in remote index.*"
+        ".*init_tenant_mgr: marking .* as locally complete, while it doesn't exist in remote index.*"
     )
 
     tenant_id = env.initial_tenant

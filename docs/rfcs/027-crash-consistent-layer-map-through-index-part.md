@@ -86,7 +86,7 @@ The layer files in the local timeline dir are seen as a nice-to-have cache of la
 Any layer files in the local timeline dir that aren't in the remote index part are removed during startup.
 The `Timeline::load_layer_map()` no longer "merges" local timeline dir contents with the remote index part.
 Instead, it treats the remote index part as the authoritative layer map.
-If the local timeline dir contains a layer that is in the remote index part, that's nice, and we'll re-use it if file size (and in the future, check sum) match what's stated in the index part.
+If the local timeline dir contains a layer that is in the remote index part, that's nice, and we'll reuse it if file size (and in the future, check sum) match what's stated in the index part.
 If it doesn't match, we remove the file from the local timeline dir.
 
 After load, **at runtime**, nothing changes compared to what we did before this RFC.

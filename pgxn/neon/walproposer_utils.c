@@ -64,7 +64,7 @@ CompareLsn(const void *a, const void *b)
 		return 1;
 }
 
-/* Returns a human-readable string corresonding to the SafekeeperState
+/* Returns a human-readable string corresponding to the SafekeeperState
  *
  * The string should not be freed.
  *

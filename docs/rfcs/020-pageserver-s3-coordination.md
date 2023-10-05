@@ -37,7 +37,7 @@ sequenceDiagram
 ```
 
 At this point it is not possible to restore from index, it contains L2 which
-is no longer available in s3 and doesnt contain L3 added by compaction by the
+is no longer available in s3 and doesn't contain L3 added by compaction by the
 first pageserver. So if any of the pageservers restart initial sync will fail
 (or in on-demand world it will fail a bit later during page request from
 missing layer)
@@ -62,7 +62,7 @@ contents. (There is no need to run walreceiver on the second pageserver then).
   pace as the primary one
 - Can compaction help make layers deterministic? E g we do not upload level
   zero layers and construction of higher levels should be deterministic.
-  This way we can guarantee that layer creation by timeout wont mess things up.
+  This way we can guarantee that layer creation by timeout won't mess things up.
   This way one pageserver uploads data and second one can just ingest it.
   But we still need some form of election
 
@@ -74,7 +74,7 @@ One possible solution for relocation case is to orchestrate background jobs
 from outside. The oracle who runs migration can turn off background jobs on
 PS1 before migration and then run migration -> enable them on PS2. The problem
 comes if migration fails. In this case in order to resume background jobs
-oracle needs to guarantee that PS2 doesnt run background jobs and if it doesnt
+oracle needs to guarantee that PS2 doesn't run background jobs and if it doesn't
 respond then PS1 is stuck unable to run compaction/gc. This cannot be solved
 without human ensuring that no upload from PS2 can happen. In order to be able
 to resolve this automatically CAS is required on S3 side so pageserver can
@@ -128,7 +128,7 @@ During discussion it seems that we converged on the approach consisting of:
   whether we need to apply change to the index state or not.
 - Responsibility for running background jobs is assigned externally. Pageserver
   keeps locally persistent flag for each tenant that indicates whether this
-  pageserver is considered as primary one or not. TODO what happends if we
+  pageserver is considered as primary one or not. TODO what happens if we
   crash and cannot start for some extended period of time? Control plane can
   assign ownership to some other pageserver. Pageserver needs some way to check
   if its still the blessed one. Maybe by explicit request to control plane on
@@ -138,7 +138,7 @@ Requirement for deterministic layer generation was considered overly strict
 because of two reasons:
 
 - It can limit possible optimizations e g when pageserver wants to reshuffle
-  some data locally and doesnt want to coordinate this
+  some data locally and doesn't want to coordinate this
 - The deterministic algorithm itself can change so during deployments for some
   time there will be two different version running at the same time which can
   cause non determinism
@@ -203,11 +203,11 @@ sequenceDiagram
 ### Eviction
 
 When two pageservers operate on a tenant for extended period of time follower
-doesnt perform write operations in s3. When layer is evicted follower relies
+doesn't perform write operations in s3. When layer is evicted follower relies
 on updates from primary to get info about layers it needs to cover range for
 evicted layer.
 
-Note that it wont match evicted layer exactly, so layers will overlap and
+Note that it won't match evicted layer exactly, so layers will overlap and
 lookup code needs to correctly handle that.
 
 ### Relocation flow

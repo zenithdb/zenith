@@ -316,7 +316,7 @@ impl AsyncTestContext for MaybeEnabledS3WithTestBlobs {
 }
 
 // NOTE: the setups for the list_prefixes test and the list_files test are very similar
-// However, they are not idential. The list_prefixes function is concerned with listing prefixes,
+// However, they are not identical. The list_prefixes function is concerned with listing prefixes,
 // whereas the list_files function is concerned with listing files.
 // See `RemoteStorage::list_files` documentation for more details
 enum MaybeEnabledS3WithSimpleTestBlobs {

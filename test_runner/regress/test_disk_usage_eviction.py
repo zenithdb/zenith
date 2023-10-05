@@ -57,7 +57,7 @@ def test_min_resident_size_override_handling(
     tenant_id, _ = env.neon_cli.create_tenant()
     assert_overrides(tenant_id, config_level_override)
 
-    # Also ensure that specifying the paramter to create_tenant works, in addition to http-level recconfig.
+    # Also ensure that specifying the parameter to create_tenant works, in addition to http-level recconfig.
     tenant_id, _ = env.neon_cli.create_tenant(conf={"min_resident_size_override": "100"})
     assert_config(tenant_id, 100, 100)
     ps_http.set_tenant_config(tenant_id, {})
@@ -330,7 +330,7 @@ def test_pageserver_respects_overridden_resident_size(eviction_env: EvictionEnv)
         large_tenant[0], {"min_resident_size_override": min_resident_size}
     )
 
-    # Make the large tenant more-recently used. An incorrect implemention would try to evict
+    # Make the large tenant more-recently used. An incorrect implementation would try to evict
     # the smaller tenant completely first, before turning to the larger tenant,
     # since the smaller tenant's layers are least-recently-used.
     env.warm_up_tenant(large_tenant[0])

@@ -768,7 +768,7 @@ pub struct SmgrQueryTimePerTimeline {
 static SMGR_QUERY_TIME_PER_TENANT_TIMELINE: Lazy<HistogramVec> = Lazy::new(|| {
     register_histogram_vec!(
         "pageserver_smgr_query_seconds",
-        "Time spent on smgr query handling, aggegated by query type and tenant/timeline.",
+        "Time spent on smgr query handling, aggregated by query type and tenant/timeline.",
         &["smgr_query_type", "tenant_id", "timeline_id"],
         CRITICAL_OP_BUCKETS.into(),
     )
@@ -1245,7 +1245,7 @@ impl StorageTimeMetricsTimer {
 pub struct StorageTimeMetrics {
     /// Sum of f64 seconds, per operation, tenant_id and timeline_id
     timeline_sum: Counter,
-    /// Number of oeprations, per operation, tenant_id and timeline_id
+    /// Number of operations, per operation, tenant_id and timeline_id
     timeline_count: IntCounter,
     /// Global histogram having only the "operation" label.
     global_histogram: Histogram,
@@ -1721,7 +1721,7 @@ impl RemoteTimelineClientMetrics {
         }
     }
 
-    /// Manually udpate the metrics that track completions, instead of using the guard object.
+    /// Manually update the metrics that track completions, instead of using the guard object.
     /// Using the guard object is generally preferable.
     /// See [`call_begin`](Self::call_begin) for more context.
     pub(crate) fn call_end(

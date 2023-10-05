@@ -141,7 +141,7 @@ pub(crate) async fn main(cmd: &AnalyzeLayerMapCmd) -> Result<()> {
     let max_holes = cmd.max_holes.unwrap_or(DEFAULT_MAX_HOLES);
     let ctx = RequestContext::new(TaskKind::DebugTool, DownloadBehavior::Error);
 
-    // Initialize virtual_file (file desriptor cache) and page cache which are needed to access layer persistent B-Tree.
+    // Initialize virtual_file (file descriptor cache) and page cache which are needed to access layer persistent B-Tree.
     pageserver::virtual_file::init(10);
     pageserver::page_cache::init(100);
 

@@ -54,7 +54,7 @@ pub struct VirtualFile {
     pub path: Utf8PathBuf,
     open_options: OpenOptions,
 
-    // These are strings becase we only use them for metrics, and those expect strings.
+    // These are strings because we only use them for metrics, and those expect strings.
     // It makes no sense for us to constantly turn the `TimelineId` and `TenantId` into
     // strings.
     tenant_id: String,
@@ -274,7 +274,7 @@ impl VirtualFile {
         Ok(vfile)
     }
 
-    /// Writes a file to the specified `final_path` in a crash safe fasion
+    /// Writes a file to the specified `final_path` in a crash safe fashion
     ///
     /// The file is first written to the specified tmp_path, and in a second
     /// step, the tmp path is renamed to the final path. As renames are

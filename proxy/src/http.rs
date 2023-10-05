@@ -53,7 +53,7 @@ pub fn new_client_with_timeout(default_timout: Duration) -> ClientWithMiddleware
         //
         // ex-maintainer note:
         // this limitation can be fixed if streaming is necessary.
-        // retries will still not be performed, but it wont error immediately
+        // retries will still not be performed, but it won't error immediately
         .with(RetryTransientMiddleware::new_with_policy(retry_policy))
         .build()
 }

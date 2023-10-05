@@ -94,7 +94,7 @@ def generate_uploads_and_deletions(
             wait_for_last_flush_lsn(env, endpoint, tenant_id, timeline_id)
             ps_http.timeline_checkpoint(tenant_id, timeline_id)
 
-        # Compaction should generate some GC-elegible layers
+        # Compaction should generate some GC-eligible layers
         for i in range(0, 2):
             churn(f"{i if data is None else data}")
 

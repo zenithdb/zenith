@@ -2,7 +2,7 @@
 
 # A basic test to ensure Docker images are built correctly.
 # Build a wrapper around the compute, start all services and runs a simple SQL query.
-# Repeats the process for all currenly supported Postgres versions.
+# Repeats the process for all currently supported Postgres versions.
 
 # Implicitly accepts `REPOSITORY` and `TAG` env vars that are passed into the compose file
 # Their defaults point at DockerHub `neondatabase/neon:latest` image.`,

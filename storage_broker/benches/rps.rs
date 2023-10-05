@@ -14,7 +14,7 @@ use tonic::Request;
 
 const ABOUT: &str = r#"
 A simple benchmarking tool for storage_broker. Creates specified number of per
-timeline publishers and subscribers; each publisher continiously sends
+timeline publishers and subscribers; each publisher continuously sends
 messages, subscribers read them. Each second the tool outputs number of
 messages summed across all subscribers and min number of messages
 recevied by single subscriber.

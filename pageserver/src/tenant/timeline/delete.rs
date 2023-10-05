@@ -95,7 +95,7 @@ async fn set_deleted_in_remote_index(timeline: &Timeline) -> Result<(), DeleteTi
 // This can be solved with inversion of these steps. But even if these steps are inverted then, when index_part.json
 // gets deleted there is no way to distinguish between "this timeline is good, we just didnt upload it to remote"
 // and "this timeline is deleted we should continue with removal of local state". So to avoid the ambiguity we use a mark file.
-// After index part is deleted presence of this mark file indentifies that it was a deletion intention.
+// After index part is deleted presence of this mark file identifies that it was a deletion intention.
 // So we can just remove the mark file.
 async fn create_delete_mark(
     conf: &PageServerConf,
@@ -339,7 +339,7 @@ async fn remove_timeline_from_tenant(
 /// There are three entrypoints to the process:
 /// 1. [`DeleteTimelineFlow::run`] this is the main one called by a management api handler.
 /// 2. [`DeleteTimelineFlow::resume_deletion`] is called during restarts when local metadata is still present
-/// and we possibly neeed to continue deletion of remote files.
+/// and we possibly need to continue deletion of remote files.
 /// 3. [`DeleteTimelineFlow::cleanup_remaining_timeline_fs_traces`] is used when we deleted remote
 /// index but still have local metadata, timeline directory and delete mark.
 /// Note the only other place that messes around timeline delete mark is the logic that scans directory with timelines during tenant load.
@@ -472,7 +472,7 @@ impl DeleteTimelineFlow {
         // Here we attempt to lock deletion guard when we're holding a lock on timelines.
         // This is important because when you take into account `remove_timeline_from_tenant`
         // we remove timeline from memory when we still hold the deletion guard.
-        // So here when timeline deletion is finished timeline wont be present in timelines map at all
+        // So here when timeline deletion is finished timeline won't be present in timelines map at all
         // which makes the following sequence impossible:
         // T1: get preempted right before the try_lock on `Timeline::delete_progress`
         // T2: do a full deletion, acquire and drop `Timeline::delete_progress`

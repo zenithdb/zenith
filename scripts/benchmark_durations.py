@@ -40,7 +40,7 @@ BENCHMARKS_DURATION_QUERY = """
     ;
 """
 
-# For out benchmarks the default distibution for 4 worked produces pretty uneven chunks,
+# For out benchmarks the default distribution for 4 worked produces pretty uneven chunks,
 # the total duration varies from 8 to 40 minutes.
 # We use some pre-collected durations as a fallback to have a better distribution.
 FALLBACK_DURATION = {

@@ -199,7 +199,7 @@ pub struct Tenant {
     state: watch::Sender<TenantState>,
 
     // Overridden tenant-specific config parameters.
-    // We keep TenantConfOpt sturct here to preserve the information
+    // We keep TenantConfOpt struct here to preserve the information
     // about parameters that are not set.
     // This is necessary to allow global config updates.
     tenant_conf: Arc<RwLock<AttachedTenantConf>>,
@@ -244,7 +244,7 @@ pub struct Tenant {
 //     pageserver crashes. During startup we'll load new metadata, and then reset it
 //     to the state of remote one. But current layermap will have layers from the old
 //     metadata which is inconsistent.
-//     And with current logic it wont disgard them during load because during layermap
+//     And with current logic it won't discard them during load because during layermap
 //     load it sees local disk consistent lsn which is ahead of layer lsns.
 //     If we treat remote as source of truth we need to completely sync with it,
 //     i e delete local files which are missing on the remote. This will add extra work,
@@ -960,7 +960,7 @@ impl Tenant {
                     .as_mut()
                     .and_then(|x| x.initial_tenant_load.take());
 
-                // Dont block pageserver startup on figuring out deletion status
+                // Don't block pageserver startup on figuring out deletion status
                 let pending_deletion = {
                     match DeleteTenantFlow::should_resume_deletion(
                         conf,
@@ -1096,7 +1096,7 @@ impl Tenant {
                                 });
                             }
 
-                            // If metadata doesnt exist it means that we've crashed without
+                            // If metadata doesn't exist it means that we've crashed without
                             // completing cleanup_remaining_timeline_fs_traces in DeleteTimelineFlow.
                             // So save timeline_id for later call to `DeleteTimelineFlow::cleanup_remaining_timeline_fs_traces`.
                             // We cant do it here because the method is async so we'd need block_on
@@ -1219,7 +1219,7 @@ impl Tenant {
                         })
                     }
                     LoadLocalTimelineError::ResumeDeletion(source) => {
-                        // Make sure resumed deletion wont fail loading for entire tenant.
+                        // Make sure resumed deletion won't fail loading for entire tenant.
                         error!("Failed to resume timeline deletion: {source:#}")
                     }
                 }
@@ -1254,7 +1254,7 @@ impl Tenant {
                             ));
                             }
                             LoadLocalTimelineError::ResumeDeletion(source) => {
-                                // Make sure resumed deletion wont fail loading for entire tenant.
+                                // Make sure resumed deletion won't fail loading for entire tenant.
                                 error!("Failed to resume timeline deletion: {source:#}")
                             }
                         }
@@ -1446,7 +1446,7 @@ impl Tenant {
     /// Until that happens, the on-disk state is invalid (disk_consistent_lsn=Lsn(0))
     /// and the timeline will fail to load at a restart.
     ///
-    /// That's why we add an uninit mark file, and wrap it together witht the Timeline
+    /// That's why we add an uninit mark file, and wrap it together with the Timeline
     /// in-memory object into UninitializedTimeline.
     /// Once the caller is done setting up the timeline, they should call
     /// `UninitializedTimeline::initialize_with_lock` to remove the uninit mark.
@@ -1827,7 +1827,7 @@ impl Tenant {
         freeze_and_flush: bool,
     ) -> Result<(), completion::Barrier> {
         span::debug_assert_current_span_has_tenant_id();
-        // Set tenant (and its timlines) to Stoppping state.
+        // Set tenant (and its timlines) to Stopping state.
         //
         // Since we can only transition into Stopping state after activation is complete,
         // run it in a JoinSet so all tenants have a chance to stop before we get SIGKILLed.

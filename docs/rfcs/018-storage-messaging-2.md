@@ -79,7 +79,7 @@ with grpc streams and tokio mpsc channels. The implementation description is at 
 It is just 500 lines of code and core functionality is complete. 1-1 pub sub
 gives about 120k received messages per second; having multiple subscribers in
 different connecitons quickly scales to 1 million received messages per second.
-I had concerns about many concurrent streams in singe connection, but 2^20
+I had concerns about many concurrent streams in single connection, but 2^20
 subscribers still work (though eat memory, with 10 publishers 20GB are consumed;
 in this implementation each publisher holds full copy of all subscribers). There
 is `bench.rs` nearby which I used for testing.

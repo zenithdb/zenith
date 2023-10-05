@@ -507,7 +507,7 @@ def test_timeline_delete_fail_before_local_delete(neon_env_builder: NeonEnvBuild
             ),
         )
 
-    # for some reason the check above doesnt immediately take effect for the below.
+    # for some reason the check above doesn't immediately take effect for the below.
     # Assume it is mock server incosistency and check twice.
     wait_until(
         2,
@@ -525,7 +525,7 @@ def test_concurrent_timeline_delete_stuck_on(
 ):
     """
     If delete is stuck console will eventually retry deletion.
-    So we need to be sure that these requests wont interleave with each other.
+    So we need to be sure that these requests won't interleave with each other.
     In this tests we check two places where we can spend a lot of time.
     This is a regression test because there was a bug when DeletionGuard wasnt propagated
     to the background task.
@@ -739,7 +739,7 @@ def test_timeline_delete_works_for_remote_smoke(
             ),
         )
 
-    # for some reason the check above doesnt immediately take effect for the below.
+    # for some reason the check above doesn't immediately take effect for the below.
     # Assume it is mock server inconsistency and check twice.
     wait_until(2, 0.5, lambda: assert_prefix_empty(neon_env_builder))
 

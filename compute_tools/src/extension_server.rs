@@ -130,7 +130,7 @@ fn parse_pg_version(human_version: &str) -> &str {
         },
         _ => {}
     }
-    panic!("Unsuported postgres version {human_version}");
+    panic!("Unsupported postgres version {human_version}");
 }
 
 #[cfg(test)]

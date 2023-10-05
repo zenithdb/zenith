@@ -54,7 +54,7 @@ If you want to run all tests that have the string "bench" in their names:
 
 `./scripts/pytest -k bench`
 
-To run tests in parellel we utilize `pytest-xdist` plugin. By default everything runs single threaded. Number of workers can be specified with `-n` argument:
+To run tests in parallel we utilize `pytest-xdist` plugin. By default everything runs single threaded. Number of workers can be specified with `-n` argument:
 
 `./scripts/pytest -n4`
 
@@ -71,11 +71,11 @@ a subdirectory for each version with naming convention `v{PG_VERSION}/`.
 Inside that dir, a `bin/postgres` binary should be present.
 `DEFAULT_PG_VERSION`: The version of Postgres to use,
 This is used to construct full path to the postgres binaries.
-Format is 2-digit major version nubmer, i.e. `DEFAULT_PG_VERSION="14"`. Alternatively,
+Format is 2-digit major version number, i.e. `DEFAULT_PG_VERSION="14"`. Alternatively,
 you can use `--pg-version` argument.
 `TEST_OUTPUT`: Set the directory where test state and test output files
 should go.
-`TEST_SHARED_FIXTURES`: Try to re-use a single pageserver for all the tests.
+`TEST_SHARED_FIXTURES`: Try to reuse a single pageserver for all the tests.
 `NEON_PAGESERVER_OVERRIDES`: add a `;`-separated set of configs that will be passed as
 `RUST_LOG`: logging configuration to pass into Neon CLI
 

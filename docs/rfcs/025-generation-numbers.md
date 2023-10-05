@@ -480,7 +480,7 @@ an old generation suffix.
 
 Timeline IDs are never reused, so we don't have
 to worry about the case of create/delete/create cycles. If they
-were re-used during a disaster recovery "un-delete" of a timeline,
+were reused during a disaster recovery "un-delete" of a timeline,
 that special case can be handled by calling out to all available pageservers
 to check that they return 404 for the timeline, and to flush their
 deletion queues in case they had any deletions pending from the
@@ -563,7 +563,7 @@ the control plane attaches the tenant, as follows:
   incrementing that attachment ID, then it could end up with two physical nodes
   both using the same generation number.
 - This is not an issue when using EC2 instances with ephemeral storage, as long
-  as the control plane never re-uses a node ID, but it would need re-examining
+  as the control plane never reuses a node ID, but it would need re-examining
   if running on different infrastructure.
 - To robustly protect against this class of issue, we would either:
   - add a "node generation" to distinguish between different processes holding the
@@ -710,7 +710,7 @@ Item 1. would mean that some in-place restarts that previously would have resume
 unavailable, will now not resume service to users until the control plane is available. We could
 avoid this by having a timeout on communication with the control plane, and after some timeout,
 resume service with the previous generation numbers (assuming this was persisted to disk). However,
-this is unlikely to be needed as the control plane is already an essential & highly available component. Also, having a node re-use an old generation number would complicate
+this is unlikely to be needed as the control plane is already an essential & highly available component. Also, having a node reuse an old generation number would complicate
 reasoning about the system, as it would break the invariant that a generation number uniquely identifies
 a tenant's attachment to a given pageserver _process_: it would merely identify the tenant's attachment
 to the pageserver _machine_ or its _on-disk-state_.

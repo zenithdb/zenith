@@ -21,7 +21,7 @@ implementation where we keep more data than we would need to, do not
 change the synthetic size or incur any costs to the user.
 
 The synthetic size is calculated for the whole project. It is not
-straighforward to attribute size to individual branches. See "What is
+straightforward to attribute size to individual branches. See "What is
 the size of an individual branch?" for discussion on those
 difficulties.
 
@@ -248,7 +248,7 @@ and truncate the WAL.
 
 Synthetic size is calculated for the whole project, and includes all
 branches. There is no such thing as the size of a branch, because it
-is not straighforward to attribute the parts of size to individual
+is not straightforward to attribute the parts of size to individual
 branches.
 
 ## Example: attributing size to branches

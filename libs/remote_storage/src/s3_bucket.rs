@@ -342,7 +342,7 @@ impl<S: AsyncRead> AsyncRead for TimedDownload<S> {
 #[async_trait::async_trait]
 impl RemoteStorage for S3Bucket {
     /// See the doc for `RemoteStorage::list_prefixes`
-    /// Note: it wont include empty "directories"
+    /// Note: it won't include empty "directories"
     async fn list_prefixes(
         &self,
         prefix: Option<&RemotePath>,

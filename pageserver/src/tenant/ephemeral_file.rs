@@ -179,7 +179,7 @@ impl EphemeralFile {
                                         // fail gracefully, it's not the end of the world if we can't pre-warm the cache here
                                     }
                                 }
-                                // Zero the buffer for re-use.
+                                // Zero the buffer for reuse.
                                 // Zeroing is critical for correcntess because the write_blob code below
                                 // and similarly read_blk expect zeroed pages.
                                 self.ephemeral_file.mutable_tail.fill(0);

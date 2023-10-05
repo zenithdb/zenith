@@ -357,7 +357,7 @@ is no change since the last time it uploaded (e.g. if the tenant
 is totally idle).
 
 Additionally, when the tenant is flushed to remote storage prior to a migration
-(the first step in [cutover procedure](#cutover-procedure)), 
+(the first step in [cutover procedure](#cutover-procedure)),
 the heatmap is written out. This enables a future attached pageserver
 to get an up to date view when deciding which layers to download.
 
@@ -596,4 +596,4 @@ pageservers are updated to be aware of it.
 
 As well as simplifying implementation, putting heatmaps in S3 will be useful
 for future analytics purposes -- gathering aggregated statistics on activity
-pattersn across many tenants may be done directly from data in S3.
+patterns across many tenants may be done directly from data in S3.

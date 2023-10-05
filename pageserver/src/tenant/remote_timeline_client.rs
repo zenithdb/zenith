@@ -879,7 +879,7 @@ impl RemoteTimelineClient {
         self.deletion_queue_client.push_immediate(layers).await?;
 
         // Do not delete index part yet, it is needed for possible retry. If we remove it first
-        // and retry will arrive to different pageserver there wont be any traces of it on remote storage
+        // and retry will arrive to different pageserver there won't be any traces of it on remote storage
         let timeline_storage_path = remote_timeline_path(&self.tenant_id, &self.timeline_id);
 
         // Execute all pending deletions, so that when we proceed to do a list_prefixes below, we aren't
@@ -1342,7 +1342,7 @@ impl RemoteTimelineClient {
                 let qi = {
                     // Here we preserve working version of the upload queue for possible use during deletions.
                     // In-place replace of Initialized to Stopped can be done with the help of https://github.com/Sgeo/take_mut
-                    // but for this use case it doesnt really makes sense to bring unsafe code only for this usage point.
+                    // but for this use case it doesn't really makes sense to bring unsafe code only for this usage point.
                     // Deletion is not really perf sensitive so there shouldnt be any problems with cloning a fraction of it.
                     let upload_queue_for_deletion = UploadQueueInitialized {
                         task_counter: 0,

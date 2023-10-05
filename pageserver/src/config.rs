@@ -1405,7 +1405,7 @@ trace_read_requests = {trace_read_requests}"#,
         let conf = PageServerConf::parse_and_validate(&toml, &workdir)?;
         assert_eq!(
             conf.default_tenant_conf.trace_read_requests, trace_read_requests,
-            "Tenant config from pageserver config file should be parsed and udpated values used as defaults for all tenants",
+            "Tenant config from pageserver config file should be parsed and updated values used as defaults for all tenants",
         );
 
         Ok(())

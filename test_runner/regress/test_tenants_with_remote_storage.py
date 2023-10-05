@@ -68,7 +68,7 @@ def test_tenants_many(neon_env_builder: NeonEnvBuilder, remote_storage_kind: Rem
 
     # FIXME: Is this expected?
     env.pageserver.allowed_errors.append(
-        ".*init_tenant_mgr: marking .* as locally complete, while it doesnt exist in remote index.*"
+        ".*init_tenant_mgr: marking .* as locally complete, while it doesn't exist in remote index.*"
     )
 
     tenants_endpoints: List[Tuple[TenantId, Endpoint]] = []
@@ -128,7 +128,7 @@ def test_tenants_attached_after_download(
     # FIXME: Are these expected?
     env.pageserver.allowed_errors.append(".*No timelines to attach received.*")
     env.pageserver.allowed_errors.append(
-        ".*marking .* as locally complete, while it doesnt exist in remote index.*"
+        ".*marking .* as locally complete, while it doesn't exist in remote index.*"
     )
 
     pageserver_http = env.pageserver.http_client()
@@ -139,7 +139,7 @@ def test_tenants_attached_after_download(
     tenant_id = env.initial_tenant
     timeline_id = env.initial_timeline
 
-    # Thats because of UnreliableWrapper's injected failures
+    # That's because of UnreliableWrapper's injected failures
     env.pageserver.allowed_errors.append(
         f".*failed to fetch tenant deletion mark at tenants/({tenant_id}|{env.initial_tenant})/deleted attempt 1.*"
     )
@@ -236,7 +236,7 @@ def test_tenant_redownloads_truncated_file_on_startup(
 
     # FIXME: Are these expected?
     env.pageserver.allowed_errors.append(
-        ".*init_tenant_mgr: marking .* as locally complete, while it doesnt exist in remote index.*"
+        ".*init_tenant_mgr: marking .* as locally complete, while it doesn't exist in remote index.*"
     )
     env.pageserver.allowed_errors.append(".*No timelines to attach received.*")
 

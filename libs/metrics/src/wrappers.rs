@@ -51,17 +51,17 @@ impl<'a, T> CountedReader<'a, T> {
         }
     }
 
-    /// Get an immutable reference to the underlying [Read](std::io::Read) implementor
+    /// Get an immutable reference to the underlying [Read](std::io::Read) implementer
     pub fn inner(&self) -> &T {
         &self.reader
     }
 
-    /// Get a mutable reference to the underlying [Read](std::io::Read) implementor
+    /// Get a mutable reference to the underlying [Read](std::io::Read) implementer
     pub fn inner_mut(&mut self) -> &mut T {
         &mut self.reader
     }
 
-    /// Consume the wrapper and return the underlying [Read](std::io::Read) implementor
+    /// Consume the wrapper and return the underlying [Read](std::io::Read) implementer
     pub fn into_inner(self) -> T {
         self.reader
     }
@@ -122,17 +122,17 @@ impl<'a, T> CountedWriter<'a, T> {
         }
     }
 
-    /// Get an immutable reference to the underlying [Write](std::io::Write) implementor
+    /// Get an immutable reference to the underlying [Write](std::io::Write) implementer
     pub fn inner(&self) -> &T {
         &self.writer
     }
 
-    /// Get a mutable reference to the underlying [Write](std::io::Write) implementor
+    /// Get a mutable reference to the underlying [Write](std::io::Write) implementer
     pub fn inner_mut(&mut self) -> &mut T {
         &mut self.writer
     }
 
-    /// Consume the wrapper and return the underlying [Write](std::io::Write) implementor
+    /// Consume the wrapper and return the underlying [Write](std::io::Write) implementer
     pub fn into_inner(self) -> T {
         self.writer
     }

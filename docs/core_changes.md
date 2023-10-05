@@ -51,7 +51,7 @@ index e0d9940946..2d964c02e9 100644
 @@ -285,6 +285,17 @@ ginHeapTupleFastInsert(GinState *ginstate, GinTupleCollector *collector)
                 memset(&sublist, 0, sizeof(GinMetaPageData));
                 makeSublist(index, collector->tuples, collector->ntuples, &sublist);
- 
+
 +               if (metadata->head != InvalidBlockNumber)
 +               {
 +                       /*
@@ -65,11 +65,11 @@ index e0d9940946..2d964c02e9 100644
 +
                 if (needWal)
                         XLogBeginInsert();
- 
+
 @@ -316,7 +327,6 @@ ginHeapTupleFastInsert(GinState *ginstate, GinTupleCollector *collector)
                         data.prevTail = metadata->tail;
                         data.newRightlink = sublist.head;
- 
+
 -                       buffer = ReadBuffer(index, metadata->tail);
                         LockBuffer(buffer, GIN_EXCLUSIVE);
                         page = BufferGetPage(buffer);
@@ -175,7 +175,7 @@ index e198df65d8..addfe93eac 100644
 +               PageSetChecksumInplace(page, vm_nblocks_now);
 +               MarkBufferDirty(buffer);
 +               UnlockReleaseBuffer(buffer);
- 
+
 -               smgrextend(rel->rd_smgr, VISIBILITYMAP_FORKNUM, vm_nblocks_now,
 -                                  pg.data, false);
                 vm_nblocks_now++;
@@ -395,7 +395,7 @@ Example:
 @@ -415,21 +416,27 @@ ginRedoSplit(XLogReaderState *record)
         if (!isLeaf)
                 ginRedoClearIncompleteSplit(record, 3);
- 
+
 -       if (XLogReadBufferForRedo(record, 0, &lbuffer) != BLK_RESTORED)
 +       action = XLogReadBufferForRedo(record, 0, &lbuffer);
 +       if (action != BLK_RESTORED && action != BLK_DONE)
@@ -406,7 +406,7 @@ Example:
 
 In PostgreSQL, if a WAL redo function calls XLogReadBufferForRead() for a page that has a full-page
 image, it always succeeds. However, Neon WAL redo process is only concerned about replaying changes
-to a singe page, so replaying any changes for other pages is a waste of cycles. We have modified
+to a single page, so replaying any changes for other pages is a waste of cycles. We have modified
 XLogReadBufferForRead() to return BLK_DONE for all other pages, to avoid the overhead. That is
 unexpected by code like the above.
 

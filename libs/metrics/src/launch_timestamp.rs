@@ -27,7 +27,7 @@ pub fn set_launch_timestamp_metric(launch_ts: &'static LaunchTimestamp) {
         .expect("we're after the epoch, this should be positive");
     let metric = register_uint_gauge!(
         "libmetrics_launch_timestamp",
-        "Timestamp (millis since epoch) at wich the process launched."
+        "Timestamp (millis since epoch) at which the process launched."
     )
     .unwrap();
     metric.set(millis_since_epoch);

@@ -203,7 +203,7 @@ fn bench_sequential(c: &mut Criterion) {
     // TODO This code is pretty slow and runs even if we're only running other
     //      benchmarks. It needs to be somewhere else, but it's not clear where.
     //      Putting it inside the `bench_function` closure is not a solution
-    //      because then it runs multiple times during warmup.
+    //      because then it runs multiple times during warm-up.
     let now = Instant::now();
     let mut layer_map = LayerMap::default();
     let mut updates = layer_map.batch_update();

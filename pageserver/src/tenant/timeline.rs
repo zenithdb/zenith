@@ -2714,7 +2714,7 @@ impl Timeline {
                     if let Err(_err) = last_result {
                         // We already logged the original error in
                         // flush_loop. We cannot propagate it to the caller
-                        // here, because it might not be Cloneable
+                        // here, because it might not be Clonable
                         anyhow::bail!(
                             "Could not flush frozen layer. Request id: {}",
                             my_flush_request
@@ -3645,7 +3645,7 @@ impl Timeline {
                     next_key_size = next_size;
                     if key != next_key {
                         if dup_end_lsn.is_valid() {
-                            // We are writting segment with duplicates:
+                            // We are writing segment with duplicates:
                             // place all remaining values of this key in separate segment
                             dup_start_lsn = dup_end_lsn; // new segments starts where old stops
                             dup_end_lsn = lsn_range.end; // there are no more values of this key till end of LSN range
@@ -3701,7 +3701,7 @@ impl Timeline {
                 key_values_total_size = next_key_size;
             }
             if writer.is_none() {
-                // Create writer if not initiaized yet
+                // Create writer if not initialized yet
                 writer = Some(
                     DeltaLayerWriter::new(
                         self.conf,
@@ -4133,7 +4133,7 @@ impl Timeline {
         // 3. it doesn't need to be retained for 'retain_lsns';
         // 4. newer on-disk image layers cover the layer's whole key range
         //
-        // TODO holding a write lock is too agressive and avoidable
+        // TODO holding a write lock is too aggressive and avoidable
         let mut guard = self.layers.write().await;
         let layers = guard.layer_map();
         'outer: for l in layers.iter_historic_layers() {
@@ -4392,7 +4392,7 @@ impl Timeline {
                 if remote_layer.download_replacement_failure.load(Relaxed) {
                     // this path will be hit often, in case there are upper retries. however
                     // hitting this error will prevent a busy loop between get_reconstruct_data and
-                    // download, so an error is prefered.
+                    // download, so an error is preferred.
                     //
                     // TODO: we really should poison the timeline, but panicking is not yet
                     // supported. Related: https://github.com/neondatabase/neon/issues/3621

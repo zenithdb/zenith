@@ -138,7 +138,7 @@ impl Dispatcher {
     /// Send a message to the agent.
     ///
     /// Although this function is small, it has one major benefit: it is the only
-    /// way to send data accross the connection, and you can only pass in a proper
+    /// way to send data across the connection, and you can only pass in a proper
     /// `MonitorMessage`. Without safeguards like this, it's easy to accidentally
     /// serialize the wrong thing and send it, since `self.sink.send` will take
     /// any string.

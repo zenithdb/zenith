@@ -214,7 +214,7 @@ impl Slot {
 }
 
 impl SlotInner {
-    /// If there is aready a reader, drop our permit and share its permit, just like we share read access.
+    /// If there is already a reader, drop our permit and share its permit, just like we share read access.
     fn coalesce_readers_permit(&self, permit: PinnedSlotsPermit) -> Arc<PinnedSlotsPermit> {
         let mut guard = self.permit.lock().unwrap();
         if let Some(existing_permit) = guard.upgrade() {

@@ -425,7 +425,7 @@ WalProposerPoll(void)
 
 			break;
 		}
-		
+
 		/*
 		 * If the event contains something that one of our safekeeper states
 		 * was waiting for, we'll advance its state.
@@ -1089,7 +1089,7 @@ RecvAcceptorGreeting(Safekeeper *sk)
 	/* Protocol is all good, move to voting. */
 	sk->state = SS_VOTING;
 
-	/* 
+	/*
 	 * Note: it would be better to track the counter on per safekeeper basis,
 	 * but at worst walproposer would restart with 'term rejected', so leave as
 	 * is for now.
@@ -1100,7 +1100,7 @@ RecvAcceptorGreeting(Safekeeper *sk)
 		/* We're still collecting terms from the majority. */
 		propTerm = Max(sk->greetResponse.term, propTerm);
 
-		/* Quorum is acquried, prepare the vote request. */
+		/* Quorum is acquired, prepare the vote request. */
 		if (n_connected == quorum)
 		{
 			propTerm++;
@@ -1410,7 +1410,7 @@ DetermineEpochStartLsn(void)
 		/*
 		 * Basebackup LSN always points to the beginning of the record (not
 		 * the page), as StartupXLOG most probably wants it this way.
-		 * Safekeepers don't skip header as they need continious stream of
+		 * Safekeepers don't skip header as they need continuous stream of
 		 * data, so correct LSN for comparison.
 		 */
 		if (SkipXLogPageHeader(propEpochStartLsn) != GetRedoStartLsn())
@@ -2300,12 +2300,12 @@ HandleSafekeeperResponse(void)
 		if (n_synced >= quorum)
 		{
 			/* A quorum of safekeepers has been synced! */
-			
+
 			/*
 			 * Send empty message to broadcast latest truncateLsn to all safekeepers.
-			 * This helps to finish next sync-safekeepers eailier, by skipping recovery
+			 * This helps to finish next sync-safekeepers earlier, by skipping recovery
 			 * step.
-			 * 
+			 *
 			 * We don't need to wait for response because it doesn't affect correctness,
 			 * and TCP should be able to deliver the message to safekeepers in case of
 			 * network working properly.
@@ -2597,7 +2597,7 @@ backpressure_throttling_impl(void)
 	/*
 	 * Don't throttle read only transactions or wal sender.
 	 * Do throttle CREATE INDEX CONCURRENTLY, however. It performs some
-	 * stages outside a transaction, even though it writes a lot of WAL. 
+	 * stages outside a transaction, even though it writes a lot of WAL.
 	 * Check PROC_IN_SAFE_IC flag to cover that case.
 	 */
 	if (am_walsender

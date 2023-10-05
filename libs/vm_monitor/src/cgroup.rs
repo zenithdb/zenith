@@ -173,7 +173,7 @@ pub struct CgroupWatcher {
     /// The sequence number of the last upscale.
     ///
     /// If we receive a memory.high event that has a _lower_ sequence number than
-    /// `last_upscale_seqnum`, then we know it occured before the upscale, and we
+    /// `last_upscale_seqnum`, then we know it occurred before the upscale, and we
     /// can safely ignore it.
     ///
     /// Note: Like the `events` field, this doesn't _need_ interior mutability but we

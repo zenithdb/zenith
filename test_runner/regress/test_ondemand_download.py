@@ -486,7 +486,7 @@ def test_compaction_downloads_on_demand_without_image_creation(
         "image_creation_threshold": 100,
         # repartitioning parameter, not required here
         "compaction_target_size": 128 * 1024**2,
-        # pitr_interval and gc_horizon are not interesting because we dont run gc
+        # pitr_interval and gc_horizon are not interesting because we don't run gc
     }
 
     env = neon_env_builder.init_start(initial_tenant_conf=stringify(conf))
@@ -570,7 +570,7 @@ def test_compaction_downloads_on_demand_with_image_creation(
         "image_creation_threshold": 100,
         # repartitioning parameter, unused
         "compaction_target_size": 128 * 1024**2,
-        # pitr_interval and gc_horizon are not interesting because we dont run gc
+        # pitr_interval and gc_horizon are not interesting because we don't run gc
     }
 
     env = neon_env_builder.init_start(initial_tenant_conf=stringify(conf))

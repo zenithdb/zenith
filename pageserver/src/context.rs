@@ -132,7 +132,7 @@ pub(crate) enum AccessStatsBehavior {
 
     /// Do not update access times: this request is accessing the layer
     /// but does not want to indicate that the layer should be retained in cache,
-    /// perhaps because the requestor is a compaction routine that will soon cover
+    /// perhaps because the requester is a compaction routine that will soon cover
     /// this layer with another.
     Skip,
 }

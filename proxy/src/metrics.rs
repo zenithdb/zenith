@@ -51,7 +51,7 @@ impl MetricCounter {
         // if a clone happens while we are observing, the heuristic will be incorrect.
         //
         // Worst case is that we won't report an event for this endpoint.
-        // However, for the strong count to be 1 it must have occured that at one instant
+        // However, for the strong count to be 1 it must have occurred that at one instant
         // all the endpoints were closed, so missing a report because the endpoints are closed is valid.
         let is_open = Arc::strong_count(self) > 1;
         let opened = self.opened_connections.swap(0, Ordering::AcqRel);

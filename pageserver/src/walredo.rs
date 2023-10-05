@@ -285,8 +285,8 @@ impl PostgresRedoManager {
             let duration = end_time.duration_since(lock_time);
 
             let len = records.len();
-            let nbytes = records.iter().fold(0, |acumulator, record| {
-                acumulator
+            let nbytes = records.iter().fold(0, |accumulator, record| {
+                accumulator
                     + match &record.1 {
                         NeonWalRecord::Postgres { rec, .. } => rec.len(),
                         _ => unreachable!("Only PostgreSQL records are accepted in this batch"),
@@ -969,7 +969,7 @@ impl PostgresRedoManager {
                 .push_back(Some(Bytes::from(resultbuf)));
         }
         // Replace our request's response with None in `pending_responses`.
-        // Then make space in the ring buffer by clearing out any seqence of contiguous
+        // Then make space in the ring buffer by clearing out any sequence of contiguous
         // `None`'s from the front of `pending_responses`.
         // NB: We can't pop_front() because other requests' responses because another
         // requester might have grabbed the output mutex before us:

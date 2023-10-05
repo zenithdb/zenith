@@ -21,7 +21,7 @@ We build all images after a successful `release` tests run and push automaticall
 
 ## Docker Compose example
 
-You can see a [docker compose](https://docs.docker.com/compose/) example to create a neon cluster in [/docker-compose/docker-compose.yml](/docker-compose/docker-compose.yml). It creates the following conatainers.
+You can see a [docker compose](https://docs.docker.com/compose/) example to create a neon cluster in [/docker-compose/docker-compose.yml](/docker-compose/docker-compose.yml). It creates the following containers.
 
 - pageserver x 1
 - safekeeper x 3
@@ -38,7 +38,7 @@ You can specify version of neon cluster using following environment values.
 - TAG: the tag version of [docker image](https://registry.hub.docker.com/r/neondatabase/neon/tags) (default is latest), which is tagged in [CI test](/.github/workflows/build_and_test.yml)
 ```
 $ cd docker-compose/
-$ docker-compose down   # remove the conainers if exists
+$ docker-compose down   # remove the containers if exists
 $ PG_VERSION=15 TAG=2937 docker-compose up --build -d  # You can specify the postgres and image version
 Creating network "dockercompose_default" with the default driver
 Creating docker-compose_storage_broker_1       ... done

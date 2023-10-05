@@ -88,7 +88,7 @@ impl Runner {
         );
 
         // *NOTE*: the dispatcher and cgroup manager talk through these channels
-        // so make sure they each get the correct half, nothing is droppped, etc.
+        // so make sure they each get the correct half, nothing is dropped, etc.
         let (notified_send, notified_recv) = mpsc::channel(1);
         let (requesting_send, requesting_recv) = mpsc::channel(1);
 

@@ -434,7 +434,6 @@ class WrittenDataDeltaVerifier:
         self.sum = 0
         self.timerange = None
         pass
-
     def ingest(self, event, parent):
         assert event["type"] == "incremental"
         self.value = event["value"]
@@ -444,7 +443,7 @@ class WrittenDataDeltaVerifier:
         timerange = (start, stop)
         if self.timerange is not None:
             # this holds across restarts
-            assert self.timerange[1] == timerange[0], "time ranges should be continious"
+            assert self.timerange[1] == timerange[0], "time ranges should be continuous"
         self.timerange = timerange
 
     def post_batch(self, parent):

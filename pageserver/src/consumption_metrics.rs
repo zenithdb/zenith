@@ -50,7 +50,7 @@ pub async fn collect_metrics(
         )
     }
 
-    // spin up background worker that caclulates tenant sizes
+    // spin up background worker that calculates tenant sizes
     let worker_ctx =
         ctx.detached_child(TaskKind::CalculateSyntheticSize, DownloadBehavior::Download);
     task_mgr::spawn(

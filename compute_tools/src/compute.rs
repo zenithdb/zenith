@@ -771,7 +771,7 @@ impl ComputeNode {
         // This part is sync, because we need to download
         // remote shared_preload_libraries before postgres start (if any)
         if let Some(remote_extensions) = &pspec.spec.remote_extensions {
-            // First, create control files for all availale extensions
+            // First, create control files for all available extensions
             extension_server::create_control_files(remote_extensions, &self.pgbin);
 
             let library_load_start_time = Utc::now();
@@ -986,7 +986,7 @@ LIMIT 100",
             info!("extension already downloaded, skipping re-download");
             return Ok(0);
         } else if start_time_delta < HANG_TIMEOUT && !first_try {
-            info!("download {ext_archive_name} already started by another process, hanging untill completion or timeout");
+            info!("download {ext_archive_name} already started by another process, hanging until completion or timeout");
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
             loop {
                 info!("waiting for download");

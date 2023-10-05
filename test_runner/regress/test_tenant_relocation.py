@@ -276,7 +276,7 @@ def test_tenant_relocation(
 
     # FIXME: Is this expected?
     env.pageserver.allowed_errors.append(
-        ".*init_tenant_mgr: marking .* as locally complete, while it doesnt exist in remote index.*"
+        ".*init_tenant_mgr: marking .* as locally complete, while it doesn't exist in remote index.*"
     )
 
     # Needed for detach polling.
@@ -348,7 +348,7 @@ def test_tenant_relocation(
 
     # this requirement introduces a problem
     # if user creates a branch during migration
-    # it wont appear on the new pageserver
+    # it won't appear on the new pageserver
     ensure_checkpoint(
         pageserver_http=pageserver_http,
         tenant_id=tenant_id,
@@ -363,7 +363,7 @@ def test_tenant_relocation(
         current_lsn=current_lsn_second,
     )
 
-    log.info("inititalizing new pageserver")
+    log.info("initializing new pageserver")
     # bootstrap second pageserver
     new_pageserver_dir = env.repo_dir / "new_pageserver"
     new_pageserver_dir.mkdir()

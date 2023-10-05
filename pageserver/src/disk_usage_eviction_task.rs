@@ -487,7 +487,7 @@ enum EvictionCandidates {
 ///
 /// But, if we need to evict 900 bytes to relieve pressure, we'd evict
 /// `A/c, A/b, B/c, B/b, B/a, A/a, A/d, B/d, B/e`, reaching into the `Below` partition
-/// after exhauting the `Above` partition.
+/// after exhausting the `Above` partition.
 /// So, we did not respect each tenant's min_resident_size.
 async fn collect_eviction_candidates(
     cancel: &CancellationToken,

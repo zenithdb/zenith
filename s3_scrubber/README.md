@@ -64,7 +64,7 @@ See these lines (and lines around) in the logs for the final stats:
 
 ## Current implementation details
 
-- The tool does not have any peristent state currently: instead, it creates very verbose logs, with every S3 delete request logged, every tenant/timeline id check, etc.
+- The tool does not have any persistent state currently: instead, it creates very verbose logs, with every S3 delete request logged, every tenant/timeline id check, etc.
   Worse, any panic or early errored tasks might force the tool to exit without printing the final summary — all affected ids will still be in the logs though. The tool has retries inside it, so it's error-resistant up to some extent, and recent runs showed no traces of errors/panics.
 
 - Instead of checking non-deleted tenants' timelines instantly, the tool attempts to create separate tasks (futures) for that,

@@ -48,7 +48,7 @@ Exact mechanics would be slightly different in the following situations:
 
 ### Pulling branch
 
-Here we need to handle the same three cases, but also keep in mind that local pageserver can be behind NAT and we can't trivially re-use pushing by asking remote to 'perform_push' to our address. So we would need a new set of commands:
+Here we need to handle the same three cases, but also keep in mind that local pageserver can be behind NAT and we can't trivially reuse pushing by asking remote to 'perform_push' to our address. So we would need a new set of commands:
 
 * CLI calls `perform_pull <branch_name> <uri>` on local pageserver.
 * local pageserver calls `branch_pull <branch_name> <timetine_id>` on remote pageserver.

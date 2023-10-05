@@ -75,7 +75,7 @@ pub async fn retry<T, O, F, E, CF>(
     cancel: Cancel<E, CF>,
 ) -> Result<T, E>
 where
-    // Not std::error::Error because anyhow::Error doesnt implement it.
+    // Not std::error::Error because anyhow::Error doesn't implement it.
     // For context see https://github.com/dtolnay/anyhow/issues/63
     E: Display + Debug + 'static,
     O: FnMut() -> F,

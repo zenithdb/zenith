@@ -63,7 +63,7 @@ def test_tenant_reattach(
     env.pageserver.allowed_errors.append(
         f".*Tenant {tenant_id} will not become active\\. Current state: Stopping.*"
     )
-    # Thats because of UnreliableWrapper's injected failures
+    # That's because of UnreliableWrapper's injected failures
     env.pageserver.allowed_errors.append(
         f".*failed to fetch tenant deletion mark at tenants/({tenant_id}|{env.initial_tenant})/deleted attempt 1.*"
     )
@@ -393,7 +393,7 @@ def test_tenant_detach_ignored_tenant(neon_simple_env: NeonEnv):
         should not be present in pageserver's memory"
 
 
-# Creates a tenant, and detaches it with extra paremeter that forces ignored tenant detach.
+# Creates a tenant, and detaches it with extra parameter that forces ignored tenant detach.
 # Tenant should be detached without issues.
 def test_tenant_detach_regular_tenant(neon_simple_env: NeonEnv):
     env = neon_simple_env

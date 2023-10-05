@@ -982,7 +982,7 @@ components:
             - `attached` means that the attach operation has completed,
               successfully
             - `failed` means that attach has failed. For reason check corresponding `reason` failed.
-              `failed` is the terminal state, retrying attach call wont resolve the issue.
+              `failed` is the terminal state, retrying attach call won't resolve the issue.
               For example this can be caused by s3 being unreachable. The retry may be implemented
               with call to detach, though it would be better to not automate it and inspec failed state
               manually before proceeding with a retry.

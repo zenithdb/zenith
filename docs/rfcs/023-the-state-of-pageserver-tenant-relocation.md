@@ -75,7 +75,7 @@ sequenceDiagram
 ```
 
 At this point it is not possible to restore the state from index, it contains L2 which
-is no longer available in s3 and doesnt contain L3 added by compaction by the
+is no longer available in s3 and doesn't contain L3 added by compaction by the
 first pageserver. So if any of the pageservers restart, initial sync will fail
 (or in on-demand world it will fail a bit later during page request from
 missing layer)
@@ -171,7 +171,7 @@ sequenceDiagram
 
 Another problem is a possibility of concurrent branch creation calls.
 
-I e during migration create_branch can be called on old pageserver and newly created branch wont be seen on new pageserver. Prior art includes prototyping an approach of trying to mirror such branches, but currently it lost its importance, because now attach is fast because we dont need to download all data, and additionally to the best of my knowledge of control plane internals (cc @ololobus to confirm) operations on one project are executed sequentially, so it is not possible to have such case. So branch create operation will be executed only when relocation is completed. As a safety measure we can forbid branch creation for tenants that are in readonly remote state.
+I e during migration create_branch can be called on old pageserver and newly created branch won't be seen on new pageserver. Prior art includes prototyping an approach of trying to mirror such branches, but currently it lost its importance, because now attach is fast because we dont need to download all data, and additionally to the best of my knowledge of control plane internals (cc @ololobus to confirm) operations on one project are executed sequentially, so it is not possible to have such case. So branch create operation will be executed only when relocation is completed. As a safety measure we can forbid branch creation for tenants that are in readonly remote state.
 
 ## Simplistic approach
 
@@ -217,7 +217,7 @@ NOTE: [020. Pageserver S3 Coordination](020-pageserver-s3-coordination.md) discu
 
 The problems are outlined in [020. Pageserver S3 Coordination](020-pageserver-s3-coordination.md) and suggested solution includes [Coordination based approach](020-pageserver-s3-coordination.md#coordination-based-approach). This way it will allow to do basic leader election for pageservers so they can decide which node will be responsible for running GC and compaction. The process is based on extensive communication via storage broker and consists of a lease that is taken by one of the pageservers that extends it to continue serving a leader role.
 
-There are two options for ingesting new data into pageserver in follower role. One option is to avoid WAL ingestion at all and rely on notifications from leader to discover new layers on s3. Main downside of this approach is that follower will always lag behind the primary node because it wont have the last layer until it is uploaded to remote storage. In case of a primary failure follower will be required to reingest last segment (up to 256Mb of WAL currently) which slows down recovery. Additionally if compute is connected to follower pageserver it will observe latest data with a delay. Queries from compute will likely experience bigger delays when recent lsn is required.
+There are two options for ingesting new data into pageserver in follower role. One option is to avoid WAL ingestion at all and rely on notifications from leader to discover new layers on s3. Main downside of this approach is that follower will always lag behind the primary node because it won't have the last layer until it is uploaded to remote storage. In case of a primary failure follower will be required to reingest last segment (up to 256Mb of WAL currently) which slows down recovery. Additionally if compute is connected to follower pageserver it will observe latest data with a delay. Queries from compute will likely experience bigger delays when recent lsn is required.
 
 The second option is to consume WAL stream on both pageservers. In this case the only problem is non deterministic layer generation. Additional bookkeeping will be required to deduplicate layers from primary with local ones. Some process needs to somehow merge them to remove duplicated data. Additionally we need to have good testing coverage to ensure that our implementation of `get_page@lsn` properly handles intersecting layers.
 

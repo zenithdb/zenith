@@ -76,7 +76,7 @@ def test_remote_storage_backup_and_restore(
 
     # FIXME: Is this expected?
     env.pageserver.allowed_errors.append(
-        ".*marking .* as locally complete, while it doesnt exist in remote index.*"
+        ".*marking .* as locally complete, while it doesn't exist in remote index.*"
     )
     env.pageserver.allowed_errors.append(".*No timelines to attach received.*")
 
@@ -96,7 +96,7 @@ def test_remote_storage_backup_and_restore(
     tenant_id = env.initial_tenant
     timeline_id = env.initial_timeline
 
-    # Thats because of UnreliableWrapper's injected failures
+    # That's because of UnreliableWrapper's injected failures
     env.pageserver.allowed_errors.append(
         f".*failed to fetch tenant deletion mark at tenants/{tenant_id}/deleted attempt 1.*"
     )
@@ -225,7 +225,7 @@ def test_remote_storage_upload_queue_retries(
 
     env = neon_env_builder.init_start()
 
-    # create tenant with config that will determinstically allow
+    # create tenant with config that will deterministically allow
     # compaction and gc
     tenant_id, timeline_id = env.neon_cli.create_tenant(
         conf={

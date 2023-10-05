@@ -926,7 +926,7 @@ async fn ignore_tenant0(
 
 #[derive(Debug, thiserror::Error)]
 pub enum TenantMapListError {
-    #[error("tenant map is still initiailizing")]
+    #[error("tenant map is still initializing")]
     Initializing,
 }
 

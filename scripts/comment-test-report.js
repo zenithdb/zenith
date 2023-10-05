@@ -136,7 +136,7 @@ const reportSummary = async (params) => {
     const totalTestsCount = failedTestsCount + passedTestsCount + skippedTestsCount
     summary += `### ${totalTestsCount} tests run: ${passedTestsCount} passed, ${failedTestsCount} failed, ${skippedTestsCount} skipped ([full report](${reportUrl}))\n___\n`
 
-    // Print test resuls from the newest to the oldest Postgres version for release and debug builds.
+    // Print test results from the newest to the oldest Postgres version for release and debug builds.
     for (const pgVersion of Array.from(pgVersions).sort().reverse()) {
         if (Object.keys(failedTests[pgVersion]).length > 0) {
             summary += `#### Failures on Postgres ${pgVersion}\n\n`

@@ -246,7 +246,7 @@ def test_multiple_extensions_one_archive(
 # Test that extension is downloaded after endpoint restart,
 # when the library is used in the query.
 #
-# Run the test with mutliple simultaneous connections to an endpoint.
+# Run the test with multiple simultaneous connections to an endpoint.
 # to ensure that the extension is downloaded only once.
 #
 @pytest.mark.skip(reason="https://github.com/neondatabase/neon/issues/4949")

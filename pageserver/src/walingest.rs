@@ -1485,7 +1485,7 @@ impl<'a> WalIngest<'a> {
         blknum: BlockNumber,
         ctx: &RequestContext,
     ) -> anyhow::Result<()> {
-        // we don't use a cache for this like we do for relations. SLRUS are explcitly
+        // we don't use a cache for this like we do for relations. SLRUS are explicitly
         // extended with ZEROPAGE records, not with commit records, so it happens
         // a lot less frequently.
 

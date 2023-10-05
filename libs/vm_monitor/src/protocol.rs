@@ -70,7 +70,7 @@ pub enum OutboundMsgKind {
     /// *Note*: this is a struct variant because of the way go serializes struct{}
     UpscaleRequest {},
     /// Returned to the agent once we have finished attempting to downscale. If
-    /// an error occured trying to do so, an `InternalError` will get returned instead.
+    /// an error occurred trying to do so, an `InternalError` will get returned instead.
     /// However, if we are simply unsuccessful (for example, do to needing the resources),
     /// that gets included in the `DownscaleResult`.
     DownscaleResult {

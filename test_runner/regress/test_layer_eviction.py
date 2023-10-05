@@ -277,7 +277,7 @@ def test_gc_of_remote_layers(neon_env_builder: NeonEnvBuilder):
             layer.layer_file_size or 0 for layer in info.historic_layers if layer.remote
         )
 
-    log.info("before runnning GC, ensure that remote_physical size is zero")
+    log.info("before running GC, ensure that remote_physical size is zero")
     ensure_resident_and_remote_size_metrics()
 
     log.info("run GC")

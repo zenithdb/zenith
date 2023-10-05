@@ -326,7 +326,7 @@ def test_creating_tenant_conf_after_attach(neon_env_builder: NeonEnvBuilder):
     env.neon_cli.config_tenant(tenant_id, {"gc_horizon": "0"})
     contents_later = config_path.read_text()
 
-    # dont test applying the setting here, we have that another test case to show it
+    # don't test applying the setting here, we have that another test case to show it
     # we just care about being able to create the file
     assert len(contents_first) > len(contents_later)
 

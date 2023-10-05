@@ -11,7 +11,7 @@ Dmitry Baranchuk, Artem Babenko, Yury Malkov
 # Postgres extension
 
 HNSW index is hold in memory (built on demand) and it's maxial size is limited
-by `maxelements` index parameter. Another required parameter is nubmer of dimensions (if it is not specified in column type).
+by `maxelements` index parameter. Another required parameter is number of dimensions (if it is not specified in column type).
 Optional parameter `ef` specifies number of neighbors which are considered during index construction and search (corresponds `efConstruction` and `efSearch` parameters
 described in the article).
 

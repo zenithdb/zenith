@@ -116,7 +116,7 @@ async fn schedule_ordered_timeline_deletions(
     // Tree sort timelines to delete from leafs to the root.
     // NOTE: by calling clone we release the mutex which creates a possibility for a race: pending deletion
     // can complete and remove timeline from the map in between our call to clone
-    // and `DeleteTimelineFlow::run`, so `run` wont find timeline in `timelines` map.
+    // and `DeleteTimelineFlow::run`, so `run` won't find timeline in `timelines` map.
     // timelines.lock is currently synchronous so we cant hold it across await point.
     // So just ignore NotFound error if we get it from `run`.
     // Beware: in case it becomes async and we try to hold it here, `run` also locks it, which can create a deadlock.
@@ -217,7 +217,7 @@ async fn cleanup_remaining_fs_traces(
     // Otherwise there is no guarantee that they reach the disk before mark deletion.
     // So its possible for mark to reach disk first and for other deletions
     // to be reordered later and thus missed if a crash occurs.
-    // Note that we dont need to sync after mark file is removed
+    // Note that we don't need to sync after mark file is removed
     // because we can tolerate the case when mark file reappears on startup.
     let tenant_path = &conf.tenant_path(tenant_id);
     if tenant_path.exists() {
@@ -336,7 +336,7 @@ impl DeleteTenantFlow {
             ))?
         });
 
-        // IDEA: implement detach as delete without remote storage. Then they would use the same lock (deletion_progress) so wont contend.
+        // IDEA: implement detach as delete without remote storage. Then they would use the same lock (deletion_progress) so won't contend.
         // Though sounds scary, different mark name?
         // Detach currently uses remove_dir_all so in case of a crash we can end up in a weird state.
         if let Some(remote_storage) = &remote_storage {
@@ -424,9 +424,9 @@ impl DeleteTenantFlow {
         // Do not consume valuable resources during the load phase, continue deletion once init phase is complete.
         let background_jobs_can_start = init_order.as_ref().map(|x| &x.background_jobs_can_start);
         if let Some(background) = background_jobs_can_start {
-            info!("waiting for backgound jobs barrier");
+            info!("waiting for background jobs barrier");
             background.clone().wait().await;
-            info!("ready for backgound jobs barrier");
+            info!("ready for background jobs barrier");
         }
 
         // Tenant may not be loadable if we fail late in cleanup_remaining_fs_traces (e g remove timelines dir)
@@ -557,7 +557,7 @@ impl DeleteTenantFlow {
         tenant: &Arc<Tenant>,
     ) -> Result<(), DeleteTenantError> {
         // Tree sort timelines, schedule delete for them. Mention retries from the console side.
-        // Note that if deletion fails we dont mark timelines as broken,
+        // Note that if deletion fails we don't mark timelines as broken,
         // the whole tenant will become broken as by `Self::schedule_background` logic
         let already_running_timeline_deletions = schedule_ordered_timeline_deletions(tenant)
             .await

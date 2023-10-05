@@ -115,7 +115,7 @@ def ingest_test_result(
     rows = []
     for f in test_cases_dir.glob("*.json"):
         test = json.loads(f.read_text())
-        # Drop unneded fields from raw data
+        # Drop unneeded fields from raw data
         raw = test.copy()
         raw.pop("parameterValues")
         raw.pop("labels")

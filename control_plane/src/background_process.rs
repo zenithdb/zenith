@@ -151,7 +151,7 @@ pub fn stop_process(
             return Ok(());
         }
         PidFileRead::NotHeldByAnyProcess(_) => {
-            // Don't try to kill according to file contents beacuse the pid might have been re-used by another process.
+            // Don't try to kill according to file contents because the pid might have been reused by another process.
             // Don't delete the file either, it can race with new pid file creation.
             // Read `pid_file` module comment for details.
             println!(

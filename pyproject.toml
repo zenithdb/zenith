@@ -90,3 +90,7 @@ select = [
     "W", # pycodestyle
     "B", # bugbear
 ]
+
+[tool.codespell]
+ignore-words = ".codespellignore"
+skip = "./vendor,./target,./pg_install,./test_output,**/node_modules,poetry.lock,**/Cargo.lock"

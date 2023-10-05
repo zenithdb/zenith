@@ -105,7 +105,7 @@ def test_import_from_vanilla(test_output_dir, pg_bin, vanilla_pg, neon_env_build
 
     # FIXME: Is this expected?
     env.pageserver.allowed_errors.append(
-        ".*init_tenant_mgr: marking .* as locally complete, while it doesnt exist in remote index.*"
+        ".*init_tenant_mgr: marking .* as locally complete, while it doesn't exist in remote index.*"
     )
 
     def import_tar(base, wal):
@@ -169,7 +169,7 @@ def test_import_from_pageserver_small(pg_bin: PgBin, neon_env_builder: NeonEnvBu
 
     # FIXME: Is this expected?
     env.pageserver.allowed_errors.append(
-        ".*init_tenant_mgr: marking .* as locally complete, while it doesnt exist in remote index.*"
+        ".*init_tenant_mgr: marking .* as locally complete, while it doesn't exist in remote index.*"
     )
 
     timeline = env.neon_cli.create_branch("test_import_from_pageserver_small")

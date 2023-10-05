@@ -40,7 +40,7 @@ use validator::ValidatorQueueMessage;
 
 use crate::{config::PageServerConf, tenant::storage_layer::LayerFileName};
 
-// TODO: adminstrative "panic button" config property to disable all deletions
+// TODO: administrative "panic button" config property to disable all deletions
 // TODO: configurable for how long to wait before executing deletions
 
 /// We aggregate object deletions from many tenants in one place, for several reasons:
@@ -598,7 +598,7 @@ impl DeletionQueueClient {
     }
 
     /// This interface bypasses the persistent deletion queue, and any validation
-    /// that this pageserver is still elegible to execute the deletions.  It is for
+    /// that this pageserver is still eligible to execute the deletions.  It is for
     /// use in timeline deletions, where the control plane is telling us we may
     /// delete everything in the timeline.
     ///

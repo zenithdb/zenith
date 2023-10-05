@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 default = []
-# Enables test-only APIs, incuding failpoints. In particular, enables the `fail_point!` macro,
+# Enables test-only APIs, including failpoints. In particular, enables the `fail_point!` macro,
 # which adds some runtime cost to run tests on outage conditions
 testing = ["fail/failpoints"]
 

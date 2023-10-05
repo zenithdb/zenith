@@ -118,7 +118,7 @@ impl LogicalSize {
     }
 
     /// Make the value computed by initial logical size computation
-    /// available for re-use. This doesn't contain the incremental part.
+    /// available for reuse. This doesn't contain the incremental part.
     pub(super) fn initialized_size(&self, lsn: Lsn) -> Option<u64> {
         match self.initial_part_end {
             Some(v) if v == lsn => self.initial_logical_size.get().copied(),

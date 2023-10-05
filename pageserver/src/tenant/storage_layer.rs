@@ -310,9 +310,9 @@ impl LayerAccessStats {
                         Lazy::new(|| Mutex::new((0, RateLimit::new(Duration::from_secs(10)))));
                     let mut guard = WARN_RATE_LIMIT.lock().unwrap();
                     guard.0 += 1;
-                    let occurences = guard.0;
+                    let occurrences = guard.0;
                     guard.1.call(move || {
-                        warn!(parent: None, occurences, "latest_activity not available, this is an implementation bug, using fallback value");
+                        warn!(parent: None, occurrences, "latest_activity not available, this is an implementation bug, using fallback value");
                     });
                     None
                 }
