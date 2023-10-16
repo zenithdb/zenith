@@ -20,7 +20,7 @@ SHLIB_LINK_INTERNAL = $(libpq)
 SHLIB_LINK = -lcurl
 
 EXTENSION = neon
-DATA = neon--1.0.sql
+DATA = neon--1.0.sql neon--1.0--1.1.sql
 PGFILEDESC = "neon - cloud storage for PostgreSQL"
 
 
