@@ -3340,6 +3340,7 @@ fn run_initdb(
         .args(["-D", initdb_target_dir.as_ref()])
         .args(["-U", &conf.superuser])
         .args(["-E", "utf8"])
+        .args(["-l", "logical"])
         .arg("--no-instructions")
         // This is only used for a temporary installation that is deleted shortly after,
         // so no need to fsync it
