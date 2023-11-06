@@ -1,3 +1,4 @@
+use ::metrics::tokio_metrics::TokioCollector;
 use futures::future::Either;
 use proxy::auth;
 use proxy::config::AuthenticationConfig;
@@ -99,6 +100,10 @@ async fn main() -> anyhow::Result<()> {
     let _logging_guard = proxy::logging::init().await?;
     let _panic_hook_guard = utils::logging::replace_panic_hook_with_tracing_panic_hook();
     let _sentry_guard = init_sentry(Some(GIT_VERSION.into()), &[]);
+
+    TokioCollector::default()
+        .add_runtime(tokio::runtime::Handle::current(), "main".to_owned())
+        .register()?;
 
     info!("Version: {GIT_VERSION}");
     info!("Build_tag: {BUILD_TAG}");

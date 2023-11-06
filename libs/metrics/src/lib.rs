@@ -21,6 +21,8 @@ pub use prometheus::{register_int_gauge_vec, IntGaugeVec};
 pub use prometheus::{Encoder, TextEncoder};
 use prometheus::{Registry, Result};
 
+pub mod tokio_metrics;
+
 pub mod launch_timestamp;
 mod wrappers;
 pub use wrappers::{CountedReader, CountedWriter};

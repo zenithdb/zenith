@@ -137,7 +137,7 @@ tar = "0.4"
 test-context = "0.1"
 thiserror = "1.0"
 tls-listener = { version = "0.7", features = ["rustls", "hyper-h1"] }
-tokio = { version = "1.17", features = ["macros"] }
+tokio = { version = "1.29", features = ["macros"] }
 tokio-io-timeout = "1.2.0"
 tokio-postgres-rustls = "0.10.0"
 tokio-rustls = "0.24"

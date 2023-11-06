@@ -42,6 +42,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::FutureExt;
+use metrics::tokio_metrics::TokioCollector;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 use tokio::task_local;
@@ -148,6 +149,20 @@ pub(crate) static BACKGROUND_RUNTIME_WORKER_THREADS: Lazy<usize> = Lazy::new(|| 
         .map(|s| s.parse::<usize>().unwrap())
         .unwrap_or_else(|_e| usize::max(1, num_cpus::get()))
 });
+
+pub fn runtime_collector() -> TokioCollector {
+    TokioCollector::default()
+        .add_runtime(
+            COMPUTE_REQUEST_RUNTIME.handle().clone(),
+            "compute".to_owned(),
+        )
+        .add_runtime(MGMT_REQUEST_RUNTIME.handle().clone(), "mgmt".to_owned())
+        .add_runtime(
+            WALRECEIVER_RUNTIME.handle().clone(),
+            "walreceiver".to_owned(),
+        )
+        .add_runtime(BACKGROUND_RUNTIME.handle().clone(), "background".to_owned())
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct PageserverTaskId(u64);

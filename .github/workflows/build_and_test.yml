@@ -184,9 +184,14 @@ jobs:
       fail-fast: false
       matrix:
         build_type: [ debug, release ]
+        # add tokio_unstable on debug
+        include:
+          - build_type: debug
+            rustflags: "--cfg=tokio_unstable"
     env:
       BUILD_TYPE: ${{ matrix.build_type }}
       GIT_VERSION: ${{ github.event.pull_request.head.sha || github.sha }}
+      RUSTFLAGS: ${{ matrix.rustflags }}
 
     steps:
       - name: Fix git ownership

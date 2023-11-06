@@ -1,3 +1,4 @@
+use ::metrics::tokio_metrics::TokioCollector;
 use camino::Utf8PathBuf;
 use once_cell::sync::Lazy;
 use remote_storage::RemoteStorageConfig;
@@ -165,3 +166,22 @@ pub static METRICS_SHIFTER_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
         .build()
         .expect("Failed to create broker runtime")
 });
+
+pub fn runtime_collector() -> TokioCollector {
+    TokioCollector::default()
+        .add_runtime(
+            WAL_SERVICE_RUNTIME.handle().clone(),
+            "wal service".to_owned(),
+        )
+        .add_runtime(HTTP_RUNTIME.handle().clone(), "http".to_owned())
+        .add_runtime(BROKER_RUNTIME.handle().clone(), "broker".to_owned())
+        .add_runtime(
+            WAL_REMOVER_RUNTIME.handle().clone(),
+            "wal remover".to_owned(),
+        )
+        .add_runtime(WAL_BACKUP_RUNTIME.handle().clone(), "wal backup".to_owned())
+        .add_runtime(
+            METRICS_SHIFTER_RUNTIME.handle().clone(),
+            "metric shifter".to_owned(),
+        )
+}

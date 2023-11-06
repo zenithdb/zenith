@@ -9,5 +9,6 @@ prometheus.workspace = true
 libc.workspace = true
 once_cell.workspace = true
 chrono.workspace = true
+tokio.workspace = true
 
 workspace_hack.workspace = true

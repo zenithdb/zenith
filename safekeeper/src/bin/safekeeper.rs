@@ -29,13 +29,13 @@ use safekeeper::defaults::{
     DEFAULT_HEARTBEAT_TIMEOUT, DEFAULT_HTTP_LISTEN_ADDR, DEFAULT_MAX_OFFLOADER_LAG_BYTES,
     DEFAULT_PG_LISTEN_ADDR,
 };
-use safekeeper::wal_service;
 use safekeeper::GlobalTimelines;
 use safekeeper::SafeKeeperConf;
 use safekeeper::{broker, WAL_SERVICE_RUNTIME};
 use safekeeper::{control_file, BROKER_RUNTIME};
 use safekeeper::{http, WAL_REMOVER_RUNTIME};
 use safekeeper::{remove_wal, WAL_BACKUP_RUNTIME};
+use safekeeper::{runtime_collector, wal_service};
 use safekeeper::{wal_backup, HTTP_RUNTIME};
 use storage_broker::DEFAULT_ENDPOINT;
 use utils::auth::{JwtAuth, Scope};
@@ -341,6 +341,10 @@ async fn start_safekeeper(conf: SafeKeeperConf) -> Result<()> {
     // after daemonizing, otherwise process collector will be upset.
     let timeline_collector = safekeeper::metrics::TimelineCollector::new();
     metrics::register_internal(Box::new(timeline_collector))?;
+
+    runtime_collector()
+        .add_runtime(Handle::current(), "main".to_owned())
+        .register()?;
 
     let (wal_backup_launcher_tx, wal_backup_launcher_rx) = mpsc::channel(100);
 

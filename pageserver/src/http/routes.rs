@@ -1697,6 +1697,9 @@ pub fn make_router(
     launch_ts: &'static LaunchTimestamp,
     auth: Option<Arc<JwtAuth>>,
 ) -> anyhow::Result<RouterBuilder<hyper::Body, ApiError>> {
+    // for the /metrics endpoint
+    crate::task_mgr::runtime_collector().register()?;
+
     let spec = include_bytes!("openapi_spec.yml");
     let mut router = attach_openapi_ui(endpoint::make_router(), spec, "/swagger.yml", "/v1/doc");
     if auth.is_some() {
