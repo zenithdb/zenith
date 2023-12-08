@@ -1,0 +1,52 @@
+name: pgindent Neon
+
+on:
+  push:
+    branches:
+      - main
+      - release
+    paths:
+      - 'pgxn/**.[ch]'
+      - '.github/workflows/pgindent.yml'
+  pull_request:
+    paths:
+      - 'pgxn/**.[ch]'
+      - '.github/workflows/pgindent.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pgindent:
+    runs-on: [ self-hosted, gen3, small ]
+    container:
+      image: 369495373322.dkr.ecr.eu-central-1.amazonaws.com/rust:pinned
+      options: --init
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: true
+          fetch-depth: 1
+
+      - name: Set pg 16 revision for caching
+        id: pg_v16_rev
+        run: echo pg_rev=$(git rev-parse HEAD:vendor/postgres-v16) >> $GITHUB_OUTPUT
+
+      - name: Cache postgres v16 build
+        id: cache_pg_16
+        uses: actions/cache@v3
+        with:
+          path: pg_install/v16
+          key: v1-${{ runner.os }}-release-pg-${{ steps.pg_v16_rev.outputs.pg_rev }}-${{ hashFiles('Makefile') }}
+
+      - name: Run pgindent
+        run: |
+          make -s -j neon-pgindent-check
+
+      - name: How to fix
+        if: ${{ failure() }}
+        run: |
+          echo Run \"make neon-pgindent\" in the event of a failure

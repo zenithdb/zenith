@@ -174,10 +174,10 @@ neon-pg-ext-clean-%:
 
 # Build walproposer as a static library. walproposer source code is located
 # in the pgxn/neon directory.
-# 
+#
 # We also need to include libpgport.a and libpgcommon.a, because walproposer
 # uses some functions from those libraries.
-# 
+#
 # Some object files are removed from libpgport.a and libpgcommon.a because
 # they depend on openssl and other libraries that are not included in our
 # Rust build.
@@ -297,6 +297,10 @@ neon-pgindent: postgres-v16-pg-bsd-indent neon-pg-ext-v16
 		-C $(POSTGRES_INSTALL_DIR)/build/neon-v16 \
 		-f $(ROOT_PROJECT_DIR)/pgxn/neon/Makefile pgindent
 
+# Check whether pxgn/neon code is compliant with pgindent.
+.PHONY: pgindent
+neon-pgindent-check:
+	$(MAKE) PGINDENT_FLAGS=--silent-diff neon-pgindent
 
 .PHONY: setup-pre-commit-hook
 setup-pre-commit-hook:
