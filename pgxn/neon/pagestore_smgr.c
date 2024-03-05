@@ -725,6 +725,33 @@ prefetch_do_request(PrefetchRequest *slot, bool *force_latest, XLogRecPtr *force
 		slot->actual_request_lsn = request.req.lsn = lsn;
 		prefetch_lsn = Max(prefetch_lsn, lsn);
 		slot->effective_request_lsn = prefetch_lsn;
+
+		/*
+		 * Remember request LSN in the last-written LSN cache to avoid false
+		 * prefetch invalidations.
+		 *
+		 * Imagine what would happen without this, when you perform a large
+		 * sequential scan with UPDATE. The sequential scan issues a prefetch
+		 * request for each page in order, and every page is also dirtied. On
+		 * each page, the oldest page in the last-written LSN cache is evicted,
+		 * which advances the global last-written LSN. The pages being scanned are
+		 * not in the last-written cache, so each prefetch request will use the
+		 * global last-written LSN in the request and memorize that in the
+		 * slot. However, when we receive the response to the prefetch request,
+		 * the global last-written LSN has already moved forwards, and the
+		 * cross-check we make that the last-written LSN matches will fail, and we
+		 * discard the prefetched response unnecessary.
+		 *
+		 * Inserting the LSN we use in the prefetch request to the last-written LSN
+		 * cache avoids that problem. With that, we will use the cached value in
+		 * the cross-check, instead of the more recent global last-written LSN value.
+		 */
+		SetLastWrittenLSNForBlock(
+			request.req.lsn,
+			slot->buftag.rnode,
+			slot->buftag.forkNum,
+			slot->buftag.blockNum
+			);
 	}
 
 	Assert(slot->response == NULL);
