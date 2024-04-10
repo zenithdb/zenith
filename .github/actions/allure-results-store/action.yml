@@ -16,8 +16,7 @@ runs:
     - name: Set variables
       shell: bash -euxo pipefail {0}
       run: |
-        PR_NUMBER=$(jq --raw-output .pull_request.number "$GITHUB_EVENT_PATH" || true)
-        if [ "${PR_NUMBER}" != "null" ]; then
+        if [ "${PR_NUMBER}" != "" ]; then
           BRANCH_OR_PR=pr-${PR_NUMBER}
         elif [ "${GITHUB_REF_NAME}" = "main" ] || [ "${GITHUB_REF_NAME}" = "release" ] || [ "${GITHUB_REF_NAME}" = "release-proxy" ]; then
           # Shortcut for special branches
@@ -27,15 +26,18 @@ runs:
         fi
 
         echo "BRANCH_OR_PR=${BRANCH_OR_PR}" >> $GITHUB_ENV
+        echo "COMMIT_SHA=${COMMIT_SHA}"     >> $GITHUB_ENV
         echo "REPORT_DIR=${REPORT_DIR}"     >> $GITHUB_ENV
       env:
+        COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         REPORT_DIR: ${{ inputs.report-dir }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
 
     - name: Upload test results
       shell: bash -euxo pipefail {0}
       run: |
         REPORT_PREFIX=reports/${BRANCH_OR_PR}
-        RAW_PREFIX=reports-raw/${BRANCH_OR_PR}/${GITHUB_RUN_ID}
+        RAW_PREFIX=reports-raw/${BRANCH_OR_PR}/${COMMIT_SHA}
 
         # Add metadata
         cat <<EOF > ${REPORT_DIR}/executor.json
@@ -44,9 +46,9 @@ runs:
             "type": "github",
             "url": "https://${BUCKET}.s3.amazonaws.com/${REPORT_PREFIX}/latest/index.html",
             "buildOrder": ${GITHUB_RUN_ID},
-            "buildName": "GitHub Actions Run #${GITHUB_RUN_NUMBER}/${GITHUB_RUN_ATTEMPT}",
+            "buildName": "GitHub Actions Run ${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}",
             "buildUrl": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}",
-            "reportUrl": "https://${BUCKET}.s3.amazonaws.com/${REPORT_PREFIX}/${GITHUB_RUN_ID}/index.html",
+            "reportUrl": "https://${BUCKET}.s3.amazonaws.com/${REPORT_PREFIX}/${COMMIT_SHA}/index.html",
             "reportName": "Allure Report"
           }
         EOF
@@ -55,7 +57,7 @@ runs:
           COMMIT_SHA=${COMMIT_SHA}
         EOF
 
-        ARCHIVE="${UNIQUE_KEY}-${GITHUB_RUN_ATTEMPT}-$(date +%s).tar.zst"
+        ARCHIVE="${UNIQUE_KEY}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(date +%s).tar.zst"
         ZSTD_NBTHREADS=0
 
         time tar -C ${REPORT_DIR} -cf ${ARCHIVE} --zstd .

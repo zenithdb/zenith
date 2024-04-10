@@ -11,7 +11,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Tuple
 
 import backoff
 import psycopg2
@@ -59,9 +58,6 @@ class Row:
     raw: str
 
 
-TEST_NAME_RE = re.compile(r"[\[-](?P<build_type>debug|release)-pg(?P<pg_version>\d+)[-\]]")
-
-
 def err(msg):
     print(f"error: {msg}")
     sys.exit(1)
@@ -88,28 +84,14 @@ def create_table(cur):
     cur.execute(CREATE_TABLE)
 
 
-def parse_test_name(test_name: str) -> Tuple[str, int, str]:
-    build_type, pg_version = None, None
-    if match := TEST_NAME_RE.search(test_name):
-        found = match.groupdict()
-        build_type = found["build_type"]
-        pg_version = int(found["pg_version"])
-    else:
-        # It's ok, we embed BUILD_TYPE and Postgres Version into the test name only for regress suite and do not for other suites (like performance)
-        build_type = "release"
-        pg_version = 14
-
-    unparametrized_name = re.sub(rf"{build_type}-pg{pg_version}-?", "", test_name).replace("[]", "")
-
-    return build_type, pg_version, unparametrized_name
+def parse_test_name(test_name: str, build_type: str, pg_version: int) -> str:
+    return re.sub(rf"{build_type}-pg{pg_version}-?", "", test_name).replace("[]", "")
 
 
 def ingest_test_result(
     cur,
     reference: str,
     revision: str,
-    run_id: int,
-    run_attempt: int,
     test_cases_dir: Path,
 ):
     rows = []
@@ -121,7 +103,18 @@ def ingest_test_result(
         raw.pop("labels")
         raw.pop("extra")
 
-        build_type, pg_version, unparametrized_name = parse_test_name(test["name"])
+        # All allure paramet`ers are prefixed with "__"
+        parameters = {
+            p["name"].removeprefix("__"): p["value"]
+            for p in test["parameters"]
+            if p["name"].startswith("__")
+        }
+        build_type = parameters["BUILD_TYPE"].strip("'")
+        pg_version = int(parameters["DEFAULT_PG_VERSION"])
+        github_run_id = int(parameters["GITHUB_RUN_ID"])
+        github_run_attempt = int(parameters["GITHUB_RUN_ATTEMPT"])
+
+        unparametrized_name = parse_test_name(test["name"], build_type, pg_version)
         labels = {label["name"]: label["value"] for label in test["labels"]}
         row = Row(
             parent_suite=labels["parentSuite"],
@@ -134,8 +127,8 @@ def ingest_test_result(
             flaky=test["flaky"] or test["retriesStatusChange"],
             build_type=build_type,
             pg_version=pg_version,
-            run_id=run_id,
-            run_attempt=run_attempt,
+            run_id=github_run_id,
+            run_attempt=github_run_attempt,
             reference=reference,
             revision=revision,
             raw=json.dumps(raw),
@@ -187,8 +180,6 @@ def main():
             cur,
             reference=args.reference,
             revision=args.revision,
-            run_id=args.run_id,
-            run_attempt=args.run_attempt,
             test_cases_dir=args.test_cases_dir,
         )
 

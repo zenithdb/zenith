@@ -216,7 +216,7 @@ runs:
 
     - name: Upload test results
       if: ${{ !cancelled() }}
-      uses: ./.github/actions/allure-report-store
+      uses: ./.github/actions/allure-results-store
       with:
         report-dir: /tmp/test_output/allure/results
         unique-key: ${{ inputs.build_type }}-${{ inputs.pg_version }}

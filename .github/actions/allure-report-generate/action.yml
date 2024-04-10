@@ -1,12 +1,11 @@
 name: 'Create Allure report'
-description: 'Generate Allure report from uploaded by actions/allure-report-store tests results'
+description: 'Generate Allure report from uploaded by actions/allure-results-store tests results'
 
 inputs:
-  store-test-results-into-db:
-    description: 'Whether to store test results into the database. TEST_RESULT_CONNSTR/TEST_RESULT_CONNSTR_NEW should be set'
-    type: boolean
+  connstr:
+    description: 'Connection string to the test results database; if unset then test results will not be stored'
+    type: str
     required: false
-    default: false
 
 outputs:
   base-url:
@@ -36,8 +35,7 @@ runs:
     - name: Set variables
       shell: bash -euxo pipefail {0}
       run: |
-        PR_NUMBER=$(jq --raw-output .pull_request.number "$GITHUB_EVENT_PATH" || true)
-        if [ "${PR_NUMBER}" != "null" ]; then
+        if [ "${PR_NUMBER}" != "" ]; then
           BRANCH_OR_PR=pr-${PR_NUMBER}
         elif [ "${GITHUB_REF_NAME}" = "main" ] || [ "${GITHUB_REF_NAME}" = "release" ] || [ "${GITHUB_REF_NAME}" = "release-proxy" ]; then
           # Shortcut for special branches
@@ -54,9 +52,12 @@ runs:
         echo "BRANCH_OR_PR=${BRANCH_OR_PR}" >> $GITHUB_ENV
         echo "LOCK_FILE=${LOCK_FILE}"       >> $GITHUB_ENV
         echo "WORKDIR=${WORKDIR}"           >> $GITHUB_ENV
+        echo "COMMIT_SHA=${COMMIT_SHA}"     >> $GITHUB_ENV
         echo "BUCKET=${BUCKET}"             >> $GITHUB_ENV
       env:
         BUCKET: neon-github-public-dev
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
     # TODO: We can replace with a special docker image with Java and Allure pre-installed
     - uses: actions/setup-java@v4
@@ -76,8 +77,8 @@ runs:
           rm -f ${ALLURE_ZIP}
         fi
       env:
-        ALLURE_VERSION: 2.27.0
-        ALLURE_ZIP_SHA256: b071858fb2fa542c65d8f152c5c40d26267b2dfb74df1f1608a589ecca38e777
+        ALLURE_VERSION: 2.28.0
+        ALLURE_ZIP_SHA256: a72e4676b74c83406fe9a0a897c037dc86035157bda6af37982a8f700034f7c7
 
     # Potentially we could have several running build for the same key (for example, for the main branch), so we use improvised lock for this
     - name: Acquire lock
@@ -91,7 +92,7 @@ runs:
         # Do it up to 5 times to avoid race condition
         for _ in $(seq 1 5); do
           for i in $(seq 1 ${LOCK_TIMEOUT}); do
-            LOCK_ACQUIRED=$(aws s3api head-object --bucket neon-github-public-dev --key ${LOCK_FILE} | jq --raw-output '.LastModified' || true)
+            LOCK_ACQUIRED=$(aws s3api head-object --bucket ${BUCKET} --key ${LOCK_FILE} | jq --raw-output '.LastModified' || true)
             # `date --date="..."` is supported only by gnu date (i.e. it doesn't work on BSD/macOS)
             if [ -z "${LOCK_ACQUIRED}" ] || [ "$(( $(date +%s) - $(date --date="${LOCK_ACQUIRED}" +%s) ))" -gt "${LOCK_TIMEOUT}" ]; then
               break
@@ -113,10 +114,10 @@ runs:
       shell: bash -euxo pipefail {0}
       run: |
         REPORT_PREFIX=reports/${BRANCH_OR_PR}
-        RAW_PREFIX=reports-raw/${BRANCH_OR_PR}/${GITHUB_RUN_ID}
+        RAW_PREFIX=reports-raw/${BRANCH_OR_PR}/${COMMIT_SHA}
 
-        BASE_URL=https://${BUCKET}.s3.amazonaws.com/${REPORT_PREFIX}/${GITHUB_RUN_ID}
-        BASE_S3_URL=s3://${BUCKET}/${REPORT_PREFIX}/${GITHUB_RUN_ID}
+        BASE_URL=https://${BUCKET}.s3.amazonaws.com/${REPORT_PREFIX}/${COMMIT_SHA}
+        BASE_S3_URL=s3://${BUCKET}/${REPORT_PREFIX}/${COMMIT_SHA}
         REPORT_URL=${BASE_URL}/index.html
         REPORT_JSON_URL=${BASE_URL}/data/suites.json
 
@@ -125,12 +126,13 @@ runs:
 
         S3_FILEPATHS=$(aws s3api list-objects-v2 --bucket ${BUCKET} --prefix ${RAW_PREFIX}/ | jq --raw-output '.Contents[]?.Key')
         if [ -z "$S3_FILEPATHS" ]; then
-          # There's no previously uploaded data for this $GITHUB_RUN_ID
+          # There's no previously uploaded data for this $COMMIT_SHA
           exit 0
         fi
 
-        time aws s3 cp --recursive --only-show-errors "s3://${BUCKET}/${RAW_PREFIX}/" "${WORKDIR}/"
-        for archive in $(find ${WORKDIR} -name "*.tar.zst"); do
+        mkdir -p "${WORKDIR}/allure-results"
+        time aws s3 cp --recursive --only-show-errors "s3://${BUCKET}/${RAW_PREFIX}/" "${WORKDIR}/allure-results/"
+        for archive in $(find "${WORKDIR}/allure-results" -name "*.tar.zst"); do
           mkdir -p ${archive%.tar.zst}
           time tar -xf ${archive} -C ${archive%.tar.zst}
           rm -f ${archive}
@@ -140,7 +142,7 @@ runs:
         time aws s3 cp --recursive --only-show-errors "s3://${BUCKET}/${REPORT_PREFIX}/latest/history" "${WORKDIR}/latest/history" || true
 
         # Generate report
-        time allure generate --clean --output ${WORKDIR}/report ${WORKDIR}/*
+        time allure generate --clean --output ${WORKDIR}/report ${WORKDIR}/allure-results/* ${WORKDIR}/latest/
 
         # Replace a logo link with a redirect to the latest version of the report
         sed -i 's|<a href="." class=|<a href="https://'${BUCKET}'.s3.amazonaws.com/'${REPORT_PREFIX}'/latest/index.html?nocache='"'+Date.now()+'"'" class=|g' ${WORKDIR}/report/app.js
@@ -150,7 +152,7 @@ runs:
 
         # Use aws s3 cp (instead of aws s3 sync) to keep files from previous runs to make old URLs work,
         # and to keep files on the host to upload them to the database
-        time aws s3 cp --recursive --only-show-errors "${WORKDIR}/report" "s3://${BUCKET}/${REPORT_PREFIX}/${GITHUB_RUN_ID}"
+        time aws s3 cp --recursive --only-show-errors "${WORKDIR}/report" "s3://${BUCKET}/${REPORT_PREFIX}/${COMMIT_SHA}"
 
         # Generate redirect
         cat <<EOF > ${WORKDIR}/index.html
@@ -180,23 +182,23 @@ runs:
         fi
 
     - name: Cache poetry deps
+      if: inputs.connstr != ''
       uses: actions/cache@v4
       with:
         path: ~/.cache/pypoetry/virtualenvs
         key: v2-${{ runner.os }}-python-deps-${{ hashFiles('poetry.lock') }}
 
-    - name: Store Allure test stat in the DB (new)
-      if: ${{ !cancelled() && inputs.store-test-results-into-db == 'true' }}
+    - name: Store Allure test stat in the DB
+      if: inputs.connstr != ''
       shell: bash -euxo pipefail {0}
       env:
         COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         BASE_S3_URL: ${{ steps.generate-report.outputs.base-s3-url }}
+        DATABASE_URL: ${{ inputs.connstr }}
       run: |
         if [ ! -d "${WORKDIR}/report/data/test-cases" ]; then
           exit 0
         fi
-
-        export DATABASE_URL=${REGRESS_TEST_RESULT_CONNSTR_NEW}
 
         ./scripts/pysync
 

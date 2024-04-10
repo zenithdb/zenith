@@ -579,9 +579,7 @@ jobs:
         id: create-allure-report
         uses: ./.github/actions/allure-report-generate
         with:
-          store-test-results-into-db: true
-        env:
-          REGRESS_TEST_RESULT_CONNSTR_NEW: ${{ secrets.REGRESS_TEST_RESULT_CONNSTR_NEW }}
+          connstr: ${{ secrets.REGRESS_TEST_RESULT_CONNSTR_NEW }}
 
       - uses: actions/github-script@v7
         if: ${{ !cancelled() }}

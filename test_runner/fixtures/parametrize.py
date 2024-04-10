@@ -1,6 +1,7 @@
 import os
 from typing import Optional
 
+import allure
 import pytest
 from _pytest.python import Metafunc
 
@@ -60,3 +61,33 @@ def pytest_generate_tests(metafunc: Metafunc):
         and (platform := os.getenv("PLATFORM")) is not None
     ):
         metafunc.parametrize("platform", [platform.lower()])
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_makereport(*args, **kwargs):
+    if (build_type := os.getenv("BUILD_TYPE")) is not None:
+        allure.dynamic.parameter("__BUILD_TYPE", build_type)
+
+    if (pg_version := os.getenv("DEFAULT_PG_VERSION")) is not None:
+        allure.dynamic.parameter("__DEFAULT_PG_VERSION", int(pg_version))
+
+    if (io_engine := os.getenv("PAGESERVER_VIRTUAL_FILE_IO_ENGINE")) is not None:
+        allure.dynamic.parameter("__PAGESERVER_VIRTUAL_FILE_IO_ENGINE", io_engine)
+
+    if (platform := os.getenv("PLATFORM")) is not None:
+        allure.dynamic.parameter("__PLATFORM", platform)
+
+    if (github_run_id := os.getenv("GITHUB_RUN_ID")) is not None:
+        allure.dynamic.parameter(
+            "__GITHUB_RUN_ID",
+            int(github_run_id),
+            excluded=True,
+        )
+    if (github_run_attempt := os.getenv("GITHUB_RUN_ATTEMPT")) is not None:
+        allure.dynamic.parameter(
+            "__GITHUB_RUN_ATTEMPT",
+            int(github_run_attempt),
+            excluded=True,
+        )
+
+    yield
