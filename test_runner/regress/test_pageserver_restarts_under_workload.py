@@ -13,14 +13,17 @@ from fixtures.neon_fixtures import NeonEnv, PgBin
 def test_pageserver_restarts_under_worload(neon_simple_env: NeonEnv, pg_bin: PgBin):
     env = neon_simple_env
     env.neon_cli.create_branch("test_pageserver_restarts")
-    endpoint = env.endpoints.create_start("test_pageserver_restarts")
-    n_restarts = 10
+    endpoint = env.endpoints.create_start(
+        "test_pageserver_restarts", config_lines=["effective_io_concurrency=100"]
+    )
+
+    n_restarts = 100
     scale = 10
 
     def run_pgbench(connstr: str):
         log.info(f"Start a pgbench workload on pg {connstr}")
         pg_bin.run_capture(["pgbench", "-i", f"-s{scale}", connstr])
-        pg_bin.run_capture(["pgbench", f"-T{n_restarts}", connstr])
+        pg_bin.run_capture(["pgbench", "-c", "10", "-f", "test_runner/regress/select.sql", f"-T{n_restarts}", connstr])
 
     thread = threading.Thread(target=run_pgbench, args=(endpoint.connstr(),), daemon=True)
     thread.start()

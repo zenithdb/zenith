@@ -139,6 +139,9 @@ typedef struct
 typedef struct
 {
 	NeonMessageTag tag;
+	NRelFileInfo rinfo;
+	ForkNumber	forknum;
+	BlockNumber blkno;
 	char		page[FLEXIBLE_ARRAY_MEMBER];
 } NeonGetPageResponse;
 

@@ -897,6 +897,8 @@ pub struct PagestreamNblocksResponse {
 
 #[derive(Debug)]
 pub struct PagestreamGetPageResponse {
+    pub rel: RelTag,
+    pub blkno: u32,
     pub page: Bytes,
 }
 
@@ -1057,6 +1059,11 @@ impl PagestreamBeMessage {
 
             Self::GetPage(resp) => {
                 bytes.put_u8(Tag::GetPage as u8);
+                bytes.put_u32(resp.rel.spcnode);
+                bytes.put_u32(resp.rel.dbnode);
+                bytes.put_u32(resp.rel.relnode);
+                bytes.put_u8(resp.rel.forknum);
+                bytes.put_u32(resp.blkno);
                 bytes.put(&resp.page[..]);
             }
 
@@ -1098,9 +1105,20 @@ impl PagestreamBeMessage {
                     Self::Nblocks(PagestreamNblocksResponse { n_blocks })
                 }
                 Tag::GetPage => {
+                    let rel = RelTag {
+                        spcnode: buf.read_u32::<BigEndian>()?,
+                        dbnode: buf.read_u32::<BigEndian>()?,
+                        relnode: buf.read_u32::<BigEndian>()?,
+                        forknum: buf.read_u8()?,
+                    };
+                    let blkno = buf.read_u32::<BigEndian>()?;
                     let mut page = vec![0; 8192]; // TODO: use MaybeUninit
                     buf.read_exact(&mut page)?;
-                    PagestreamBeMessage::GetPage(PagestreamGetPageResponse { page: page.into() })
+                    PagestreamBeMessage::GetPage(PagestreamGetPageResponse {
+                        rel,
+                        blkno,
+                        page: page.into(),
+                    })
                 }
                 Tag::Error => {
                     let mut msg = Vec::new();

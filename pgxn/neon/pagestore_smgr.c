@@ -1118,6 +1118,11 @@ nm_unpack_response(StringInfo s)
 
 				msg_resp = MemoryContextAllocZero(MyPState->bufctx, PS_GETPAGERESPONSE_SIZE);
 				msg_resp->tag = tag;
+				NInfoGetSpcOid(msg_resp->rinfo) = pq_getmsgint(s, 4);
+				NInfoGetDbOid(msg_resp->rinfo) = pq_getmsgint(s, 4);
+				NInfoGetRelNumber(msg_resp->rinfo) = pq_getmsgint(s, 4);
+				msg_resp->forknum =  pq_getmsgbyte(s);
+				msg_resp->blkno = pq_getmsgint(s, 4);
 				/* XXX:	should be varlena */
 				memcpy(msg_resp->page, pq_getmsgbytes(s, BLCKSZ), BLCKSZ);
 				pq_getmsgend(s);
@@ -2212,10 +2217,20 @@ neon_read_at_lsn(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 	switch (resp->tag)
 	{
 		case T_NeonGetPageResponse:
-			memcpy(buffer, ((NeonGetPageResponse *) resp)->page, BLCKSZ);
+		{
+			NeonGetPageResponse* r = (NeonGetPageResponse *) resp;
+			memcpy(buffer, r->page, BLCKSZ);
+			if (memcmp(&r->rinfo, &rinfo, sizeof rinfo) != 0 && forkNum != r->forknum || blkno != r->blkno)
+				ereport(ERROR,
+					(errcode(ERRCODE_IO_ERROR),
+					 errmsg(NEON_TAG "[shard %d] get unexpected get page resonse for block %u in rel %u/%u/%u.%u instead of block block %u in rel %u/%u/%u.%u from page server at lsn %X/%08X",
+							slot->shard_no,
+							r->blkno, RelFileInfoFmt(r->rinfo), r->forknum,
+							blkno, RelFileInfoFmt(rinfo), forkNum,
+							(uint32) (request_lsn >> 32), (uint32) request_lsn)));
 			lfc_write(rinfo, forkNum, blkno, buffer);
 			break;
-
+		}
 		case T_NeonErrorResponse:
 			ereport(ERROR,
 					(errcode(ERRCODE_IO_ERROR),
