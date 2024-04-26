@@ -3,6 +3,7 @@
 use crate::{
     config::{MetricBackupCollectionConfig, MetricCollectionConfig},
     context::parquet::{FAILED_UPLOAD_MAX_RETRIES, FAILED_UPLOAD_WARN_THRESHOLD},
+    dns::Dns,
     http,
     intern::{BranchIdInt, EndpointIdInt},
 };
@@ -217,13 +218,13 @@ impl Metrics {
 
 pub static USAGE_METRICS: Lazy<Metrics> = Lazy::new(Metrics::default);
 
-pub async fn task_main(config: &MetricCollectionConfig) -> anyhow::Result<Infallible> {
+pub async fn task_main(dns: Dns, config: &MetricCollectionConfig) -> anyhow::Result<Infallible> {
     info!("metrics collector config: {config:?}");
     scopeguard::defer! {
         info!("metrics collector has shut down");
     }
 
-    let http_client = http::new_client_with_timeout(DEFAULT_HTTP_REPORTING_TIMEOUT);
+    let http_client = http::new_client_with_timeout(dns, DEFAULT_HTTP_REPORTING_TIMEOUT);
     let hostname = hostname::get()?.as_os_str().to_string_lossy().into_owned();
 
     let mut prev = Utc::now();
@@ -495,7 +496,7 @@ mod tests {
     use url::Url;
 
     use super::*;
-    use crate::{http, BranchId, EndpointId};
+    use crate::{dns::Dns, http, BranchId, EndpointId};
 
     #[tokio::test]
     async fn metrics() {
@@ -525,7 +526,7 @@ mod tests {
         tokio::spawn(server);
 
         let metrics = Metrics::default();
-        let client = http::new_client();
+        let client = http::new_client(Dns::new());
         let endpoint = Url::parse(&format!("http://{addr}")).unwrap();
         let now = Utc::now();
 

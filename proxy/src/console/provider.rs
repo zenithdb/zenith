@@ -12,6 +12,7 @@ use crate::{
     compute,
     config::{CacheOptions, EndpointCacheConfig, ProjectInfoCacheOptions},
     context::RequestMonitoring,
+    dns::Dns,
     intern::ProjectIdInt,
     metrics::ApiLockMetrics,
     scram, EndpointCacheKey,
@@ -302,11 +303,13 @@ impl NodeInfo {
     pub async fn connect(
         &self,
         ctx: &mut RequestMonitoring,
+        dns: &Dns,
         timeout: Duration,
     ) -> Result<compute::PostgresConnection, compute::ConnectionError> {
         self.config
             .connect(
                 ctx,
+                dns,
                 self.allow_self_signed_compute,
                 self.aux.clone(),
                 timeout,

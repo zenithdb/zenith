@@ -1,5 +1,6 @@
 use crate::{
     auth::{self, backend::AuthRateLimiter},
+    dns::Dns,
     rate_limiter::RateBucketInfo,
     serverless::GlobalConnPoolOptions,
 };
@@ -21,6 +22,7 @@ use tracing::{error, info};
 use x509_parser::oid_registry;
 
 pub struct ProxyConfig {
+    pub dns: Dns,
     pub tls_config: Option<TlsConfig>,
     pub auth_backend: auth::BackendType<'static, (), ()>,
     pub metric_collection: Option<MetricCollectionConfig>,

@@ -1,17 +1,19 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use tokio_postgres::NoTls;
 use tracing::{field::display, info};
 
 use crate::{
     auth::{backend::ComputeCredentials, check_peer_addr_is_in_list, AuthError},
-    compute,
+    compute::{self, ConnectionError},
     config::{AuthenticationConfig, ProxyConfig},
     console::{
         errors::{GetAuthInfoError, WakeComputeError},
         CachedNodeInfo,
     },
     context::RequestMonitoring,
+    dns::Dns,
     error::{ErrorKind, ReportableError, UserFacingError},
     proxy::connect_compute::ConnectMechanism,
 };
@@ -107,6 +109,7 @@ impl PoolingBackend {
                 pool: self.pool.clone(),
             },
             &backend,
+            &self.config.dns,
             false, // do not allow self signed compute for http flow
             self.config.wake_compute_retry_config,
             self.config.connect_to_compute_retry_config,
@@ -120,7 +123,7 @@ pub enum HttpConnError {
     #[error("pooled connection closed at inconsistent state")]
     ConnectionClosedAbruptly(#[from] tokio::sync::watch::error::SendError<uuid::Uuid>),
     #[error("could not connection to compute")]
-    ConnectionError(#[from] tokio_postgres::Error),
+    ConnectionError(#[from] ConnectionError),
 
     #[error("could not get auth info")]
     GetAuthInfo(#[from] GetAuthInfoError),
@@ -163,23 +166,24 @@ struct TokioMechanism {
 #[async_trait]
 impl ConnectMechanism for TokioMechanism {
     type Connection = Client<tokio_postgres::Client>;
-    type ConnectError = tokio_postgres::Error;
+    type ConnectError = ConnectionError;
     type Error = HttpConnError;
 
     async fn connect_once(
         &self,
         ctx: &mut RequestMonitoring,
+        dns: &Dns,
         node_info: &CachedNodeInfo,
         timeout: Duration,
-    ) -> Result<Self::Connection, Self::ConnectError> {
-        let mut config = (*node_info.config).clone();
-        let config = config
+    ) -> Result<Self::Connection, ConnectionError> {
+        let mut config = node_info.config.clone();
+        config
             .user(&self.conn_info.user_info.user)
             .password(&*self.conn_info.password)
             .dbname(&self.conn_info.dbname)
             .connect_timeout(timeout);
 
-        let (client, connection) = config.connect(tokio_postgres::NoTls).await?;
+        let (_, client, connection) = config.connect_managed(ctx, dns, timeout, NoTls).await?;
 
         tracing::Span::current().record("pid", &tracing::field::display(client.get_process_id()));
         Ok(poll_client(

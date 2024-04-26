@@ -15,6 +15,7 @@ use crate::console::caches::NodeInfoCache;
 use crate::console::messages::MetricsAuxInfo;
 use crate::console::provider::{CachedAllowedIps, CachedRoleSecret, ConsoleBackend};
 use crate::console::{self, CachedNodeInfo, NodeInfo};
+use crate::dns::Dns;
 use crate::error::ErrorKind;
 use crate::proxy::retry::retry_after;
 use crate::{http, sasl, scram, BranchId, EndpointId, ProjectId};
@@ -453,6 +454,7 @@ impl ConnectMechanism for TestConnectMechanism {
     async fn connect_once(
         &self,
         _ctx: &mut RequestMonitoring,
+        _dns: &Dns,
         _node_info: &console::CachedNodeInfo,
         _timeout: std::time::Duration,
     ) -> Result<Self::Connection, Self::ConnectError> {
@@ -558,9 +560,17 @@ async fn connect_to_compute_success() {
         max_retries: 5,
         backoff_factor: 2.0,
     };
-    connect_to_compute(&mut ctx, &mechanism, &user_info, false, config, config)
-        .await
-        .unwrap();
+    connect_to_compute(
+        &mut ctx,
+        &mechanism,
+        &user_info,
+        &Dns::new(),
+        false,
+        config,
+        config,
+    )
+    .await
+    .unwrap();
     mechanism.verify();
 }
 
@@ -576,9 +586,17 @@ async fn connect_to_compute_retry() {
         max_retries: 5,
         backoff_factor: 2.0,
     };
-    connect_to_compute(&mut ctx, &mechanism, &user_info, false, config, config)
-        .await
-        .unwrap();
+    connect_to_compute(
+        &mut ctx,
+        &mechanism,
+        &user_info,
+        &Dns::new(),
+        false,
+        config,
+        config,
+    )
+    .await
+    .unwrap();
     mechanism.verify();
 }
 
@@ -595,9 +613,17 @@ async fn connect_to_compute_non_retry_1() {
         max_retries: 5,
         backoff_factor: 2.0,
     };
-    connect_to_compute(&mut ctx, &mechanism, &user_info, false, config, config)
-        .await
-        .unwrap_err();
+    connect_to_compute(
+        &mut ctx,
+        &mechanism,
+        &user_info,
+        &Dns::new(),
+        false,
+        config,
+        config,
+    )
+    .await
+    .unwrap_err();
     mechanism.verify();
 }
 
@@ -614,9 +640,17 @@ async fn connect_to_compute_non_retry_2() {
         max_retries: 5,
         backoff_factor: 2.0,
     };
-    connect_to_compute(&mut ctx, &mechanism, &user_info, false, config, config)
-        .await
-        .unwrap();
+    connect_to_compute(
+        &mut ctx,
+        &mechanism,
+        &user_info,
+        &Dns::new(),
+        false,
+        config,
+        config,
+    )
+    .await
+    .unwrap();
     mechanism.verify();
 }
 
@@ -644,6 +678,7 @@ async fn connect_to_compute_non_retry_3() {
         &mut ctx,
         &mechanism,
         &user_info,
+        &Dns::new(),
         false,
         wake_compute_retry_config,
         connect_to_compute_retry_config,
@@ -666,9 +701,17 @@ async fn wake_retry() {
         max_retries: 5,
         backoff_factor: 2.0,
     };
-    connect_to_compute(&mut ctx, &mechanism, &user_info, false, config, config)
-        .await
-        .unwrap();
+    connect_to_compute(
+        &mut ctx,
+        &mechanism,
+        &user_info,
+        &Dns::new(),
+        false,
+        config,
+        config,
+    )
+    .await
+    .unwrap();
     mechanism.verify();
 }
 
@@ -685,8 +728,16 @@ async fn wake_non_retry() {
         max_retries: 5,
         backoff_factor: 2.0,
     };
-    connect_to_compute(&mut ctx, &mechanism, &user_info, false, config, config)
-        .await
-        .unwrap_err();
+    connect_to_compute(
+        &mut ctx,
+        &mechanism,
+        &user_info,
+        &Dns::new(),
+        false,
+        config,
+        config,
+    )
+    .await
+    .unwrap_err();
     mechanism.verify();
 }

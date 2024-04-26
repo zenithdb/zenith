@@ -305,6 +305,7 @@ pub async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
         ctx,
         &TcpMechanism { params: &params },
         &user_info,
+        &config.dns,
         mode.allow_self_signed_compute(config),
         config.wake_compute_retry_config,
         config.connect_to_compute_retry_config,

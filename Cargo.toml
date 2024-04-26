@@ -57,6 +57,7 @@ aws-sdk-s3 = "1.14"
 aws-sdk-iam = "1.15.0"
 aws-smithy-async = { version = "1.1.4", default-features = false, features=["rt-tokio"] }
 aws-smithy-types = "1.1.4"
+aws-smithy-runtime = "1.1.8"
 aws-credential-types = "1.1.4"
 aws-sigv4 = { version = "1.2.0", features = ["sign-http"] }
 aws-types = "1.1.7"
@@ -194,11 +195,11 @@ env_logger = "0.10"
 log = "0.4"
 
 ## Libraries from neondatabase/ git forks, ideally with changes to be upstreamed
-postgres = { git = "https://github.com/neondatabase/rust-postgres.git", branch="neon" }
-postgres-native-tls = { git = "https://github.com/neondatabase/rust-postgres.git", branch="neon" }
-postgres-protocol = { git = "https://github.com/neondatabase/rust-postgres.git", branch="neon" }
-postgres-types = { git = "https://github.com/neondatabase/rust-postgres.git", branch="neon" }
-tokio-postgres = { git = "https://github.com/neondatabase/rust-postgres.git", branch="neon" }
+postgres = { git = "https://github.com/neondatabase/rust-postgres.git", branch="socket-config" }
+postgres-native-tls = { git = "https://github.com/neondatabase/rust-postgres.git", branch="socket-config" }
+postgres-protocol = { git = "https://github.com/neondatabase/rust-postgres.git", branch="socket-config" }
+postgres-types = { git = "https://github.com/neondatabase/rust-postgres.git", branch="socket-config" }
+tokio-postgres = { git = "https://github.com/neondatabase/rust-postgres.git", branch="socket-config" }
 
 ## Other git libraries
 heapless = { default-features=false, features=[], git = "https://github.com/japaric/heapless.git", rev = "644653bf3b831c6bb4963be2de24804acf5e5001" } # upstream release pending
@@ -238,7 +239,7 @@ tonic-build = "0.9"
 
 # This is only needed for proxy's tests.
 # TODO: we should probably fork `tokio-postgres-rustls` instead.
-tokio-postgres = { git = "https://github.com/neondatabase/rust-postgres.git", branch="neon" }
+tokio-postgres = { git = "https://github.com/neondatabase/rust-postgres.git", branch="socket-config" }
 
 # bug fixes for UUID
 parquet = { git = "https://github.com/neondatabase/arrow-rs", branch = "neon-fix-bugs" }

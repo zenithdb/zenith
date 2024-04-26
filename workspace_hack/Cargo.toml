@@ -75,6 +75,8 @@ tonic = { version = "0.9", features = ["tls-roots"] }
 tower = { version = "0.4", default-features = false, features = ["balance", "buffer", "limit", "log", "timeout", "util"] }
 tracing = { version = "0.1", features = ["log"] }
 tracing-core = { version = "0.1" }
+unicode-bidi = { version = "0.3" }
+unicode-normalization = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["serde", "v4", "v7"] }
 zeroize = { version = "1", features = ["derive"] }

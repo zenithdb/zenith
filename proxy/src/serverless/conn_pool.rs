@@ -12,9 +12,10 @@ use std::{
     ops::Deref,
     sync::atomic::{self, AtomicUsize},
 };
+use tokio::net::TcpStream;
 use tokio::time::Instant;
 use tokio_postgres::tls::NoTlsStream;
-use tokio_postgres::{AsyncMessage, ReadyForQueryStatus, Socket};
+use tokio_postgres::{AsyncMessage, ReadyForQueryStatus};
 use tokio_util::sync::CancellationToken;
 
 use crate::console::messages::{ColdStartInfo, MetricsAuxInfo};
@@ -468,7 +469,7 @@ pub fn poll_client<C: ClientInnerExt>(
     ctx: &mut RequestMonitoring,
     conn_info: ConnInfo,
     client: C,
-    mut connection: tokio_postgres::Connection<Socket, NoTlsStream>,
+    mut connection: tokio_postgres::Connection<TcpStream, NoTlsStream>,
     conn_id: uuid::Uuid,
     aux: MetricsAuxInfo,
 ) -> Client<C> {

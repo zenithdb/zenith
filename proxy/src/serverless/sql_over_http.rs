@@ -37,6 +37,7 @@ use utils::http::error::ApiError;
 use crate::auth::backend::ComputeUserInfo;
 use crate::auth::endpoint_sni;
 use crate::auth::ComputeUserInfoParseError;
+use crate::compute::ConnectionError;
 use crate::config::ProxyConfig;
 use crate::config::TlsConfig;
 use crate::context::RequestMonitoring;
@@ -257,7 +258,9 @@ pub async fn handle(
 
             let mut message = e.to_string_client();
             let db_error = match &e {
-                SqlOverHttpError::ConnectCompute(HttpConnError::ConnectionError(e))
+                SqlOverHttpError::ConnectCompute(HttpConnError::ConnectionError(
+                    ConnectionError::Postgres(e),
+                ))
                 | SqlOverHttpError::Postgres(e) => e.as_db_error(),
                 _ => None,
             };
@@ -661,7 +664,9 @@ impl QueryData {
                     // query failed or was cancelled.
                     Ok(Err(error)) => {
                         let db_error = match &error {
-                            SqlOverHttpError::ConnectCompute(HttpConnError::ConnectionError(e))
+                            SqlOverHttpError::ConnectCompute(HttpConnError::ConnectionError(
+                                ConnectionError::Postgres(e),
+                            ))
                             | SqlOverHttpError::Postgres(e) => e.as_db_error(),
                             _ => None,
                         };

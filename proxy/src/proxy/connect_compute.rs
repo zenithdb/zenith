@@ -4,6 +4,7 @@ use crate::{
     config::RetryConfig,
     console::{self, errors::WakeComputeError, CachedNodeInfo, NodeInfo},
     context::RequestMonitoring,
+    dns::Dns,
     error::ReportableError,
     metrics::{ConnectOutcome, ConnectionFailureKind, Metrics, RetriesMetricGroup, RetryType},
     proxy::{
@@ -44,6 +45,7 @@ pub trait ConnectMechanism {
     async fn connect_once(
         &self,
         ctx: &mut RequestMonitoring,
+        dns: &Dns,
         node_info: &console::CachedNodeInfo,
         timeout: time::Duration,
     ) -> Result<Self::Connection, Self::ConnectError>;
@@ -76,10 +78,11 @@ impl ConnectMechanism for TcpMechanism<'_> {
     async fn connect_once(
         &self,
         ctx: &mut RequestMonitoring,
+        dns: &Dns,
         node_info: &console::CachedNodeInfo,
         timeout: time::Duration,
     ) -> Result<PostgresConnection, Self::Error> {
-        node_info.connect(ctx, timeout).await
+        node_info.connect(ctx, dns, timeout).await
     }
 
     fn update_connect_config(&self, config: &mut compute::ConnCfg) {
@@ -93,6 +96,7 @@ pub async fn connect_to_compute<M: ConnectMechanism, B: ComputeConnectBackend>(
     ctx: &mut RequestMonitoring,
     mechanism: &M,
     user_info: &B,
+    dns: &Dns,
     allow_self_signed_compute: bool,
     wake_compute_retry_config: RetryConfig,
     connect_to_compute_retry_config: RetryConfig,
@@ -114,7 +118,7 @@ where
 
     // try once
     let err = match mechanism
-        .connect_once(ctx, &node_info, CONNECT_TIMEOUT)
+        .connect_once(ctx, dns, &node_info, CONNECT_TIMEOUT)
         .await
     {
         Ok(res) => {
@@ -159,7 +163,7 @@ where
     num_retries = 1;
     loop {
         match mechanism
-            .connect_once(ctx, &node_info, CONNECT_TIMEOUT)
+            .connect_once(ctx, dns, &node_info, CONNECT_TIMEOUT)
             .await
         {
             Ok(res) => {

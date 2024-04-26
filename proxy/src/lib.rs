@@ -14,6 +14,7 @@ pub mod compute;
 pub mod config;
 pub mod console;
 pub mod context;
+pub mod dns;
 pub mod error;
 pub mod http;
 pub mod intern;

@@ -5,7 +5,10 @@ use aws_config::meta::region::RegionProviderChain;
 use aws_config::profile::ProfileFileCredentialsProvider;
 use aws_config::provider_config::ProviderConfig;
 use aws_config::web_identity_token::WebIdentityTokenCredentialsProvider;
+use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
 use futures::future::Either;
+use hyper::client::HttpConnector;
+use hyper_rustls::ConfigBuilderExt;
 use proxy::auth;
 use proxy::auth::backend::AuthRateLimiter;
 use proxy::auth::backend::MaybeOwned;
@@ -18,6 +21,7 @@ use proxy::config::HttpConfig;
 use proxy::config::ProjectInfoCacheOptions;
 use proxy::console;
 use proxy::context::parquet::ParquetUploadArgs;
+use proxy::dns::Dns;
 use proxy::http;
 use proxy::http::health_server::AppMetrics;
 use proxy::metrics::Metrics;
@@ -33,6 +37,7 @@ use proxy::usage_metrics;
 use anyhow::bail;
 use proxy::config::{self, ProxyConfig};
 use proxy::serverless;
+use rustls::crypto::CryptoProvider;
 use std::net::SocketAddr;
 use std::pin::pin;
 use std::sync::Arc;
@@ -270,8 +275,40 @@ async fn main() -> anyhow::Result<()> {
     info!("Using region: {}", config.aws_region);
 
     let region_provider = RegionProviderChain::default_provider().or_else(&*config.aws_region); // Replace with your Redis region if needed
-    let provider_conf =
-        ProviderConfig::without_region().with_region(region_provider.region().await);
+
+    let aws_tls_client_config =
+        rustls::ClientConfig::builder_with_provider(Arc::new(CryptoProvider {
+            cipher_suites: vec![
+                // TLS1.3 suites
+                rustls::crypto::ring::cipher_suite::TLS13_AES_256_GCM_SHA384,
+                rustls::crypto::ring::cipher_suite::TLS13_AES_128_GCM_SHA256,
+                // TLS1.2 suites
+                rustls::crypto::ring::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+                rustls::crypto::ring::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                rustls::crypto::ring::cipher_suite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+                rustls::crypto::ring::cipher_suite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                rustls::crypto::ring::cipher_suite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+            ],
+            ..rustls::crypto::ring::default_provider()
+        }))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_native_roots()?
+        .with_no_client_auth();
+
+    let provider_conf = ProviderConfig::without_region()
+        .with_region(region_provider.region().await)
+        .with_http_client(
+            HyperClientBuilder::new().build(
+                hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_tls_config(aws_tls_client_config)
+                    .https_or_http()
+                    .enable_http1()
+                    .enable_http2()
+                    .wrap_connector(HttpConnector::new_with_resolver(config.dns.clone())),
+            ),
+        );
+
     let aws_credentials_provider = {
         // uses "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"
         CredentialsProviderChain::first_try("env", EnvironmentVariableCredentialsProvider::new())
@@ -400,7 +437,7 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(metrics_config) = &config.metric_collection {
         // TODO: Add gc regardles of the metric collection being enabled.
-        maintenance_tasks.spawn(usage_metrics::task_main(metrics_config));
+        maintenance_tasks.spawn(usage_metrics::task_main(config.dns.clone(), metrics_config));
         client_tasks.spawn(usage_metrics::task_backup(
             &metrics_config.backup_metric_collection_config,
             cancellation_token.clone(),
@@ -510,6 +547,8 @@ fn build_config(args: &ProxyCliArgs) -> anyhow::Result<&'static ProxyConfig> {
         bail!("dynamic rate limiter should be disabled");
     }
 
+    let dns = Dns::new();
+
     let auth_backend = match &args.auth_backend {
         AuthBackend::Console => {
             let wake_compute_cache_config: CacheOptions = args.wake_compute_cache.parse()?;
@@ -550,7 +589,7 @@ fn build_config(args: &ProxyCliArgs) -> anyhow::Result<&'static ProxyConfig> {
             tokio::spawn(locks.garbage_collect_worker());
 
             let url = args.auth_endpoint.parse()?;
-            let endpoint = http::Endpoint::new(url, http::new_client());
+            let endpoint = http::Endpoint::new(url, http::new_client(dns.clone()));
 
             let mut endpoint_rps_limit = args.endpoint_rps_limit.clone();
             RateBucketInfo::validate(&mut endpoint_rps_limit)?;
@@ -594,6 +633,7 @@ fn build_config(args: &ProxyCliArgs) -> anyhow::Result<&'static ProxyConfig> {
     RateBucketInfo::validate(&mut redis_rps_limit)?;
 
     let config = Box::leak(Box::new(ProxyConfig {
+        dns,
         tls_config,
         auth_backend,
         metric_collection,

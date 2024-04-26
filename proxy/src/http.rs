@@ -14,6 +14,7 @@ use tokio::time::Instant;
 use tracing::trace;
 
 use crate::{
+    dns::Dns,
     metrics::{ConsoleRequest, Metrics},
     url::ApiUrl,
 };
@@ -22,9 +23,9 @@ use reqwest_middleware::RequestBuilder;
 /// This is the preferred way to create new http clients,
 /// because it takes care of observability (OpenTelemetry).
 /// We deliberately don't want to replace this with a public static.
-pub fn new_client() -> ClientWithMiddleware {
+pub fn new_client(dns: Dns) -> ClientWithMiddleware {
     let client = reqwest::ClientBuilder::new()
-        .dns_resolver(Arc::new(GaiResolver::default()))
+        .dns_resolver(Arc::new(dns))
         .connection_verbose(true)
         .build()
         .expect("Failed to create http client");
@@ -34,9 +35,9 @@ pub fn new_client() -> ClientWithMiddleware {
         .build()
 }
 
-pub fn new_client_with_timeout(default_timout: Duration) -> ClientWithMiddleware {
+pub fn new_client_with_timeout(dns: Dns, default_timout: Duration) -> ClientWithMiddleware {
     let timeout_client = reqwest::ClientBuilder::new()
-        .dns_resolver(Arc::new(GaiResolver::default()))
+        .dns_resolver(Arc::new(dns))
         .connection_verbose(true)
         .timeout(default_timout)
         .build()
