@@ -11,7 +11,7 @@ use pageserver_api::shard::TenantShardId;
 use strum::{EnumCount, IntoEnumIterator, VariantNames};
 use strum_macros::{EnumVariantNames, IntoStaticStr};
 use tracing::warn;
-use utils::id::TimelineId;
+use utils::id::{TenantId, TimelineId};
 
 /// Prometheus histogram buckets (in seconds) for operations in the critical
 /// path. In other words, operations that directly affect that latency of user
@@ -994,10 +994,8 @@ impl StorageIoTime {
 
 pub(crate) static STORAGE_IO_TIME_METRIC: Lazy<StorageIoTime> = Lazy::new(StorageIoTime::new);
 
-const STORAGE_IO_SIZE_OPERATIONS: &[&str] = &["read", "write"];
-
 // Needed for the https://neonprod.grafana.net/d/5uK9tHL4k/picking-tenant-for-relocation?orgId=1
-pub(crate) static STORAGE_IO_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
+static STORAGE_IO_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     register_int_gauge_vec!(
         "pageserver_io_operations_bytes_total",
         "Total amount of bytes read/written in IO operations",
@@ -1005,6 +1003,11 @@ pub(crate) static STORAGE_IO_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     )
     .expect("failed to define a metric")
 });
+
+pub(crate) struct StorageIoSizeMetrics {
+    read: UIntGauge,
+    write: UIntGauge,
+}
 
 #[cfg(not(test))]
 pub(crate) mod virtual_file_descriptor_cache {
@@ -1997,6 +2000,7 @@ pub(crate) struct TimelineMetrics {
     pub directory_entries_count_gauge: Lazy<UIntGauge, Box<dyn Send + Fn() -> UIntGauge>>,
     pub evictions: IntCounter,
     pub evictions_with_low_residence_duration: std::sync::RwLock<EvictionsWithLowResidenceDuration>,
+    pub storage_io_size: StorageIoSizeMetrics,
 }
 
 impl TimelineMetrics {
@@ -2088,6 +2092,21 @@ impl TimelineMetrics {
         let evictions_with_low_residence_duration = evictions_with_low_residence_duration_builder
             .build(&tenant_id, &shard_id, &timeline_id);
 
+        let storage_io_size = StorageIoSizeMetrics {
+            read: STORAGE_IO_SIZE.get_metric_with_label_values(&[
+                "read",
+                &tenant_id,
+                &shard_id,
+                &timeline_id,
+            ]),
+            write: STORAGE_IO_SIZE.get_metric_with_label_values(&[
+                "write",
+                &tenant_id,
+                &shard_id,
+                &timeline_id,
+            ]),
+        };
+
         TimelineMetrics {
             tenant_id,
             shard_id,
@@ -2108,6 +2127,7 @@ impl TimelineMetrics {
             evictions_with_low_residence_duration: std::sync::RwLock::new(
                 evictions_with_low_residence_duration,
             ),
+            storage_io_size,
         }
     }
 
@@ -2169,7 +2189,7 @@ impl TimelineMetrics {
             ]);
         }
 
-        for op in STORAGE_IO_SIZE_OPERATIONS {
+        for op in ["read", "write"] {
             let _ = STORAGE_IO_SIZE.remove_label_values(&[op, tenant_id, shard_id, timeline_id]);
         }
 

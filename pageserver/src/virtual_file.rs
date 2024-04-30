@@ -10,7 +10,7 @@
 //! This is similar to PostgreSQL's virtual file descriptor facility in
 //! src/backend/storage/file/fd.c
 //!
-use crate::metrics::{StorageIoOperation, STORAGE_IO_SIZE, STORAGE_IO_TIME_METRIC};
+use crate::metrics::{StorageIoOperation, STORAGE_IO_SIZE};
 
 use crate::page_cache::PageWriteGuard;
 use crate::tenant::TENANTS_SEGMENT_NAME;
@@ -93,6 +93,7 @@ pub struct VirtualFile {
     tenant_id: String,
     shard_id: String,
     timeline_id: String,
+    size_metrics: crate::metrics::StorageIoSizeMetrics,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -413,6 +414,7 @@ impl VirtualFile {
             tenant_id,
             shard_id,
             timeline_id,
+            size_metrics: todo!("caller should provide these via RequestContext or whatever; can we get rid of tenant_id, shard_id, timeline_id?; let's wait with this PR until I have merged my walingest perf fix, it wires through `ctx` through a bunch of paths, maybe it will help"),
         };
 
         // TODO: Under pressure, it's likely the slot will get re-used and
@@ -707,14 +709,7 @@ impl VirtualFile {
         observe_duration!(StorageIoOperation::Read, {
             let ((_file_guard, buf), res) = io_engine::get().read_at(file_guard, offset, buf).await;
             if let Ok(size) = res {
-                STORAGE_IO_SIZE
-                    .with_label_values(&[
-                        "read",
-                        &self.tenant_id,
-                        &self.shard_id,
-                        &self.timeline_id,
-                    ])
-                    .add(size as i64);
+                self.size_metrics.read.add(size as i64);
             }
             (buf, res)
         })
@@ -733,14 +728,7 @@ impl VirtualFile {
             let ((_file_guard, buf), result) =
                 io_engine::get().write_at(file_guard, offset, buf).await;
             if let Ok(size) = result {
-                STORAGE_IO_SIZE
-                    .with_label_values(&[
-                        "write",
-                        &self.tenant_id,
-                        &self.shard_id,
-                        &self.timeline_id,
-                    ])
-                    .add(size as i64);
+                self.size_metrics.write.add(size as i64);
             }
             (buf, result)
         })
