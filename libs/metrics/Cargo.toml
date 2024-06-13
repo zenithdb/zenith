@@ -18,6 +18,9 @@ workspace_hack.workspace = true
 procfs.workspace = true
 measured-process.workspace = true
 
+[target.'cfg(tokio_unstable)'.dependencies]
+measured-tokio.workspace = true
+
 [dev-dependencies]
 rand = "0.8"
 rand_distr = "0.4.3"

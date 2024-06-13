@@ -272,6 +272,10 @@ async fn main() -> anyhow::Result<()> {
         build_tag: BUILD_TAG,
     });
 
+    // add the current runtime to the collector
+    #[cfg(tokio_unstable)]
+    neon_metrics.tokio.add_current("proxy");
+
     let jemalloc = match proxy::jemalloc::MetricRecorder::new() {
         Ok(t) => Some(t),
         Err(e) => {

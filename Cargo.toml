@@ -112,6 +112,7 @@ leaky-bucket = "1.0.1"
 libc = "0.2"
 md5 = "0.7.0"
 measured = { version = "0.0.21", features=["lasso"] }
+measured-tokio = { version = "0.0.21" }
 measured-process = { version = "0.0.21" }
 memoffset = "0.8"
 nix = { version = "0.27", features = ["fs", "process", "socket", "signal", "poll"] }

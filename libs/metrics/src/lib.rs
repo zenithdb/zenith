@@ -148,6 +148,11 @@ pub struct NeonMetrics {
     #[metric(init = measured_process::ProcessCollector::for_self())]
     process: measured_process::ProcessCollector,
 
+    #[cfg(tokio_unstable)]
+    #[metric(namespace = "tokio")]
+    #[metric(init = measured_tokio::NamedRuntimesCollector::new())]
+    pub tokio: measured_tokio::NamedRuntimesCollector,
+
     #[metric(namespace = "libmetrics")]
     #[metric(init = LibMetrics::new(build_info))]
     libmetrics: LibMetrics,

@@ -2,6 +2,7 @@
 # This is only present for local builds, as it will be overridden
 # by the RUSTDOCFLAGS env var in CI.
 rustdocflags = ["-Arustdoc::private_intra_doc_links"]
+rustflags = ["--cfg=tokio_unstable"]
 
 [alias]
 build_testing = ["build", "--features", "testing"]

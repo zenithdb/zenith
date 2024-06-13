@@ -3030,6 +3030,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "measured-tokio"
+version = "0.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b4ed0773ddbda3a85e39d0e094934549c410ca686a5095bcd72fb62100252a0"
+dependencies = [
+ "itoa",
+ "measured",
+ "tokio",
+]
+
+[[package]]
 name = "memchr"
 version = "2.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3070,6 +3081,7 @@ dependencies = [
  "libc",
  "measured",
  "measured-process",
+ "measured-tokio",
  "once_cell",
  "procfs 0.14.2",
  "prometheus",
