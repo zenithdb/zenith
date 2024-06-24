@@ -39,6 +39,7 @@ fn aux_hash_to_metadata_key(dir_level1: u8, dir_level2: u8, data: &[u8]) -> Key 
 
 const AUX_DIR_PG_LOGICAL: u8 = 0x01;
 const AUX_DIR_PG_REPLSLOT: u8 = 0x02;
+const AUX_DIR_PG_STAT: u8 = 0x03;
 const AUX_DIR_PG_UNKNOWN: u8 = 0xFF;
 
 /// Encode the aux file into a fixed-size key.
@@ -75,6 +76,8 @@ pub fn encode_aux_file_key(path: &str) -> Key {
         aux_hash_to_metadata_key(AUX_DIR_PG_LOGICAL, 0xFF, fname.as_bytes())
     } else if let Some(fname) = path.strip_prefix("pg_replslot/") {
         aux_hash_to_metadata_key(AUX_DIR_PG_REPLSLOT, 0x01, fname.as_bytes())
+    } else if let Some(fname) = path.strip_prefix("pg_stat/pgstat.stat") {
+        aux_hash_to_metadata_key(AUX_DIR_PG_STAT, 0x01, fname.as_bytes())
     } else {
         if cfg!(debug_assertions) {
             warn!(
