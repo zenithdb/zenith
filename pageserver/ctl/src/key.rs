@@ -345,6 +345,7 @@ impl AuxFileV2 {
                 AuxFileV2::Recognized("pg_logical/replorigin_checkpoint", hash)
             }
             (2, 1) => AuxFileV2::Recognized("pg_replslot/", hash),
+            (3, 1) => AuxFileV2::Recognized("pg_stat/pgstat.stat", hash),
             (1, 0xff) => AuxFileV2::OtherWithPrefix("pg_logical/", hash),
             (0xff, 0xff) => AuxFileV2::Other(hash),
             _ => return None,

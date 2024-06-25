@@ -641,6 +641,15 @@ async fn import_file(
         // TODO Backups exported from neon won't have pg_tblspc, but we will need
         // this to import arbitrary postgres databases.
         bail!("Importing pg_tblspc is not implemented");
+    } else if file_path.starts_with("pg_logical/")
+        || file_path.starts_with("pg_replslot/")
+        || file_path.starts_with("pg_stat/")
+    {
+        let bytes = read_all_bytes(reader).await?;
+        modification
+            .put_file(&file_path.to_str().unwrap(), &bytes, ctx)
+            .await?;
+        debug!("imported aux file \"{}\"", file_path.display());
     } else {
         debug!(
             "ignoring unrecognized file \"{}\" in tar archive",
