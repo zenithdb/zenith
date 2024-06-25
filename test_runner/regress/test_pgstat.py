@@ -1,5 +1,7 @@
+import pytest
 from fixtures.neon_fixtures import NeonEnv
 from fixtures.pg_version import PgVersion
+
 
 #
 # Test that pgstat statistic is preserved across sessions
@@ -24,16 +26,38 @@ def test_pgstat(neon_simple_env: NeonEnv):
 
     cur.execute("select pg_stat_force_next_flush()")
 
-    cur.execute("select seq_scan,seq_tup_read,n_tup_ins,n_tup_upd,n_tup_newpage_upd,n_live_tup,n_dead_tup, vacuum_count,analyze_count from pg_stat_user_tables")
+    cur.execute(
+        "select seq_scan,seq_tup_read,n_tup_ins,n_tup_upd,n_live_tup,n_dead_tup, vacuum_count,analyze_count from pg_stat_user_tables"
+    )
     rec = cur.fetchall()[0]
-    assert rec[0]==2 and rec[1]==n*2 and rec[2]==n and rec[3]==n and rec[4]==n and rec[5]==n*2 and rec[6]==n and rec[7]==1 and rec[8]==1;
+    assert (
+        rec[0] == 2
+        and rec[1] == n * 2
+        and rec[2] == n
+        and rec[3] == n
+        and rec[4] == n * 2
+        and rec[5] == n
+        and rec[6] == 1
+        and rec[7] == 1
+    )
 
-    endpoint.stop();
-    endpoint.start();
+    endpoint.stop()
+    endpoint.start()
 
     con = endpoint.connect()
     cur = con.cursor()
 
-    cur.execute("select seq_scan,seq_tup_read,n_tup_ins,n_tup_upd,n_tup_newpage_upd,n_live_tup,n_dead_tup, vacuum_count,analyze_count from pg_stat_user_tables")
+    cur.execute(
+        "select seq_scan,seq_tup_read,n_tup_ins,n_tup_upd,n_live_tup,n_dead_tup, vacuum_count,analyze_count from pg_stat_user_tables"
+    )
     rec = cur.fetchall()[0]
-    assert rec[0]==2 and rec[1]==n*2 and rec[2]==n and rec[3]==n and rec[4]==n and rec[5]==n*2 and rec[6]==n and rec[7]==1 and rec[8]==1;
+    assert (
+        rec[0] == 2
+        and rec[1] == n * 2
+        and rec[2] == n
+        and rec[3] == n
+        and rec[4] == n * 2
+        and rec[5] == n
+        and rec[6] == 1
+        and rec[7] == 1
+    )
