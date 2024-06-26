@@ -647,7 +647,7 @@ async fn import_file(
     {
         let bytes = read_all_bytes(reader).await?;
         modification
-            .put_file(&file_path.to_str().unwrap(), &bytes, ctx)
+            .put_file(file_path.to_str().unwrap(), &bytes, ctx)
             .await?;
         debug!("imported aux file \"{}\"", file_path.display());
     } else {
