@@ -109,7 +109,7 @@ pub fn write_postgres_conf(
                 vartype: "enum".to_owned(),
             };
 
-            write!(file, "{}", opt.to_pg_setting())?;
+            writeln!(file, "{}", opt.to_pg_setting())?;
         }
     }
 
