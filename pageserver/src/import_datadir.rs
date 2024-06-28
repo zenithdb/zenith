@@ -76,7 +76,7 @@ pub async fn import_timeline_from_postgres_datadir(
             let mut file = tokio::fs::File::open(absolute_path).await?;
             let len = metadata.len() as usize;
             if let Some(control_file) =
-                import_file(&mut modification, relative_path, &mut file, len, ctx).await?
+                import_file(&mut modification, relative_path, &mut file, len, false, ctx).await?
             {
                 pg_control = Some(control_file);
             }
@@ -374,8 +374,15 @@ pub async fn import_basebackup_from_tar(
 
         match header.entry_type() {
             tokio_tar::EntryType::Regular => {
-                if let Some(res) =
-                    import_file(&mut modification, file_path.as_ref(), &mut entry, len, ctx).await?
+                if let Some(res) = import_file(
+                    &mut modification,
+                    file_path.as_ref(),
+                    &mut entry,
+                    len,
+                    true,
+                    ctx,
+                )
+                .await?
                 {
                     // We found the pg_control file.
                     pg_control = Some(res);
@@ -508,6 +515,7 @@ async fn import_file(
     file_path: &Path,
     reader: &mut (impl AsyncRead + Send + Sync + Unpin),
     len: usize,
+    import_aux_files: bool,
     ctx: &RequestContext,
 ) -> Result<Option<ControlFileData>> {
     let file_name = match file_path.file_name() {
@@ -641,9 +649,10 @@ async fn import_file(
         // TODO Backups exported from neon won't have pg_tblspc, but we will need
         // this to import arbitrary postgres databases.
         bail!("Importing pg_tblspc is not implemented");
-    } else if file_path.starts_with("pg_logical/")
-        || file_path.starts_with("pg_replslot/")
-        || file_path.starts_with("pg_stat/")
+    } else if import_aux_files
+        && (file_path.starts_with("pg_logical/")
+            || file_path.starts_with("pg_replslot/")
+            || file_path.starts_with("pg_stat/"))
     {
         let bytes = read_all_bytes(reader).await?;
         modification
