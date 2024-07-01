@@ -157,8 +157,16 @@ smol_str_wrapper!(BranchId);
 // 90% of project strings are 23 characters or less.
 smol_str_wrapper!(ProjectId);
 
-// will usually equal endpoint ID
-smol_str_wrapper!(EndpointCacheKey);
+#[derive(PartialEq, Eq, Hash, Debug, Clone)]
+pub struct EndpointCacheKey {
+    pub id: EndpointIdInt,
+    pub extra: Box<str>,
+}
+impl std::fmt::Display for EndpointCacheKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", &self.id, &self.extra)
+    }
+}
 
 smol_str_wrapper!(DbName);
 

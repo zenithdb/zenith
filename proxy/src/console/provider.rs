@@ -9,14 +9,14 @@ use crate::{
         IpPattern,
     },
     cache::{endpoints::EndpointsCache, project_info::ProjectInfoCacheImpl, Cached, TimedLru},
-    compute,
+    compute::{self, ConnCfg},
     config::{CacheOptions, EndpointCacheConfig, ProjectInfoCacheOptions},
     context::RequestMonitoring,
     error::ReportableError,
     intern::ProjectIdInt,
     metrics::ApiLockMetrics,
     rate_limiter::{DynamicLimiter, Outcome, RateLimiterConfig, Token},
-    scram, EndpointCacheKey,
+    scram, EndpointCacheKey, Host,
 };
 use dashmap::DashMap;
 use std::{hash::Hash, sync::Arc, time::Duration};
@@ -289,6 +289,33 @@ pub struct NodeInfo {
     pub allow_self_signed_compute: bool,
 }
 
+/// Cached info for establishing a connection to a compute node.
+#[derive(Clone)]
+pub struct NodeCachedInfo {
+    pub host: Host,
+    pub port: u16,
+
+    /// Labels for proxy's metrics.
+    pub aux: MetricsAuxInfo,
+
+    /// Whether we should accept self-signed certificates (for testing)
+    pub allow_self_signed_compute: bool,
+}
+
+impl NodeCachedInfo {
+    pub fn into_node_info(self) -> NodeInfo {
+        let mut config = ConnCfg::default();
+        config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+        config.host(&self.host);
+        config.port(self.port);
+        NodeInfo {
+            config,
+            aux: self.aux,
+            allow_self_signed_compute: self.allow_self_signed_compute,
+        }
+    }
+}
+
 impl NodeInfo {
     pub async fn connect(
         &self,
@@ -317,8 +344,8 @@ impl NodeInfo {
     }
 }
 
-pub type NodeInfoCache = TimedLru<EndpointCacheKey, NodeInfo>;
-pub type CachedNodeInfo = Cached<&'static NodeInfoCache>;
+pub type NodeInfoCache = TimedLru<EndpointCacheKey, NodeCachedInfo>;
+pub type CachedNodeInfo = Cached<&'static NodeInfoCache, NodeInfo>;
 pub type CachedRoleSecret = Cached<&'static ProjectInfoCacheImpl, Option<AuthSecret>>;
 pub type CachedAllowedIps = Cached<&'static ProjectInfoCacheImpl, Arc<Vec<IpPattern>>>;
 

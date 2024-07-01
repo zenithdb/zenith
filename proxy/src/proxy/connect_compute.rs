@@ -47,7 +47,7 @@ pub trait ConnectMechanism {
     async fn connect_once(
         &self,
         ctx: &mut RequestMonitoring,
-        node_info: &console::CachedNodeInfo,
+        node_info: &NodeInfo,
         timeout: time::Duration,
     ) -> Result<Self::Connection, Self::ConnectError>;
 
@@ -82,7 +82,7 @@ impl ConnectMechanism for TcpMechanism<'_> {
     async fn connect_once(
         &self,
         ctx: &mut RequestMonitoring,
-        node_info: &console::CachedNodeInfo,
+        node_info: &NodeInfo,
         timeout: time::Duration,
     ) -> Result<PostgresConnection, Self::Error> {
         let host = node_info.config.get_host()?;

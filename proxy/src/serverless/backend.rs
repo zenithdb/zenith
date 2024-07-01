@@ -11,7 +11,7 @@ use crate::{
         errors::{GetAuthInfoError, WakeComputeError},
         locks::ApiLocks,
         provider::ApiLockError,
-        CachedNodeInfo,
+        NodeInfo,
     },
     context::RequestMonitoring,
     error::{ErrorKind, ReportableError, UserFacingError},
@@ -223,7 +223,7 @@ impl ConnectMechanism for TokioMechanism {
     async fn connect_once(
         &self,
         ctx: &mut RequestMonitoring,
-        node_info: &CachedNodeInfo,
+        node_info: &NodeInfo,
         timeout: Duration,
     ) -> Result<Self::Connection, Self::ConnectError> {
         let host = node_info.config.get_host()?;

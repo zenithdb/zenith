@@ -43,6 +43,15 @@ impl<C: Cache, V> Cached<C, V> {
         Self { token: None, value }
     }
 
+    /// Place any entry into this wrapper; invalidation will be a no-op.
+    pub fn map<U>(self, f: impl FnOnce(V) -> U) -> Cached<C, U> {
+        let token = self.token;
+        Cached {
+            token,
+            value: f(self.value),
+        }
+    }
+
     pub fn take_value(self) -> (Cached<C, ()>, V) {
         (
             Cached {

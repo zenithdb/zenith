@@ -13,8 +13,10 @@ use crate::auth::backend::{
 use crate::config::{CertResolver, RetryConfig};
 use crate::console::caches::NodeInfoCache;
 use crate::console::messages::{ConsoleError, Details, MetricsAuxInfo, Status};
-use crate::console::provider::{CachedAllowedIps, CachedRoleSecret, ConsoleBackend};
-use crate::console::{self, CachedNodeInfo, NodeInfo};
+use crate::console::provider::{
+    CachedAllowedIps, CachedRoleSecret, ConsoleBackend, NodeCachedInfo,
+};
+use crate::console::{self, CachedNodeInfo};
 use crate::error::ErrorKind;
 use crate::{http, sasl, scram, BranchId, EndpointId, ProjectId};
 use anyhow::{bail, Context};
@@ -458,7 +460,7 @@ impl ConnectMechanism for TestConnectMechanism {
     async fn connect_once(
         &self,
         _ctx: &mut RequestMonitoring,
-        _node_info: &console::CachedNodeInfo,
+        _node_info: &console::NodeInfo,
         _timeout: std::time::Duration,
     ) -> Result<Self::Connection, Self::ConnectError> {
         let mut counter = self.counter.lock().unwrap();
@@ -530,8 +532,9 @@ impl TestBackend for TestConnectMechanism {
 }
 
 fn helper_create_cached_node_info(cache: &'static NodeInfoCache) -> CachedNodeInfo {
-    let node = NodeInfo {
-        config: compute::ConnCfg::new(),
+    let node = NodeCachedInfo {
+        host: "localhost".into(),
+        port: 5432,
         aux: MetricsAuxInfo {
             endpoint_id: (&EndpointId::from("endpoint")).into(),
             project_id: (&ProjectId::from("project")).into(),
@@ -540,8 +543,12 @@ fn helper_create_cached_node_info(cache: &'static NodeInfoCache) -> CachedNodeIn
         },
         allow_self_signed_compute: false,
     };
-    let (_, node) = cache.insert("key".into(), node);
-    node
+    let key = EndpointCacheKey {
+        id: node.aux.endpoint_id,
+        extra: "".into(),
+    };
+    let (_, node) = cache.insert(key, node);
+    node.map(NodeCachedInfo::into_node_info)
 }
 
 fn helper_create_connect_info(

@@ -4,22 +4,20 @@ use super::{
     super::messages::{ConsoleError, GetRoleSecret, WakeCompute},
     errors::{ApiError, GetAuthInfoError, WakeComputeError},
     ApiCaches, ApiLocks, AuthInfo, AuthSecret, CachedAllowedIps, CachedNodeInfo, CachedRoleSecret,
-    NodeInfo,
+    NodeCachedInfo,
 };
 use crate::{
     auth::backend::ComputeUserInfo,
-    compute,
     console::messages::ColdStartInfo,
     http,
     metrics::{CacheOutcome, Metrics},
     rate_limiter::EndpointRateLimiter,
-    scram, EndpointCacheKey,
+    scram, EndpointCacheKey, Host,
 };
 use crate::{cache::Cached, context::RequestMonitoring};
 use futures::TryFutureExt;
 use std::sync::Arc;
 use tokio::time::Instant;
-use tokio_postgres::config::SslMode;
 use tracing::{error, info, info_span, warn, Instrument};
 
 pub struct Api {
@@ -132,7 +130,7 @@ impl Api {
         &self,
         ctx: &mut RequestMonitoring,
         user_info: &ComputeUserInfo,
-    ) -> Result<NodeInfo, WakeComputeError> {
+    ) -> Result<NodeCachedInfo, WakeComputeError> {
         let request_id = ctx.session_id.to_string();
         let application_name = ctx.console_application_name();
         async {
@@ -167,15 +165,11 @@ impl Api {
                 None => return Err(WakeComputeError::BadComputeAddress(body.address)),
                 Some(x) => x,
             };
+            let host = Host(host.into());
 
-            // Don't set anything but host and port! This config will be cached.
-            // We'll set username and such later using the startup message.
-            // TODO: add more type safety (in progress).
-            let mut config = compute::ConnCfg::new();
-            config.host(host).port(port).ssl_mode(SslMode::Disable); // TLS is not configured on compute nodes.
-
-            let node = NodeInfo {
-                config,
+            let node = NodeCachedInfo {
+                host,
+                port,
                 aux: body.aux,
                 allow_self_signed_compute: false,
             };
@@ -278,9 +272,9 @@ impl super::Api for Api {
         // The connection info remains the same during that period of time,
         // which means that we might cache it to reduce the load and latency.
         if let Some(cached) = self.caches.node_info.get(&key) {
-            info!(key = &*key, "found cached compute node info");
+            info!(key = display(&key), "found cached compute node info");
             ctx.set_project(cached.aux.clone());
-            return Ok(cached);
+            return Ok(cached.map(NodeCachedInfo::into_node_info));
         }
 
         let permit = self.locks.get_permit(&key).await?;
@@ -289,9 +283,9 @@ impl super::Api for Api {
         // double check
         if permit.should_check_cache() {
             if let Some(cached) = self.caches.node_info.get(&key) {
-                info!(key = &*key, "found cached compute node info");
+                info!(key = display(&key), "found cached compute node info");
                 ctx.set_project(cached.aux.clone());
-                return Ok(cached);
+                return Ok(cached.map(NodeCachedInfo::into_node_info));
             }
         }
 
@@ -300,7 +294,7 @@ impl super::Api for Api {
             .wake_compute_endpoint_rate_limiter
             .check(user_info.endpoint.normalize_intern(), 1)
         {
-            info!(key = &*key, "found cached compute node info");
+            info!(key = display(&key), "found cached compute node info");
             return Err(WakeComputeError::TooManyConnections);
         }
 
@@ -314,9 +308,12 @@ impl super::Api for Api {
         let (_, mut cached) = self.caches.node_info.insert(key.clone(), node);
         cached.aux.cold_start_info = cold_start_info;
 
-        info!(key = &*key, "created a cache entry for compute node info");
+        info!(
+            key = display(&key),
+            "created a cache entry for compute node info"
+        );
 
-        Ok(cached)
+        Ok(cached.map(NodeCachedInfo::into_node_info))
     }
 }
 

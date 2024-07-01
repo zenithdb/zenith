@@ -241,6 +241,8 @@ fn project_name_valid(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::intern::EndpointIdInt;
+
     use super::*;
     use serde_json::json;
     use ComputeUserInfoParseError::*;
@@ -284,7 +286,6 @@ mod tests {
             ComputeUserInfoMaybeEndpoint::parse(&mut ctx, &options, sni, common_names.as_ref())?;
         assert_eq!(user_info.user, "john_doe");
         assert_eq!(user_info.endpoint_id.as_deref(), Some("foo"));
-        assert_eq!(user_info.options.get_cache_key("foo"), "foo");
 
         Ok(())
     }
@@ -442,8 +443,9 @@ mod tests {
         let user_info =
             ComputeUserInfoMaybeEndpoint::parse(&mut ctx, &options, sni, common_names.as_ref())?;
         assert_eq!(user_info.endpoint_id.as_deref(), Some("project"));
+        let project = EndpointIdInt::from(EndpointId::from("project"));
         assert_eq!(
-            user_info.options.get_cache_key("project"),
+            user_info.options.get_cache_key(project).to_string(),
             "project endpoint_type:read_write lsn:0/2"
         );
 

@@ -93,7 +93,7 @@ pub type ScramKeys = tokio_postgres::config::ScramKeys<32>;
 /// Eventually, `tokio_postgres` will be replaced with something better.
 /// Newtype allows us to implement methods on top of it.
 #[derive(Clone, Default)]
-pub struct ConnCfg(Box<tokio_postgres::Config>);
+pub struct ConnCfg(tokio_postgres::Config);
 
 /// Creation and initialization routines.
 impl ConnCfg {

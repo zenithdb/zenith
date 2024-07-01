@@ -153,7 +153,7 @@ pub struct ComputeUserInfo {
 
 impl ComputeUserInfo {
     pub fn endpoint_cache_key(&self) -> EndpointCacheKey {
-        self.options.get_cache_key(&self.endpoint)
+        self.options.get_cache_key((&self.endpoint).into())
     }
 }
 
