@@ -880,13 +880,7 @@ impl ComputeNode {
 
         // Run migrations separately to not hold up cold starts
         thread::spawn(move || {
-            let mut connstr = connstr.clone();
-            connstr
-                .query_pairs_mut()
-                .append_pair("application_name", "migrations");
-
-            let mut client = Client::connect(connstr.as_str(), NoTls)?;
-            handle_migrations(&mut client).context("apply_config handle_migrations")
+            handle_migrations(connstr.clone()).context("apply_config handle_migrations")
         });
         Ok(())
     }

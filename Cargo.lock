@@ -1252,6 +1252,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing-utils",
  "url",
+ "urlencoding",
  "utils",
  "vm_monitor",
  "workspace_hack",
