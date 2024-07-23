@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{ffi::CStr, marker::PhantomData};
 
 use measured::{
     label::NoLabels,
@@ -9,7 +9,9 @@ use measured::{
     text::TextEncoder,
     LabelGroup, MetricGroup,
 };
-use tikv_jemalloc_ctl::{config, epoch, epoch_mib, stats, version};
+use tikv_jemalloc_ctl::{
+    config, epoch, epoch_mib, raw, stats, version, Access, AsName, MibStr, Name,
+};
 
 pub struct MetricRecorder {
     epoch: epoch_mib,
@@ -114,3 +116,59 @@ jemalloc_gauge!(mapped, mapped_mib);
 jemalloc_gauge!(metadata, metadata_mib);
 jemalloc_gauge!(resident, resident_mib);
 jemalloc_gauge!(retained, retained_mib);
+
+#[allow(non_camel_case_types)]
+pub struct dump;
+
+impl dump {
+    pub fn mib() -> tikv_jemalloc_ctl::Result<dump_mib> {
+        Ok(dump_mib(b"prof.dump\0".as_slice().name().mib_str()?))
+    }
+}
+
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+#[allow(non_camel_case_types)]
+pub struct dump_mib(pub MibStr<[usize; 2]>);
+
+impl dump_mib {
+    pub fn write(self, value: &'static CStr) -> tikv_jemalloc_ctl::Result<()> {
+        // No support for Access<CStr> yet.
+        // self.0.write(value)
+        let mib = [self.0[0], self.0[1]];
+        raw::write_str_mib(&mib, value.to_bytes_with_nul())
+    }
+}
+
+#[allow(non_camel_case_types)]
+pub struct active;
+
+impl active {
+    pub fn name() -> &'static Name {
+        b"prof.active\0".as_slice().name()
+    }
+}
+
+impl active {
+    pub fn read() -> tikv_jemalloc_ctl::Result<bool> {
+        Self::name().read()
+    }
+    pub fn write(value: bool) -> tikv_jemalloc_ctl::Result<()> {
+        Self::name().write(value)
+    }
+}
+
+#[allow(non_camel_case_types)]
+pub struct prof;
+
+impl prof {
+    pub fn name() -> &'static Name {
+        b"opt.prof\0".as_slice().name()
+    }
+}
+
+impl prof {
+    pub fn read() -> tikv_jemalloc_ctl::Result<bool> {
+        Self::name().read()
+    }
+}

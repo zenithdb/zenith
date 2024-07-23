@@ -257,7 +257,7 @@ debug = true
 
 # disable debug symbols for all packages except this one to decrease binaries size
 [profile.release.package."*"]
-debug = false
+debug = true
 
 [profile.release-line-debug]
 inherits = "release"

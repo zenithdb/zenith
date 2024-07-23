@@ -22,6 +22,7 @@ base64.workspace = true
 bstr.workspace = true
 bytes = { workspace = true, features = ["serde"] }
 camino.workspace = true
+camino-tempfile.workspace = true
 chrono.workspace = true
 clap.workspace = true
 consumption_metrics.workspace = true
@@ -80,7 +81,7 @@ socket2.workspace = true
 subtle.workspace = true
 task-local-extensions.workspace = true
 thiserror.workspace = true
-tikv-jemallocator.workspace = true
+tikv-jemallocator = { workspace = true, features = ["profiling"] }
 tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
 tokio-postgres.workspace = true
 tokio-postgres-rustls.workspace = true
@@ -105,7 +106,6 @@ redis.workspace = true
 workspace_hack.workspace = true
 
 [dev-dependencies]
-camino-tempfile.workspace = true
 fallible-iterator.workspace = true
 tokio-tungstenite.workspace = true
 pbkdf2 = { workspace = true, features = ["simple", "std"] }

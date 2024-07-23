@@ -45,6 +45,7 @@ COPY --from=pg-build /home/nonroot/pg_install/v16/include/postgresql/server pg_i
 COPY --from=pg-build /home/nonroot/pg_install/v16/lib                       pg_install/v16/lib
 COPY --chown=nonroot . .
 
+ENV _RJEM_MALLOC_CONF="prof:true"
 # Show build caching stats to check if it was used in the end.
 # Has to be the part of the same RUN since cachepot daemon is killed in the end of this RUN, losing the compilation stats.
 RUN set -e \
