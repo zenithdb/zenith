@@ -324,7 +324,8 @@ impl<C: ClientInnerExt> GlobalConnPool<C> {
             .start_timer();
         let current_len = shard.len();
         let mut clients_removed = 0;
-        shard.retain(|endpoint, x| {
+
+        crate::rawtable::retain(&mut *shard, |endpoint, x| {
             // if the current endpoint pool is unique (no other strong or weak references)
             // then it is currently not in use by any connections.
             if let Some(pool) = Arc::get_mut(x.get_mut()) {

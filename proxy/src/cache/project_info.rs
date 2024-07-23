@@ -305,7 +305,7 @@ impl ProjectInfoCacheImpl {
         // acquire a random shard lock
         let mut removed = 0;
         let shard = self.project2ep.shards()[shard].write();
-        for (_, endpoints) in shard.iter() {
+        for (_, endpoints) in crate::rawtable::iter(&*shard) {
             for endpoint in endpoints.get().iter() {
                 self.cache.remove(endpoint);
                 removed += 1;

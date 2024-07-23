@@ -77,7 +77,7 @@ const_format = "0.2"
 crc32c = "0.6"
 crossbeam-deque = "0.8.5"
 crossbeam-utils = "0.8.5"
-dashmap = { version = "5.5.0", features = ["raw-api"] }
+dashmap = { version = "6.0", features = ["raw-api"] }
 either = "1.8"
 enum-map = "2.4.2"
 enumset = "1.0.12"

@@ -529,11 +529,18 @@ impl<K: Hash + Eq + Clone> ApiLocks<K> {
                 );
                 let mut lock = shard.write();
                 let timer = self.metrics.reclamation_lag_seconds.start_timer();
-                let count = lock
-                    .extract_if(|_, semaphore| Arc::strong_count(semaphore.get_mut()) == 1)
-                    .count();
+
+                let mut removed = 0;
+                crate::rawtable::retain(&mut *lock, |_, semaphore| {
+                    let remove = Arc::strong_count(semaphore.get_mut()) == 1;
+                    if remove {
+                        removed += 1;
+                    }
+                    !remove
+                });
+
                 drop(lock);
-                self.metrics.semaphores_unregistered.inc_by(count as u64);
+                self.metrics.semaphores_unregistered.inc_by(removed as u64);
                 timer.observe();
             }
         }
