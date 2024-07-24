@@ -213,6 +213,14 @@ runs:
           scripts/generate_and_push_perf_report.sh
         fi
 
+    - name: List running processes
+      shell: bash -euxo pipefail {0}
+      run: ps aux
+
+    - name: List running processes | grep neon
+      shell: bash -euxo pipefail {0}
+      run: ps aux | grep neon
+
     - name: Upload compatibility snapshot
       if: github.ref_name == 'release'
       uses: ./.github/actions/upload

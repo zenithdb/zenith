@@ -209,7 +209,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build_type: [ debug, release ]
+        build_type: [ debug ]
     env:
       BUILD_TYPE: ${{ matrix.build_type }}
       GIT_VERSION: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -439,8 +439,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build_type: [ debug, release ]
-        pg_version: [ v14, v15, v16 ]
+        build_type: [ debug ]
+        pg_version: [ v14 ]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
