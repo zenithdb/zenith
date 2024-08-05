@@ -908,6 +908,20 @@ jobs:
           docker buildx imagetools create -t neondatabase/neon-test-extensions-v16:latest \
                                              neondatabase/neon-test-extensions-v16:${{ needs.tag.outputs.build-tag }}
 
+      - name: Copy image to all dev regions
+        if: github.ref_name == 'main'
+        env:
+          REGIONS: ${{ vars.DEV_AWS_REGIONS_JSON }}
+          TAG: ${{ needs.tag.outputs.build-tag }}
+          ECR_ID: '369495373322'
+        run: |
+          for image in neon compute-tools {vm-,}compute-node-{v14,v15,v16}; do
+            # Create a list of arguments that looks like `-t repo-in-one-region/image:tag -t repo-in-another-region/image:tag`
+            ARGS=$(echo $REGIONS | jq --raw-output --arg ecr_id "${ECR_ID}" --arg image "${image}" --arg tag "${TAG}" '.[] | "-t \(ecr_id).dkr.ecr.\(.).amazonaws.com/\($image):\($tag)"' | paste -sd " " -)
+
+            docker buildx imagetools create ${ARGS} ${ECR_ID}.dkr.ecr.eu-central-1.amazonaws.com/${image}:${TAG}
+          done
+
       - name: Login to prod ECR
         uses: docker/login-action@v3
         if: github.ref_name == 'release'|| github.ref_name == 'release-proxy'
@@ -922,6 +936,20 @@ jobs:
           for image in neon compute-tools {vm-,}compute-node-{v14,v15,v16}; do
             docker buildx imagetools create -t 093970136003.dkr.ecr.eu-central-1.amazonaws.com/${image}:${{ needs.tag.outputs.build-tag }} \
                                                369495373322.dkr.ecr.eu-central-1.amazonaws.com/${image}:${{ needs.tag.outputs.build-tag }}
+          done
+
+      - name: Copy image to all prod regions
+        if: github.ref_name == 'release'|| github.ref_name == 'release-proxy'
+        env:
+          REGIONS: ${{ vars.PROD_AWS_REGIONS_JSON }}
+          TAG: ${{ needs.tag.outputs.build-tag }}
+          ECR_ID: '093970136003'
+        run: |
+          for image in neon compute-tools {vm-,}compute-node-{v14,v15,v16}; do
+            # Create a list of arguments that looks like `-t repo-in-one-region/image:tag -t repo-in-another-region/image:tag ...`
+            ARGS=$(echo $REGIONS | jq --raw-output --arg ecr_id "${ECR_ID}" --arg image "${image}" --arg tag "${TAG}" '.[] | "-t \(ecr_id).dkr.ecr.\(.).amazonaws.com/\($image):\($tag)"' | paste -sd " " -)
+
+            docker buildx imagetools create ${ARGS} ${ECR_ID}.dkr.ecr.eu-central-1.amazonaws.com/${image}:${TAG}
           done
 
   trigger-custom-extensions-build-and-wait:

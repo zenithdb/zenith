@@ -8,6 +8,8 @@ self-hosted-runner:
     - small-arm64
     - us-east-2
 config-variables:
+  - DEV_AWS_REGIONS_JSON
+  - PROD_AWS_REGIONS_JSON
   - REMOTE_STORAGE_AZURE_CONTAINER
   - REMOTE_STORAGE_AZURE_REGION
   - SLACK_UPCOMING_RELEASE_CHANNEL_ID
