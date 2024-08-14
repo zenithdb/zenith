@@ -314,7 +314,7 @@ jobs:
     outputs:
       report-url: ${{ steps.create-allure-report.outputs.report-url }}
 
-    runs-on: [ self-hosted, gen3, small ]
+    runs-on: [ self-hosted, dev, x64 ]
     container:
       image: ${{ needs.build-build-tools-image.outputs.image }}
       credentials:
