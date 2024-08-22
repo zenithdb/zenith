@@ -413,6 +413,10 @@ where
             let mut content = Vec::with_capacity(n_origins * 16 + 8);
             content.extend_from_slice(&pg_constants::REPLICATION_STATE_MAGIC.to_le_bytes());
             for (origin_id, origin_lsn) in repl_origins {
+                info!(
+                    "Include origin_id={}, origin_lsn={} in basebackup",
+                    origin_id, origin_lsn
+                );
                 content.extend_from_slice(&origin_id.to_le_bytes());
                 content.extend_from_slice(&[0u8; 6]); // align to 8 bytes
                 content.extend_from_slice(&origin_lsn.0.to_le_bytes());

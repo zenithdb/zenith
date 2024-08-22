@@ -1,6 +1,7 @@
 import threading
 import time
 
+from fixtures.log_helper import log
 from fixtures.neon_fixtures import NeonEnv
 from fixtures.utils import wait_until
 
@@ -21,9 +22,13 @@ def test_subscriber_restart(neon_simple_env: NeonEnv):
     n_restarts = 100
 
     def check_that_changes_propagated():
+        scur.execute("SELECT received_lsn from pg_stat_subscription")
+        received_lsn = scur.fetchall()[0][0]
+        log.info(f"received_lsn={received_lsn}")
         scur.execute("SELECT count(*) FROM t")
-        res = scur.fetchall()
-        assert res[0][0] == n_records
+        count = scur.fetchall()[0][0]
+        log.info(f"count={count}")
+        assert count == n_records
 
     def insert_data(pub):
         with pub.cursor() as pcur:
@@ -55,5 +60,8 @@ def test_subscriber_restart(neon_simple_env: NeonEnv):
         thread.join()
         pcur.execute(f"INSERT into t values ({n_records}, 0)")
         n_records += 1
+        pcur.execute("SELECT pg_current_wal_flush_lsn()")
+        flush_lsn = pcur.fetchall()[0][0]
+        log.info(f"flush_lsn={flush_lsn}")
         with sub.cursor() as scur:
             wait_until(60, 0.5, check_that_changes_propagated)
