@@ -5,7 +5,8 @@ use tracing::{field::display, info};
 
 use crate::{
     auth::{backend::ComputeCredentials, check_peer_addr_is_in_list, AuthError},
-    compute,
+    cancellation::CancelClosure,
+    compute::{self, ConnectionError},
     config::{AuthenticationConfig, ProxyConfig},
     console::{
         errors::{GetAuthInfoError, WakeComputeError},
@@ -142,7 +143,7 @@ pub enum HttpConnError {
     #[error("pooled connection closed at inconsistent state")]
     ConnectionClosedAbruptly(#[from] tokio::sync::watch::error::SendError<uuid::Uuid>),
     #[error("could not connection to compute")]
-    ConnectionError(#[from] tokio_postgres::Error),
+    ConnectionError(#[from] ConnectionError),
 
     #[error("could not get auth info")]
     GetAuthInfo(#[from] GetAuthInfoError),
@@ -229,17 +230,16 @@ impl ConnectMechanism for TokioMechanism {
         let host = node_info.config.get_host()?;
         let permit = self.locks.get_permit(&host).await?;
 
-        let mut config = (*node_info.config).clone();
-        let config = config
-            .user(&self.conn_info.user_info.user)
-            .password(&*self.conn_info.password)
-            .dbname(&self.conn_info.dbname)
-            .connect_timeout(timeout);
+        let (socket_addr, client, connection) = permit.release_result(
+            node_info
+                .config
+                .managed_connect(ctx, timeout, &mut tokio_postgres::NoTls)
+                .await,
+        )?;
 
-        let pause = ctx.latency_timer_pause(crate::metrics::Waiting::Compute);
-        let res = config.connect(tokio_postgres::NoTls).await;
-        drop(pause);
-        let (client, connection) = permit.release_result(res)?;
+        // NB: CancelToken is supposed to hold socket_addr, but we use connect_raw.
+        // Yet another reason to rework the connection establishing code.
+        let cancel_closure = CancelClosure::new(socket_addr, client.cancel_token());
 
         tracing::Span::current().record("pid", tracing::field::display(client.get_process_id()));
         Ok(poll_client(
@@ -250,8 +250,14 @@ impl ConnectMechanism for TokioMechanism {
             connection,
             self.conn_id,
             node_info.aux.clone(),
+            cancel_closure,
         ))
     }
 
-    fn update_connect_config(&self, _config: &mut compute::ConnCfg) {}
+    fn update_connect_config(&self, config: &mut compute::ConnCfg) {
+        config
+            .user(&self.conn_info.user_info.user)
+            .dbname(&self.conn_info.dbname)
+            .password(&self.conn_info.password);
+    }
 }

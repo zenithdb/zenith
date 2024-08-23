@@ -12,11 +12,13 @@ use std::{
     ops::Deref,
     sync::atomic::{self, AtomicUsize},
 };
+use tokio::net::TcpStream;
 use tokio::time::Instant;
 use tokio_postgres::tls::NoTlsStream;
-use tokio_postgres::{AsyncMessage, ReadyForQueryStatus, Socket};
+use tokio_postgres::{AsyncMessage, ReadyForQueryStatus};
 use tokio_util::sync::CancellationToken;
 
+use crate::cancellation::CancelClosure;
 use crate::console::messages::{ColdStartInfo, MetricsAuxInfo};
 use crate::metrics::{HttpEndpointPoolsGuard, Metrics};
 use crate::usage_metrics::{Ids, MetricCounter, USAGE_METRICS};
@@ -463,14 +465,16 @@ impl<C: ClientInnerExt> GlobalConnPool<C> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn poll_client<C: ClientInnerExt>(
     global_pool: Arc<GlobalConnPool<C>>,
     ctx: &RequestMonitoring,
     conn_info: ConnInfo,
     client: C,
-    mut connection: tokio_postgres::Connection<Socket, NoTlsStream>,
+    mut connection: tokio_postgres::Connection<TcpStream, NoTlsStream>,
     conn_id: uuid::Uuid,
     aux: MetricsAuxInfo,
+    cancel_closure: CancelClosure,
 ) -> Client<C> {
     let conn_gauge = Metrics::get().proxy.db_connections.guard(ctx.protocol());
     let mut session_id = ctx.session_id();
@@ -572,6 +576,7 @@ pub fn poll_client<C: ClientInnerExt>(
         cancel,
         aux,
         conn_id,
+        cancel_closure,
     };
     Client::new(inner, conn_info, pool_clone)
 }
@@ -582,6 +587,7 @@ struct ClientInner<C: ClientInnerExt> {
     cancel: CancellationToken,
     aux: MetricsAuxInfo,
     conn_id: uuid::Uuid,
+    cancel_closure: CancelClosure,
 }
 
 impl<C: ClientInnerExt> Drop for ClientInner<C> {
@@ -646,7 +652,7 @@ impl<C: ClientInnerExt> Client<C> {
             pool,
         }
     }
-    pub fn inner(&mut self) -> (&mut C, Discard<'_, C>) {
+    pub fn inner(&mut self) -> (&mut C, &CancelClosure, Discard<'_, C>) {
         let Self {
             inner,
             pool,
@@ -654,7 +660,11 @@ impl<C: ClientInnerExt> Client<C> {
             span: _,
         } = self;
         let inner = inner.as_mut().expect("client inner should not be removed");
-        (&mut inner.inner, Discard { pool, conn_info })
+        (
+            &mut inner.inner,
+            &inner.cancel_closure,
+            Discard { pool, conn_info },
+        )
     }
 }
 
@@ -751,6 +761,7 @@ mod tests {
                 cold_start_info: crate::console::messages::ColdStartInfo::Warm,
             },
             conn_id: uuid::Uuid::new_v4(),
+            cancel_closure: CancelClosure::test(),
         }
     }
 
@@ -786,7 +797,7 @@ mod tests {
         {
             let mut client = Client::new(create_inner(), conn_info.clone(), ep_pool.clone());
             assert_eq!(0, pool.get_global_connections_count());
-            client.inner().1.discard();
+            client.inner().2.discard();
             // Discard should not add the connection from the pool.
             assert_eq!(0, pool.get_global_connections_count());
         }

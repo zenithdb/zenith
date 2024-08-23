@@ -151,21 +151,34 @@ impl<P: CancellationPublisherMut> CancellationHandler<Option<Arc<Mutex<P>>>> {
 #[derive(Clone)]
 pub struct CancelClosure {
     socket_addr: SocketAddr,
-    cancel_token: CancelToken,
+    cancel_token: Option<CancelToken>,
 }
 
 impl CancelClosure {
     pub fn new(socket_addr: SocketAddr, cancel_token: CancelToken) -> Self {
         Self {
             socket_addr,
-            cancel_token,
+            cancel_token: Some(cancel_token),
         }
     }
+
+    #[cfg(test)]
+    pub fn test() -> Self {
+        use std::net::{Ipv4Addr, SocketAddrV4};
+
+        Self {
+            socket_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from_bits(0), 0)),
+            cancel_token: None,
+        }
+    }
+
     /// Cancels the query running on user's compute node.
     pub async fn try_cancel_query(self) -> Result<(), CancelError> {
-        let socket = TcpStream::connect(self.socket_addr).await?;
-        self.cancel_token.cancel_query_raw(socket, NoTls).await?;
-        info!("query was cancelled");
+        if let Some(cancel_token) = self.cancel_token {
+            let socket = TcpStream::connect(self.socket_addr).await?;
+            cancel_token.cancel_query_raw(socket, NoTls).await?;
+            info!("query was cancelled");
+        }
         Ok(())
     }
 }

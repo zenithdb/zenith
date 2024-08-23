@@ -16,8 +16,10 @@ use rustls::{client::danger::ServerCertVerifier, pki_types::InvalidDnsNameError}
 use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::net::TcpStream;
-use tokio_postgres::tls::MakeTlsConnect;
-use tokio_postgres_rustls::MakeRustlsConnect;
+use tokio_postgres::{
+    tls::{MakeTlsConnect, NoTlsError},
+    Client, Connection,
+};
 use tracing::{error, info, warn};
 
 const COULD_NOT_CONNECT: &str = "Couldn't connect to compute node";
@@ -40,6 +42,12 @@ pub enum ConnectionError {
 
     #[error("error acquiring resource permit: {0}")]
     TooManyConnectionAttempts(#[from] ApiLockError),
+}
+
+impl From<NoTlsError> for ConnectionError {
+    fn from(value: NoTlsError) -> Self {
+        Self::CouldNotConnect(io::Error::new(io::ErrorKind::Other, value.to_string()))
+    }
 }
 
 impl UserFacingError for ConnectionError {
@@ -273,6 +281,30 @@ pub struct PostgresConnection {
 
 impl ConnCfg {
     /// Connect to a corresponding compute node.
+    pub async fn managed_connect<M: MakeTlsConnect<tokio::net::TcpStream>>(
+        &self,
+        ctx: &RequestMonitoring,
+        timeout: Duration,
+        mktls: &mut M,
+    ) -> Result<(SocketAddr, Client, Connection<TcpStream, M::Stream>), ConnectionError>
+    where
+        ConnectionError: From<M::Error>,
+    {
+        let pause = ctx.latency_timer_pause(crate::metrics::Waiting::Compute);
+        let (socket_addr, stream, host) = self.connect_raw(timeout).await?;
+        drop(pause);
+
+        let tls = mktls.make_tls_connect(host)?;
+
+        // connect_raw() will not use TLS if sslmode is "disable"
+        let pause = ctx.latency_timer_pause(crate::metrics::Waiting::Compute);
+        let (client, connection) = self.0.connect_raw(stream, tls).await?;
+        drop(pause);
+
+        Ok((socket_addr, client, connection))
+    }
+
+    /// Connect to a corresponding compute node.
     pub async fn connect(
         &self,
         ctx: &RequestMonitoring,
@@ -280,10 +312,6 @@ impl ConnCfg {
         aux: MetricsAuxInfo,
         timeout: Duration,
     ) -> Result<PostgresConnection, ConnectionError> {
-        let pause = ctx.latency_timer_pause(crate::metrics::Waiting::Compute);
-        let (socket_addr, stream, host) = self.connect_raw(timeout).await?;
-        drop(pause);
-
         let client_config = if allow_self_signed_compute {
             // Allow all certificates for creating the connection
             let verifier = Arc::new(AcceptEverythingVerifier) as Arc<dyn ServerCertVerifier>;
@@ -297,21 +325,15 @@ impl ConnCfg {
         let client_config = client_config.with_no_client_auth();
 
         let mut mk_tls = tokio_postgres_rustls::MakeRustlsConnect::new(client_config);
-        let tls = <MakeRustlsConnect as MakeTlsConnect<tokio::net::TcpStream>>::make_tls_connect(
-            &mut mk_tls,
-            host,
-        )?;
 
-        // connect_raw() will not use TLS if sslmode is "disable"
-        let pause = ctx.latency_timer_pause(crate::metrics::Waiting::Compute);
-        let (client, connection) = self.0.connect_raw(stream, tls).await?;
-        drop(pause);
+        let (socket_addr, client, connection) =
+            self.managed_connect(ctx, timeout, &mut mk_tls).await?;
         tracing::Span::current().record("pid", tracing::field::display(client.get_process_id()));
         let stream = connection.stream.into_inner();
 
         info!(
             cold_start_info = ctx.cold_start_info().as_str(),
-            "connected to compute node at {host} ({socket_addr}) sslmode={:?}",
+            "connected to compute node ({socket_addr}) sslmode={:?}",
             self.0.get_ssl_mode()
         );
 

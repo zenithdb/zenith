@@ -26,7 +26,6 @@ use tokio_postgres::error::ErrorPosition;
 use tokio_postgres::error::SqlState;
 use tokio_postgres::GenericClient;
 use tokio_postgres::IsolationLevel;
-use tokio_postgres::NoTls;
 use tokio_postgres::ReadyForQueryStatus;
 use tokio_postgres::Transaction;
 use tokio_util::sync::CancellationToken;
@@ -271,7 +270,9 @@ pub async fn handle(
 
             let mut message = e.to_string_client();
             let db_error = match &e {
-                SqlOverHttpError::ConnectCompute(HttpConnError::ConnectionError(e))
+                SqlOverHttpError::ConnectCompute(HttpConnError::ConnectionError(
+                    crate::compute::ConnectionError::Postgres(e),
+                ))
                 | SqlOverHttpError::Postgres(e) => e.as_db_error(),
                 _ => None,
             };
@@ -632,8 +633,7 @@ impl QueryData {
         client: &mut Client<tokio_postgres::Client>,
         parsed_headers: HttpHeaders,
     ) -> Result<String, SqlOverHttpError> {
-        let (inner, mut discard) = client.inner();
-        let cancel_token = inner.cancel_token();
+        let (inner, cancel_token, mut discard) = client.inner();
 
         let res = match select(
             pin!(query_to_json(&*inner, self, &mut 0, parsed_headers)),
@@ -657,7 +657,7 @@ impl QueryData {
             // The query was cancelled.
             Either::Right((_cancelled, query)) => {
                 tracing::info!("cancelling query");
-                if let Err(err) = cancel_token.cancel_query(NoTls).await {
+                if let Err(err) = cancel_token.clone().try_cancel_query().await {
                     tracing::error!(?err, "could not cancel query");
                 }
                 // wait for the query cancellation
@@ -673,7 +673,9 @@ impl QueryData {
                     // query failed or was cancelled.
                     Ok(Err(error)) => {
                         let db_error = match &error {
-                            SqlOverHttpError::ConnectCompute(HttpConnError::ConnectionError(e))
+                            SqlOverHttpError::ConnectCompute(HttpConnError::ConnectionError(
+                                crate::compute::ConnectionError::Postgres(e),
+                            ))
                             | SqlOverHttpError::Postgres(e) => e.as_db_error(),
                             _ => None,
                         };
@@ -704,8 +706,7 @@ impl BatchQueryData {
         parsed_headers: HttpHeaders,
     ) -> Result<String, SqlOverHttpError> {
         info!("starting transaction");
-        let (inner, mut discard) = client.inner();
-        let cancel_token = inner.cancel_token();
+        let (inner, cancel_token, mut discard) = client.inner();
         let mut builder = inner.build_transaction();
         if let Some(isolation_level) = parsed_headers.txn_isolation_level {
             builder = builder.isolation_level(isolation_level);
@@ -738,7 +739,7 @@ impl BatchQueryData {
                     json_output
                 }
                 Err(SqlOverHttpError::Cancelled(_)) => {
-                    if let Err(err) = cancel_token.cancel_query(NoTls).await {
+                    if let Err(err) = cancel_token.clone().try_cancel_query().await {
                         tracing::error!(?err, "could not cancel query");
                     }
                     // TODO: after cancelling, wait to see if we can get a status. maybe the connection is still safe.
