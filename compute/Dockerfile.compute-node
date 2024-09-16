@@ -933,6 +933,28 @@ RUN case "${PG_VERSION}" in "v17") \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/pg_partman.control
 
 #########################################################################################
+# Layer "pg_tracing"
+# compile pg_tracing extension
+#
+#########################################################################################
+FROM build-deps AS pg-tracing-build
+COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
+
+ARG PG_VERSION
+ENV PATH="/usr/local/pgsql/bin/:$PATH"
+RUN case "${PG_VERSION}" in \
+      "v14" | "v15") \
+        echo "pg_tracing not supported on this PostgreSQL version." && exit 0;; \
+      *) \
+      ;; \
+    esac && \
+    wget https://github.com/DataDog/pg_tracing/archive/bf7efa79aaed6e97e2449733a730310c092edcac.tar.gz -O pg_tracing.tar.gz && \
+    echo "965a035570e1a3f2434ad80ce1b3b4befae25f508751402ca5868663ac1f1705 pg_tracing.tar.gz" | sha256sum --check && \
+    mkdir pg_tracing-src && cd pg_tracing-src && tar xvzf ../pg_tracing.tar.gz --strip-components=1 -C . && \
+    make -j $(getconf _NPROCESSORS_ONLN) && \
+    make -j $(getconf _NPROCESSORS_ONLN) install
+
+#########################################################################################
 #
 # Layer "neon-pg-ext-build"
 # compile neon extensions
@@ -974,6 +996,7 @@ COPY --from=wal2json-pg-build /usr/local/pgsql /usr/local/pgsql
 COPY --from=pg-anon-pg-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-ivm-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-partman-build /usr/local/pgsql/ /usr/local/pgsql/
+COPY --from=pg-tracing-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY pgxn/ pgxn/
 
 RUN make -j $(getconf _NPROCESSORS_ONLN) \
@@ -1135,6 +1158,7 @@ COPY --from=pg-anon-pg-build /pg_anon.tar.gz /ext-src
 COPY compute/patches/pg_anon.patch /ext-src
 COPY --from=pg-ivm-build /pg_ivm.tar.gz /ext-src
 COPY --from=pg-partman-build /pg_partman.tar.gz /ext-src
+COPY --from=pg-tracing-build /pg_tracing.tar.gz /ext-src
 RUN case "${PG_VERSION}" in "v17") \
     echo "v17 extensions are not supported yet. Quit" && exit 0;; \
     esac && \
