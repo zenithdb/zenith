@@ -24,7 +24,6 @@ pub(crate) enum Migration<'m> {
     /// creates a new database, that database will not receive the migration, but we will have
     /// marked the migration as completed successfully, assuming all previous databases ran the
     /// migration to completion.
-    #[expect(dead_code)]
     PerDatabase(&'m str),
 }
 

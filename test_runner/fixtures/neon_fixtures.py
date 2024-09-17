@@ -4094,7 +4094,7 @@ class Endpoint(PgProtocol, LogUtils):
             json.dump(dict(data_dict, **kwargs), file, indent=4)
 
     # Please note: Migrations only run if pg_skip_catalog_updates is false
-    def wait_for_migrations(self, num_migrations: int = 10):
+    def wait_for_migrations(self, num_migrations: int = 11):
         with self.cursor() as cur:
 
             def check_migrations_done():

@@ -809,6 +809,7 @@ pub fn handle_migrations(connstr: Url) -> Result<(), postgres::Error> {
         Migration::Cluster(include_str!(
             "./migrations/0011-grant_pg_show_replication_origin_status_to_neon_superuser.sql"
         )),
+        Migration::PerDatabase(include_str!("./migrations/0012-fix-CVE-2024-4317.sql")),
     ];
 
     let runner = match MigrationRunner::new(connstr, &migrations) {
