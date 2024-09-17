@@ -10,10 +10,9 @@ use crate::context::{PageContentKind, RequestContext, RequestContextBuilder};
 use crate::repository::{Key, Value};
 use crate::tenant::ephemeral_file::EphemeralFile;
 use crate::tenant::timeline::GetVectoredError;
-use crate::tenant::PageReconstructError;
 use crate::virtual_file::owned_buffers_io::io_buf_ext::IoBufExt;
 use crate::{l0_flush, page_cache};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use bytes::Bytes;
 use camino::Utf8PathBuf;
 use pageserver_api::key::CompactKey;
@@ -35,9 +34,7 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use tokio::sync::RwLock;
 
-use super::{
-    DeltaLayerWriter, PersistentLayerDesc, ValueReconstructSituation, ValuesReconstructState,
-};
+use super::{DeltaLayerWriter, PersistentLayerDesc, ValuesReconstructState};
 
 pub(crate) mod vectored_dio_read;
 
@@ -87,7 +84,7 @@ pub struct InMemoryLayerInner {
     /// The values are stored in a serialized format in this file.
     /// Each serialized Value is preceded by a 'u32' length field.
     /// PerSeg::page_versions map stores offsets into this file.
-    file: EphemeralFile,
+    file: Arc<tokio::sync::RwLock<EphemeralFile>>,
 
     resource_units: GlobalResourceUnits,
 }
@@ -381,7 +378,11 @@ impl InMemoryLayer {
     }
 
     pub(crate) fn try_len(&self) -> Option<u64> {
-        self.inner.try_read().map(|i| i.file.len()).ok()
+        self.inner
+            .try_read()
+            .map(|i| i.file.try_read().map(|i| i.len()).ok())
+            .ok()
+            .flatten()
     }
 
     pub(crate) fn assert_writable(&self) {
@@ -432,6 +433,10 @@ impl InMemoryLayer {
             read: vectored_dio_read::LogicalRead<Vec<u8>>,
         }
         let mut reads: HashMap<Key, Vec<ValueRead>> = HashMap::new();
+        let mut senders: HashMap<
+            (Key, Lsn),
+            tokio::sync::oneshot::Sender<Result<Bytes, std::io::Error>>,
+        > = Default::default();
 
         for range in keyspace.ranges.iter() {
             for (key, vec_map) in inner
@@ -459,6 +464,11 @@ impl InMemoryLayer {
                             Vec::with_capacity(len as usize),
                         ),
                     });
+
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    senders.insert((key, *entry_lsn), tx);
+                    reconstruct_state.update_key(&key, *entry_lsn, will_init, rx);
+
                     if will_init {
                         break;
                     }
@@ -466,46 +476,42 @@ impl InMemoryLayer {
             }
         }
 
-        // Execute the reads.
+        let read_from = inner.file.clone();
+        let read_ctx = ctx.attached_child();
+        tokio::task::spawn(async move {
+            let locked = read_from.read().await;
+            let f = vectored_dio_read::execute(
+                &*locked,
+                reads
+                    .iter()
+                    .flat_map(|(_, value_reads)| value_reads.iter().map(|v| &v.read)),
+                &read_ctx,
+            );
+            send_future::SendFuture::send(f) // https://github.com/rust-lang/rust/issues/96865
+                .await;
 
-        let f = vectored_dio_read::execute(
-            &inner.file,
-            reads
-                .iter()
-                .flat_map(|(_, value_reads)| value_reads.iter().map(|v| &v.read)),
-            &ctx,
-        );
-        send_future::SendFuture::send(f) // https://github.com/rust-lang/rust/issues/96865
-            .await;
-
-        // Process results into the reconstruct state
-        'next_key: for (key, value_reads) in reads {
-            for ValueRead { entry_lsn, read } in value_reads {
-                match read.into_result().expect("we run execute() above") {
-                    Err(e) => {
-                        reconstruct_state.on_key_error(key, PageReconstructError::from(anyhow!(e)));
-                        continue 'next_key;
-                    }
-                    Ok(value_buf) => {
-                        let value = Value::des(&value_buf);
-                        if let Err(e) = value {
-                            reconstruct_state
-                                .on_key_error(key, PageReconstructError::from(anyhow!(e)));
-                            continue 'next_key;
+            for (key, value_reads) in reads {
+                for ValueRead { entry_lsn, read } in value_reads {
+                    let sender = senders
+                        .remove(&(key, entry_lsn))
+                        .expect("sender must exist");
+                    match read.into_result().expect("we run execute() above") {
+                        Err(e) => {
+                            let sender = senders
+                                .remove(&(key, entry_lsn))
+                                .expect("sender must exist");
+                            let _ = sender
+                                .send(Err(std::io::Error::new(e.kind(), "dio vec read failed")));
                         }
-
-                        let key_situation =
-                            reconstruct_state.update_key(&key, entry_lsn, value.unwrap());
-                        if key_situation == ValueReconstructSituation::Complete {
-                            // TODO: metric to see if we fetched more values than necessary
-                            continue 'next_key;
+                        Ok(value_buf) => {
+                            let _ = sender.send(Ok(value_buf.into()));
                         }
-
-                        // process the next value in the next iteration of the loop
                     }
                 }
             }
-        }
+
+            assert!(senders.is_empty());
+        });
 
         reconstruct_state.on_lsn_advanced(&keyspace, self.start_lsn);
 
@@ -600,7 +606,8 @@ impl InMemoryLayer {
     /// Get layer size.
     pub async fn size(&self) -> Result<u64> {
         let inner = self.inner.read().await;
-        Ok(inner.file.len())
+        let locked = inner.file.try_read().expect("no contention");
+        Ok(locked.len())
     }
 
     /// Create a new, empty, in-memory layer
@@ -614,9 +621,10 @@ impl InMemoryLayer {
     ) -> Result<InMemoryLayer> {
         trace!("initializing new empty InMemoryLayer for writing on timeline {timeline_id} at {start_lsn}");
 
-        let file =
-            EphemeralFile::create(conf, tenant_shard_id, timeline_id, gate_guard, ctx).await?;
-        let key = InMemoryLayerFileId(file.page_cache_file_id());
+        let file = Arc::new(tokio::sync::RwLock::new(
+            EphemeralFile::create(conf, tenant_shard_id, timeline_id, gate_guard, ctx).await?,
+        ));
+        let key = InMemoryLayerFileId(file.read().await.page_cache_file_id());
 
         Ok(InMemoryLayer {
             file_id: key,
@@ -648,7 +656,7 @@ impl InMemoryLayer {
         let mut inner = self.inner.write().await;
         self.assert_writable();
 
-        let base_offset = inner.file.len();
+        let base_offset = inner.file.read().await.len();
 
         let SerializedBatch {
             raw,
@@ -672,8 +680,13 @@ impl InMemoryLayer {
         }
 
         // Write the batch to the file
-        inner.file.write_raw(&raw, ctx).await?;
-        let new_size = inner.file.len();
+        // FIXME: can't borrow arc
+        let new_size = {
+            let mut locked = inner.file.write().await;
+            locked.write_raw(&raw, ctx).await?;
+            locked.len()
+        };
+
         let expected_new_len = base_offset
             .checked_add(raw.len().into_u64())
             // write_raw would error if we were to overflow u64.
@@ -713,7 +726,7 @@ impl InMemoryLayer {
 
     pub(crate) async fn tick(&self) -> Option<u64> {
         let mut inner = self.inner.write().await;
-        let size = inner.file.len();
+        let size = inner.file.read().await.len();
         inner.resource_units.publish_size(size)
     }
 
@@ -809,7 +822,7 @@ impl InMemoryLayer {
 
         match l0_flush_global_state {
             l0_flush::Inner::Direct { .. } => {
-                let file_contents: Vec<u8> = inner.file.load_to_vec(ctx).await?;
+                let file_contents: Vec<u8> = inner.file.read().await.load_to_vec(ctx).await?;
 
                 let file_contents = Bytes::from(file_contents);
 

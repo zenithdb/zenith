@@ -107,6 +107,8 @@ async fn smoke_test() {
             .expect("tenant harness writes the control file")
     };
 
+    let img_before = (img_before.0, img_before.1.await.unwrap().unwrap());
+    let img_after = (img_after.0, img_after.1.await.unwrap().unwrap());
     assert_eq!(img_before, img_after);
 
     // evict_and_wait can timeout, but it doesn't cancel the evicting itself

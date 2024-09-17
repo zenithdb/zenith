@@ -42,13 +42,12 @@ use crate::tenant::vectored_blob_io::{
     BlobFlag, StreamingVectoredReadPlanner, VectoredBlobReader, VectoredRead,
     VectoredReadCoalesceMode, VectoredReadPlanner,
 };
-use crate::tenant::PageReconstructError;
 use crate::virtual_file::owned_buffers_io::io_buf_ext::{FullSlice, IoBufExt};
 use crate::virtual_file::{self, VirtualFile};
 use crate::{walrecord, TEMP_FILE_SUFFIX};
 use crate::{DELTA_FILE_MAGIC, STORAGE_FORMAT_VERSION};
-use anyhow::{anyhow, bail, ensure, Context, Result};
-use bytes::BytesMut;
+use anyhow::{bail, ensure, Context, Result};
+use bytes::{Bytes, BytesMut};
 use camino::{Utf8Path, Utf8PathBuf};
 use futures::StreamExt;
 use itertools::Itertools;
@@ -58,14 +57,14 @@ use pageserver_api::models::ImageCompressionAlgorithm;
 use pageserver_api::shard::TenantShardId;
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::SeekFrom;
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::OnceCell;
+use tokio::sync::{self, OnceCell};
 use tokio_epoll_uring::IoBuf;
 use tracing::*;
 
@@ -224,7 +223,7 @@ pub struct DeltaLayerInner {
     index_start_blk: u32,
     index_root_blk: u32,
 
-    file: VirtualFile,
+    file: Arc<VirtualFile>,
     file_id: FileId,
 
     layer_key_range: Range<Key>,
@@ -788,9 +787,11 @@ impl DeltaLayerInner {
         max_vectored_read_bytes: Option<MaxVectoredReadBytes>,
         ctx: &RequestContext,
     ) -> anyhow::Result<Self> {
-        let file = VirtualFile::open(path, ctx)
-            .await
-            .context("open layer file")?;
+        let file = Arc::new(
+            VirtualFile::open(path, ctx)
+                .await
+                .context("open layer file")?,
+        );
 
         let file_id = page_cache::next_file_id();
 
@@ -980,77 +981,59 @@ impl DeltaLayerInner {
         reconstruct_state: &mut ValuesReconstructState,
         ctx: &RequestContext,
     ) {
-        let vectored_blob_reader = VectoredBlobReader::new(&self.file);
-        let mut ignore_key_with_err = None;
-
         let max_vectored_read_bytes = self
             .max_vectored_read_bytes
             .expect("Layer is loaded with max vectored bytes config")
             .0
             .into();
         let buf_size = Self::get_min_read_buffer_size(&reads, max_vectored_read_bytes);
-        let mut buf = Some(BytesMut::with_capacity(buf_size));
 
         // Note that reads are processed in reverse order (from highest key+lsn).
         // This is the order that `ReconstructState` requires such that it can
         // track when a key is done.
         for read in reads.into_iter().rev() {
-            let res = vectored_blob_reader
-                .read_blobs(&read, buf.take().expect("Should have a buffer"), ctx)
-                .await;
-
-            let blobs_buf = match res {
-                Ok(blobs_buf) => blobs_buf,
-                Err(err) => {
-                    let kind = err.kind();
-                    for (_, blob_meta) in read.blobs_at.as_slice() {
-                        reconstruct_state.on_key_error(
-                            blob_meta.key,
-                            PageReconstructError::Other(anyhow!(
-                                "Failed to read blobs from virtual file {}: {}",
-                                self.file.path,
-                                kind
-                            )),
-                        );
-                    }
-
-                    // We have "lost" the buffer since the lower level IO api
-                    // doesn't return the buffer on error. Allocate a new one.
-                    buf = Some(BytesMut::with_capacity(buf_size));
-
-                    continue;
-                }
-            };
-
-            for meta in blobs_buf.blobs.iter().rev() {
-                if Some(meta.meta.key) == ignore_key_with_err {
-                    continue;
-                }
-
-                let value = Value::des(&blobs_buf.buf[meta.start..meta.end]);
-                let value = match value {
-                    Ok(v) => v,
-                    Err(e) => {
-                        reconstruct_state.on_key_error(
-                            meta.meta.key,
-                            PageReconstructError::Other(anyhow!(e).context(format!(
-                                "Failed to deserialize blob from virtual file {}",
-                                self.file.path,
-                            ))),
-                        );
-
-                        ignore_key_with_err = Some(meta.meta.key);
-                        continue;
-                    }
-                };
-
-                // Invariant: once a key reaches [`ValueReconstructSituation::Complete`]
-                // state, no further updates shall be made to it. The call below will
-                // panic if the invariant is violated.
-                reconstruct_state.update_key(&meta.meta.key, meta.meta.lsn, value);
+            let mut senders: HashMap<
+                (Key, Lsn),
+                sync::oneshot::Sender<Result<Bytes, std::io::Error>>,
+            > = Default::default();
+            for (_, blob_meta) in read.blobs_at.as_slice().iter().rev() {
+                let (tx, rx) = sync::oneshot::channel();
+                senders.insert((blob_meta.key, blob_meta.lsn), tx);
+                reconstruct_state.update_key(
+                    &blob_meta.key,
+                    blob_meta.lsn,
+                    blob_meta.will_init,
+                    rx,
+                );
             }
 
-            buf = Some(blobs_buf.buf);
+            let read_from = self.file.clone();
+            let read_ctx = ctx.attached_child();
+            tokio::task::spawn(async move {
+                let vectored_blob_reader = VectoredBlobReader::new(&read_from);
+                let buf = BytesMut::with_capacity(buf_size);
+
+                let res = vectored_blob_reader.read_blobs(&read, buf, &read_ctx).await;
+                match res {
+                    Ok(blobs_buf) => {
+                        for meta in blobs_buf.blobs.iter().rev() {
+                            let buf = &blobs_buf.buf[meta.start..meta.end];
+                            let sender = senders
+                                .remove(&(meta.meta.key, meta.meta.lsn))
+                                .expect("sender must exist");
+                            let _ = sender.send(Ok(Bytes::copy_from_slice(buf)));
+                        }
+
+                        assert!(senders.is_empty());
+                    }
+                    Err(err) => {
+                        for (_, sender) in senders {
+                            let _ = sender
+                                .send(Err(std::io::Error::new(err.kind(), "vec read failed")));
+                        }
+                    }
+                }
+            });
         }
     }
 
@@ -1190,7 +1173,14 @@ impl DeltaLayerInner {
             let actionable = if let Some((key, lsn, start_offset)) = prev.take() {
                 let end_offset = offset;
 
-                Some((BlobMeta { key, lsn }, start_offset..end_offset))
+                Some((
+                    BlobMeta {
+                        key,
+                        lsn,
+                        will_init: false,
+                    },
+                    start_offset..end_offset,
+                ))
             } else {
                 None
             };

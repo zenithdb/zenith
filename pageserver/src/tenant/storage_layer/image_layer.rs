@@ -21,7 +21,7 @@
 //!
 //! Every image layer file consists of three parts: "summary",
 //! "index", and "values".  The summary is a fixed size header at the
-//! beginning of the file, and it contains basic information about the
+//! beginningof the file, and it contains basic information about the
 //! layer, and offsets to the other parts. The "index" is a B-tree,
 //! mapping from Key to an offset in the "values" part.  The
 //! actual page images are stored in the "values" part.
@@ -38,11 +38,11 @@ use crate::tenant::timeline::GetVectoredError;
 use crate::tenant::vectored_blob_io::{
     BlobFlag, StreamingVectoredReadPlanner, VectoredBlobReader, VectoredRead, VectoredReadPlanner,
 };
-use crate::tenant::{PageReconstructError, Timeline};
+use crate::tenant::Timeline;
 use crate::virtual_file::owned_buffers_io::io_buf_ext::IoBufExt;
 use crate::virtual_file::{self, VirtualFile};
 use crate::{IMAGE_FILE_MAGIC, STORAGE_FORMAT_VERSION, TEMP_FILE_SUFFIX};
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use bytes::{Bytes, BytesMut};
 use camino::{Utf8Path, Utf8PathBuf};
 use hex;
@@ -52,13 +52,14 @@ use pageserver_api::keyspace::KeySpace;
 use pageserver_api::shard::{ShardIdentity, TenantShardId};
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::SeekFrom;
 use std::ops::Range;
 use std::os::unix::prelude::FileExt;
 use std::str::FromStr;
 use std::sync::Arc;
+use tokio::sync::oneshot;
 use tokio::sync::OnceCell;
 use tokio_stream::StreamExt;
 use tracing::*;
@@ -163,7 +164,7 @@ pub struct ImageLayerInner {
     key_range: Range<Key>,
     lsn: Lsn,
 
-    file: VirtualFile,
+    file: Arc<VirtualFile>,
     file_id: FileId,
 
     max_vectored_read_bytes: Option<MaxVectoredReadBytes>,
@@ -390,9 +391,11 @@ impl ImageLayerInner {
         max_vectored_read_bytes: Option<MaxVectoredReadBytes>,
         ctx: &RequestContext,
     ) -> anyhow::Result<Self> {
-        let file = VirtualFile::open(path, ctx)
-            .await
-            .context("open layer file")?;
+        let file = Arc::new(
+            VirtualFile::open(path, ctx)
+                .await
+                .context("open layer file")?,
+        );
         let file_id = page_cache::next_file_id();
         let block_reader = FileBlockReader::new(&file, file_id);
         let summary_blk = block_reader
@@ -579,8 +582,16 @@ impl ImageLayerInner {
             .0
             .into();
 
-        let vectored_blob_reader = VectoredBlobReader::new(&self.file);
         for read in reads.into_iter() {
+            let mut senders: HashMap<(Key, Lsn), oneshot::Sender<Result<Bytes, std::io::Error>>> =
+                Default::default();
+            for (_, blob_meta) in read.blobs_at.as_slice() {
+                let (tx, rx) = oneshot::channel();
+                senders.insert((blob_meta.key, blob_meta.lsn), tx);
+
+                reconstruct_state.update_key(&blob_meta.key, blob_meta.lsn, true, rx);
+            }
+
             let buf_size = read.size();
 
             if buf_size > max_vectored_read_bytes {
@@ -599,36 +610,36 @@ impl ImageLayerInner {
                 );
             }
 
-            let buf = BytesMut::with_capacity(buf_size);
-            let res = vectored_blob_reader.read_blobs(&read, buf, ctx).await;
+            let read_from = self.file.clone();
+            let read_ctx = ctx.attached_child();
+            tokio::task::spawn(async move {
+                let buf = BytesMut::with_capacity(buf_size);
+                let vectored_blob_reader = VectoredBlobReader::new(&read_from);
+                let res = vectored_blob_reader.read_blobs(&read, buf, &read_ctx).await;
 
-            match res {
-                Ok(blobs_buf) => {
-                    let frozen_buf = blobs_buf.buf.freeze();
+                match res {
+                    Ok(blobs_buf) => {
+                        for meta in blobs_buf.blobs.iter().rev() {
+                            let buf = &blobs_buf.buf[meta.start..meta.end];
+                            let sender = senders
+                                .remove(&(meta.meta.key, meta.meta.lsn))
+                                .expect("sender must exist");
+                            // TODO: this is silly - sort it out
+                            let bytes = Value::ser(&Value::Image(Bytes::copy_from_slice(buf)))
+                                .expect("stupid but correct");
+                            let _ = sender.send(Ok(bytes.into()));
+                        }
 
-                    for meta in blobs_buf.blobs.iter() {
-                        let img_buf = frozen_buf.slice(meta.start..meta.end);
-                        reconstruct_state.update_key(
-                            &meta.meta.key,
-                            self.lsn,
-                            Value::Image(img_buf),
-                        );
+                        assert!(senders.is_empty());
+                    }
+                    Err(err) => {
+                        for (_, sender) in senders {
+                            let _ = sender
+                                .send(Err(std::io::Error::new(err.kind(), "vec read failed")));
+                        }
                     }
                 }
-                Err(err) => {
-                    let kind = err.kind();
-                    for (_, blob_meta) in read.blobs_at.as_slice() {
-                        reconstruct_state.on_key_error(
-                            blob_meta.key,
-                            PageReconstructError::from(anyhow!(
-                                "Failed to read blobs from virtual file {}: {}",
-                                self.file.path,
-                                kind
-                            )),
-                        );
-                    }
-                }
-            };
+            });
         }
     }
 

@@ -8,15 +8,17 @@ mod layer_desc;
 mod layer_name;
 pub mod merge_iterator;
 
+use tokio::sync::{self};
+use utils::bin_ser::BeSer;
 pub mod split_writer;
 
 use crate::context::{AccessStatsBehavior, RequestContext};
-use crate::repository::Value;
+use crate::repository::{Value, ValueBytes};
 use crate::walrecord::NeonWalRecord;
 use bytes::Bytes;
-use pageserver_api::key::Key;
+use pageserver_api::key::{Key, DBDIR_KEY};
 use pageserver_api::keyspace::{KeySpace, KeySpaceRandomAccum};
-use std::cmp::{Ordering, Reverse};
+use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, HashMap};
 use std::ops::Range;
@@ -79,12 +81,18 @@ pub(crate) enum ValueReconstructSituation {
 }
 
 /// Reconstruct data accumulated for a single key during a vectored get
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub(crate) struct VectoredValueReconstructState {
-    pub(crate) records: Vec<(Lsn, NeonWalRecord)>,
-    pub(crate) img: Option<(Lsn, Bytes)>,
+    pub(crate) records: Vec<(
+        Lsn,
+        tokio::sync::oneshot::Receiver<Result<Bytes, std::io::Error>>,
+    )>,
+    pub(crate) img: Option<(
+        Lsn,
+        tokio::sync::oneshot::Receiver<Result<Bytes, std::io::Error>>,
+    )>,
 
-    situation: ValueReconstructSituation,
+    pub(crate) situation: ValueReconstructSituation,
 }
 
 impl VectoredValueReconstructState {
@@ -93,16 +101,57 @@ impl VectoredValueReconstructState {
     }
 }
 
-impl From<VectoredValueReconstructState> for ValueReconstructState {
-    fn from(mut state: VectoredValueReconstructState) -> Self {
-        // walredo expects the records to be descending in terms of Lsn
-        state.records.sort_by_key(|(lsn, _)| Reverse(*lsn));
+pub(crate) async fn convert(
+    _key: Key,
+    from: VectoredValueReconstructState,
+) -> Result<ValueReconstructState, PageReconstructError> {
+    let mut to = ValueReconstructState::default();
 
-        ValueReconstructState {
-            records: state.records,
-            img: state.img,
+    for (lsn, fut) in from.records {
+        match fut.await {
+            Ok(res) => match res {
+                Ok(bytes) => {
+                    let value = Value::des(&bytes)
+                        .map_err(|err| PageReconstructError::Other(err.into()))?;
+
+                    match value {
+                        Value::WalRecord(rec) => {
+                            to.records.push((lsn, rec));
+                        },
+                        Value::Image(img) => {
+                            assert!(to.img.is_none());
+                            to.img = Some((lsn, img));
+                        }
+                    }
+                }
+                Err(err) => {
+                    return Err(PageReconstructError::Other(err.into()));
+                }
+            },
+            Err(err) => {
+                return Err(PageReconstructError::Other(err.into()));
+            }
         }
     }
+
+    if to.img.is_none() && from.img.is_some() {
+        let (lsn, fut) = from.img.expect("Has an image");
+        match fut.await {
+            Ok(res) => match res {
+                Ok(bytes) => {
+                    to.img = Some((lsn, bytes));
+                }
+                Err(err) => {
+                    return Err(PageReconstructError::Other(err.into()));
+                }
+            },
+            Err(err) => {
+                return Err(PageReconstructError::Other(err.into()));
+            }
+        }
+    }
+
+    Ok(to)
 }
 
 /// Bag of data accumulated during a vectored get..
@@ -200,7 +249,8 @@ impl ValuesReconstructState {
         &mut self,
         key: &Key,
         lsn: Lsn,
-        value: Value,
+        completes: bool,
+        value: sync::oneshot::Receiver<Result<Bytes, std::io::Error>>,
     ) -> ValueReconstructSituation {
         let state = self
             .keys
@@ -208,31 +258,14 @@ impl ValuesReconstructState {
             .or_insert(Ok(VectoredValueReconstructState::default()));
 
         if let Ok(state) = state {
-            let key_done = match state.situation {
+            match state.situation {
                 ValueReconstructSituation::Complete => unreachable!(),
-                ValueReconstructSituation::Continue => match value {
-                    Value::Image(img) => {
-                        state.img = Some((lsn, img));
-                        true
-                    }
-                    Value::WalRecord(rec) => {
-                        debug_assert!(
-                            Some(lsn) > state.get_cached_lsn(),
-                            "Attempt to collect a record below cached LSN for walredo: {} < {}",
-                            lsn,
-                            state
-                                .get_cached_lsn()
-                                .expect("Assertion can only fire if a cached lsn is present")
-                        );
+                ValueReconstructSituation::Continue => {
+                    state.records.push((lsn, value));
+                }
+            }
 
-                        let will_init = rec.will_init();
-                        state.records.push((lsn, rec));
-                        will_init
-                    }
-                },
-            };
-
-            if key_done && state.situation == ValueReconstructSituation::Continue {
+            if completes && state.situation == ValueReconstructSituation::Continue {
                 state.situation = ValueReconstructSituation::Complete;
                 self.keys_done.add_key(*key);
             }
