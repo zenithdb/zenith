@@ -22,9 +22,10 @@ impl<'m> MigrationRunner<'m> {
     }
 
     fn update_migration_id(&mut self, migration_id: i64) -> Result<(), postgres::Error> {
-        let setval = format!("UPDATE neon_migration.migration_id SET id={}", migration_id);
-
-        self.client.simple_query(&setval)?;
+        self.client.query(
+            "UPDATE neon_migration.migration_id SET id = $1",
+            &[&migration_id],
+        )?;
 
         Ok(())
     }
