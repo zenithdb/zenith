@@ -48,6 +48,42 @@ impl<'m> MigrationRunner<'m> {
         Ok(())
     }
 
+    fn run_migration(&mut self, migration_id: i64, migration: &str) -> Result<(), postgres::Error> {
+        if migration.starts_with("-- SKIP") {
+            info!("Skipping migration id={}", migration_id);
+            return Ok(());
+        }
+
+        info!("Running migration id={}:\n{}\n", migration_id, migration);
+
+        if let Err(e) = self.client.simple_query("BEGIN") {
+            error!("Failed to begin the migration transaction: {}", e);
+            return Err(e);
+        }
+
+        if let Err(e) = self.client.simple_query(migration) {
+            error!("Failed to run the migration: {}", e);
+            return Err(e);
+        }
+
+        if let Err(e) = self.update_migration_id(migration_id) {
+            error!(
+                "Failed to update the migration id to {}: {}",
+                migration_id, e
+            );
+            return Err(e);
+        }
+
+        if let Err(e) = self.client.simple_query("COMMIT") {
+            error!("Failed to commit the migration transaction: {}", e);
+            return Err(e);
+        }
+
+        info!("Finished migration id={}", migration_id);
+
+        Ok(())
+    }
+
     pub fn run_migrations(mut self) -> Result<(), postgres::Error> {
         if let Err(e) = self.prepare_migrations() {
             error!("Failed to prepare the migration relations: {}", e);
@@ -63,50 +99,9 @@ impl<'m> MigrationRunner<'m> {
         };
 
         while current_migration < self.migrations.len() {
-            macro_rules! migration_id {
-                ($cm:expr) => {
-                    ($cm + 1) as i64
-                };
-            }
-
             let migration = self.migrations[current_migration];
 
-            if migration.starts_with("-- SKIP") {
-                info!("Skipping migration id={}", migration_id!(current_migration));
-            } else {
-                info!(
-                    "Running migration id={}:\n{}\n",
-                    migration_id!(current_migration),
-                    migration
-                );
-
-                if let Err(e) = self.client.simple_query("BEGIN") {
-                    error!("Failed to begin the migration transaction: {}", e);
-                    return Err(e);
-                }
-
-                if let Err(e) = self.client.simple_query(migration) {
-                    error!("Failed to run the migration: {}", e);
-                    return Err(e);
-                }
-
-                // Migration IDs start at 1
-                if let Err(e) = self.update_migration_id(migration_id!(current_migration)) {
-                    error!(
-                        "Failed to update the migration id to {}: {}",
-                        migration_id!(current_migration),
-                        e
-                    );
-                    return Err(e);
-                }
-
-                if let Err(e) = self.client.simple_query("COMMIT") {
-                    error!("Failed to commit the migration transaction: {}", e);
-                    return Err(e);
-                }
-
-                info!("Finished migration id={}", migration_id!(current_migration));
-            }
+            self.run_migration(current_migration as i64, migration)?;
 
             current_migration += 1;
         }
