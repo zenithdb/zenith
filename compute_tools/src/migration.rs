@@ -15,8 +15,9 @@ impl<'m> MigrationRunner<'m> {
     }
 
     fn get_migration_id(&mut self) -> Result<i64, postgres::Error> {
-        let query = "SELECT id FROM neon_migration.migration_id";
-        let row = self.client.query_one(query, &[])?;
+        let row = self
+            .client
+            .query_one("SELECT id FROM neon_migration.migration_id", &[])?;
 
         Ok(row.get::<&str, i64>("id"))
     }
