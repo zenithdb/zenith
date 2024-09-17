@@ -768,7 +768,7 @@ pub fn handle_neon_extension_upgrade(client: &mut Client) -> Result<()> {
 }
 
 #[instrument(skip_all)]
-pub fn handle_migrations(client: &mut Client) -> Result<()> {
+pub fn handle_migrations(client: &mut Client) -> Result<(), postgres::Error> {
     info!("handle migrations");
 
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -798,9 +798,14 @@ pub fn handle_migrations(client: &mut Client) -> Result<()> {
         ),
     ];
 
-    MigrationRunner::new(client, &migrations).run_migrations()?;
-
-    Ok(())
+    let runner = MigrationRunner::new(client, &migrations);
+    match runner.run_migrations() {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            error!("Failed to run the migrations: {}", e);
+            Err(e)
+        }
+    }
 }
 
 /// Connect to the database as superuser and pre-create anon extension

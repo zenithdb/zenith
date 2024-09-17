@@ -1,6 +1,5 @@
-use anyhow::{Context, Result};
 use postgres::Client;
-use tracing::info;
+use tracing::{error, info};
 
 pub(crate) struct MigrationRunner<'m> {
     client: &'m mut Client,
@@ -15,27 +14,22 @@ impl<'m> MigrationRunner<'m> {
         Self { client, migrations }
     }
 
-    fn get_migration_id(&mut self) -> Result<i64> {
+    fn get_migration_id(&mut self) -> Result<i64, postgres::Error> {
         let query = "SELECT id FROM neon_migration.migration_id";
-        let row = self
-            .client
-            .query_one(query, &[])
-            .context("run_migrations get migration_id")?;
+        let row = self.client.query_one(query, &[])?;
 
         Ok(row.get::<&str, i64>("id"))
     }
 
-    fn update_migration_id(&mut self, migration_id: i64) -> Result<()> {
+    fn update_migration_id(&mut self, migration_id: i64) -> Result<(), postgres::Error> {
         let setval = format!("UPDATE neon_migration.migration_id SET id={}", migration_id);
 
-        self.client
-            .simple_query(&setval)
-            .context("run_migrations update id")?;
+        self.client.simple_query(&setval)?;
 
         Ok(())
     }
 
-    fn prepare_migrations(&mut self) -> Result<()> {
+    fn prepare_migrations(&mut self) -> Result<(), postgres::Error> {
         let query = "CREATE SCHEMA IF NOT EXISTS neon_migration";
         self.client.simple_query(query)?;
 
@@ -54,10 +48,20 @@ impl<'m> MigrationRunner<'m> {
         Ok(())
     }
 
-    pub fn run_migrations(mut self) -> Result<()> {
-        self.prepare_migrations()?;
+    pub fn run_migrations(mut self) -> Result<(), postgres::Error> {
+        if let Err(e) = self.prepare_migrations() {
+            error!("Failed to prepare the migration relations: {}", e);
+            return Err(e);
+        }
 
-        let mut current_migration = self.get_migration_id()? as usize;
+        let mut current_migration = match self.get_migration_id() {
+            Ok(id) => id as usize,
+            Err(e) => {
+                error!("Failed to get the current migration id: {}", e);
+                return Err(e);
+            }
+        };
+
         while current_migration < self.migrations.len() {
             macro_rules! migration_id {
                 ($cm:expr) => {
@@ -76,23 +80,30 @@ impl<'m> MigrationRunner<'m> {
                     migration
                 );
 
-                self.client
-                    .simple_query("BEGIN")
-                    .context("begin migration")?;
+                if let Err(e) = self.client.simple_query("BEGIN") {
+                    error!("Failed to begin the migration transaction: {}", e);
+                    return Err(e);
+                }
 
-                self.client.simple_query(migration).with_context(|| {
-                    format!(
-                        "run_migrations migration id={}",
-                        migration_id!(current_migration)
-                    )
-                })?;
+                if let Err(e) = self.client.simple_query(migration) {
+                    error!("Failed to run the migration: {}", e);
+                    return Err(e);
+                }
 
                 // Migration IDs start at 1
-                self.update_migration_id(migration_id!(current_migration))?;
+                if let Err(e) = self.update_migration_id(migration_id!(current_migration)) {
+                    error!(
+                        "Failed to update the migration id to {}: {}",
+                        migration_id!(current_migration),
+                        e
+                    );
+                    return Err(e);
+                }
 
-                self.client
-                    .simple_query("COMMIT")
-                    .context("commit migration")?;
+                if let Err(e) = self.client.simple_query("COMMIT") {
+                    error!("Failed to commit the migration transaction: {}", e);
+                    return Err(e);
+                }
 
                 info!("Finished migration id={}", migration_id!(current_migration));
             }
