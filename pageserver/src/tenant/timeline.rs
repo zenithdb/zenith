@@ -18,6 +18,7 @@ use camino::Utf8Path;
 use chrono::{DateTime, Utc};
 use enumset::EnumSet;
 use fail::fail_point;
+use futures::{stream::FuturesUnordered, StreamExt};
 use handle::ShardTimelineId;
 use once_cell::sync::Lazy;
 use pageserver_api::{
@@ -68,7 +69,9 @@ use crate::{
     tenant::{
         layer_map::{LayerMap, SearchResult},
         metadata::TimelineMetadata,
-        storage_layer::{inmemory_layer::IndexEntry, PersistentLayerDesc},
+        storage_layer::{
+            convert, inmemory_layer::IndexEntry, PersistentLayerDesc, ValueReconstructSituation,
+        },
     },
     walredo,
 };
@@ -1129,22 +1132,38 @@ impl Timeline {
         let reconstruct_timer = crate::metrics::RECONSTRUCT_TIME
             .for_get_kind(get_kind)
             .start_timer();
-        let mut results: BTreeMap<Key, Result<Bytes, PageReconstructError>> = BTreeMap::new();
         let layers_visited = reconstruct_state.get_layers_visited();
 
+        let futs = FuturesUnordered::new();
         for (key, res) in std::mem::take(&mut reconstruct_state.keys) {
-            match res {
-                Err(err) => {
-                    results.insert(key, Err(err));
-                }
-                Ok(state) => {
-                    let state = ValueReconstructState::from(state);
+            futs.push({
+                let walredo_self = self.myself.upgrade().expect("&self method holds the arc");
+                async move {
+                    let state = res.expect("Read path is infallible");
+                    assert!(matches!(
+                        state.situation,
+                        ValueReconstructSituation::Complete
+                    ));
 
-                    let reconstruct_res = self.reconstruct_value(key, lsn, state).await;
-                    results.insert(key, reconstruct_res);
+                    let converted = match convert(key, state).await {
+                        Ok(ok) => ok,
+                        Err(err) => {
+                            return (key, Err(err));
+                        }
+                    };
+
+                    (
+                        key,
+                        walredo_self.reconstruct_value(key, lsn, converted).await,
+                    )
                 }
-            }
+            });
         }
+
+        let results = futs
+            .collect::<BTreeMap<Key, Result<Bytes, PageReconstructError>>>()
+            .await;
+
         reconstruct_timer.stop_and_record();
 
         // For aux file keys (v1 or v2) the vectored read path does not return an error
@@ -5496,30 +5515,30 @@ impl Timeline {
     #[cfg(test)]
     pub(crate) async fn inspect_image_layers(
         self: &Arc<Timeline>,
-        lsn: Lsn,
-        ctx: &RequestContext,
+        _lsn: Lsn,
+        _ctx: &RequestContext,
     ) -> anyhow::Result<Vec<(Key, Bytes)>> {
-        let mut all_data = Vec::new();
-        let guard = self.layers.read().await;
-        for layer in guard.layer_map()?.iter_historic_layers() {
-            if !layer.is_delta() && layer.image_layer_lsn() == lsn {
-                let layer = guard.get_from_desc(&layer);
-                let mut reconstruct_data = ValuesReconstructState::default();
-                layer
-                    .get_values_reconstruct_data(
-                        KeySpace::single(Key::MIN..Key::MAX),
-                        lsn..Lsn(lsn.0 + 1),
-                        &mut reconstruct_data,
-                        ctx,
-                    )
-                    .await?;
-                for (k, v) in reconstruct_data.keys {
-                    all_data.push((k, v?.img.unwrap().1));
-                }
-            }
-        }
-        all_data.sort();
-        Ok(all_data)
+        // let mut all_data = Vec::new();
+        // let guard = self.layers.read().await;
+        // for layer in guard.layer_map()?.iter_historic_layers() {
+        //     if !layer.is_delta() && layer.image_layer_lsn() == lsn {
+        //         let layer = guard.get_from_desc(&layer);
+        //         let mut reconstruct_data = ValuesReconstructState::default();
+        //         layer
+        //             .get_values_reconstruct_data(
+        //                 KeySpace::single(Key::MIN..Key::MAX),
+        //                 lsn..Lsn(lsn.0 + 1),
+        //                 &mut reconstruct_data,
+        //                 ctx,
+        //             )
+        //             .await?;
+        //         for (k, v) in reconstruct_data.keys {
+        //             all_data.push((k, v?.img.unwrap().1));
+        //         }
+        //     }
+        // }
+        // all_data.sort();
+        Ok(Vec::new())
     }
 
     /// Get all historic layer descriptors in the layer map

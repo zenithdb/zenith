@@ -73,6 +73,21 @@ impl ValueBytes {
 
         Ok(raw[8] == 1)
     }
+
+    pub(crate) fn is_image(raw: &[u8]) -> Result<bool, InvalidInput> {
+        if raw.len() < 12 {
+            return Err(InvalidInput::TooShortValue);
+        }
+
+        let value_discriminator = &raw[0..4];
+
+        if value_discriminator == [0, 0, 0, 0] {
+            // Value::Image always initializes
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
 }
 
 #[cfg(test)]

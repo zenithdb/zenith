@@ -1185,6 +1185,7 @@ struct GlobalAndPerTimelineHistogramTimer<'a, 'c> {
     ctx: &'c RequestContext,
     start: std::time::Instant,
     op: SmgrQueryType,
+    count: usize,
 }
 
 impl<'a, 'c> Drop for GlobalAndPerTimelineHistogramTimer<'a, 'c> {
@@ -1212,9 +1213,11 @@ impl<'a, 'c> Drop for GlobalAndPerTimelineHistogramTimer<'a, 'c> {
                 elapsed
             }
         };
-        self.global_metric.observe(ex_throttled.as_secs_f64());
-        if let Some(timeline_metric) = self.timeline_metric {
-            timeline_metric.observe(ex_throttled.as_secs_f64());
+        for _ in 0..self.count {
+            self.global_metric.observe(ex_throttled.as_secs_f64());
+            if let Some(timeline_metric) = self.timeline_metric {
+                timeline_metric.observe(ex_throttled.as_secs_f64());
+            }
         }
     }
 }
@@ -1344,6 +1347,14 @@ impl SmgrQueryTimePerTimeline {
         op: SmgrQueryType,
         ctx: &'c RequestContext,
     ) -> Option<impl Drop + '_> {
+        self.start_timer_many(op, 1, ctx)
+    }
+    pub(crate) fn start_timer_many<'c: 'a, 'a>(
+        &'a self,
+        op: SmgrQueryType,
+        count: usize,
+        ctx: &'c RequestContext,
+    ) -> Option<impl Drop + '_> {
         let global_metric = &self.global_metrics[op as usize];
         let start = Instant::now();
         match ctx.micros_spent_throttled.open() {
@@ -1376,6 +1387,7 @@ impl SmgrQueryTimePerTimeline {
             ctx,
             start,
             op,
+            count,
         })
     }
 }
@@ -3169,6 +3181,16 @@ static TOKIO_EXECUTOR_THREAD_COUNT: Lazy<UIntGaugeVec> = Lazy::new(|| {
     )
     .unwrap()
 });
+
+pub(crate) static CONSECUTIVE_NONBLOCKING_GETPAGE_REQUESTS_HISTOGRAM: Lazy<Histogram> =
+    Lazy::new(|| {
+        register_histogram!(
+            "pageserver_consecutive_nonblocking_getpage_requests",
+            "Number of consecutive nonblocking getpage requests",
+            (0..=256).map(|x| x as f64).collect::<Vec<f64>>(),
+        )
+        .unwrap()
+    });
 
 pub(crate) fn set_tokio_runtime_setup(setup: &str, num_threads: NonZeroUsize) {
     static SERIALIZE: std::sync::Mutex<()> = std::sync::Mutex::new(());

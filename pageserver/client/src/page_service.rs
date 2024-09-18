@@ -142,11 +142,16 @@ impl PagestreamClient {
     ) -> anyhow::Result<PagestreamGetPageResponse> {
         let req = PagestreamFeMessage::GetPage(req);
         let req: bytes::Bytes = req.serialize();
-        // let mut req = tokio_util::io::ReaderStream::new(&req);
-        let mut req = tokio_stream::once(Ok(req));
 
-        self.copy_both.send_all(&mut req).await?;
+        for i in 0..10 {
+            let mut req = tokio_stream::once(Ok(req.clone()));
+            self.copy_both.send_all(&mut req).await?;
+        }
 
+        for i in 0..9 {
+            let next: Option<Result<bytes::Bytes, _>> = self.copy_both.next().await;
+            let next: bytes::Bytes = next.unwrap()?;
+        }
         let next: Option<Result<bytes::Bytes, _>> = self.copy_both.next().await;
         let next: bytes::Bytes = next.unwrap()?;
 
