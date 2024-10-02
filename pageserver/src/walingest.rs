@@ -1199,6 +1199,7 @@ impl WalIngest {
                 } else {
                     cp.oldestActiveXid = xlog_checkpoint.oldestActiveXid;
                 }
+                cp.redo = xlog_checkpoint.redo;
 
                 // Write a new checkpoint key-value pair on every checkpoint record, even
                 // if nothing really changed. Not strictly required, but it seems nice to

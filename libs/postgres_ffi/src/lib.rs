@@ -231,7 +231,8 @@ pub use v14::bindings::{TimeLineID, TimestampTz, XLogRecPtr, XLogSegNo};
 pub use v14::bindings::{MultiXactOffset, MultiXactStatus};
 pub use v14::bindings::{PageHeaderData, XLogRecord};
 pub use v14::xlog_utils::{
-    XLOG_SIZE_OF_XLOG_LONG_PHD, XLOG_SIZE_OF_XLOG_RECORD, XLOG_SIZE_OF_XLOG_SHORT_PHD,
+    SIZEOF_CHECKPOINT, XLOG_SIZE_OF_XLOG_LONG_PHD, XLOG_SIZE_OF_XLOG_RECORD,
+    XLOG_SIZE_OF_XLOG_SHORT_PHD,
 };
 
 pub use v14::bindings::{CheckPoint, ControlFileData};

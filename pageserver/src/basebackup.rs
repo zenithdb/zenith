@@ -29,13 +29,16 @@ use crate::tenant::storage_layer::IoConcurrency;
 use crate::tenant::Timeline;
 use pageserver_api::reltag::{RelTag, SlruKind};
 
-use postgres_ffi::dispatch_pgversion;
 use postgres_ffi::pg_constants::{DEFAULTTABLESPACE_OID, GLOBALTABLESPACE_OID};
 use postgres_ffi::pg_constants::{PGDATA_SPECIAL_FILES, PG_HBA};
 use postgres_ffi::relfile_utils::{INIT_FORKNUM, MAIN_FORKNUM};
 use postgres_ffi::XLogFileName;
 use postgres_ffi::PG_TLI;
-use postgres_ffi::{BLCKSZ, RELSEG_SIZE, WAL_SEGMENT_SIZE};
+use postgres_ffi::{dispatch_pgversion, CheckPoint};
+use postgres_ffi::{
+    BLCKSZ, RELSEG_SIZE, SIZEOF_CHECKPOINT, WAL_SEGMENT_SIZE, XLOG_BLCKSZ,
+    XLOG_SIZE_OF_XLOG_LONG_PHD, XLOG_SIZE_OF_XLOG_RECORD, XLOG_SIZE_OF_XLOG_SHORT_PHD,
+};
 use utils::lsn::Lsn;
 
 #[derive(Debug, thiserror::Error)]
@@ -264,6 +267,29 @@ where
     async fn send_tarball(mut self) -> Result<(), BasebackupError> {
         // TODO include checksum
 
+        let checkpoint = CheckPoint::decode(
+            &self
+                .timeline
+                .get_checkpoint(self.lsn, self.ctx)
+                .await
+                .context("failed to get checkpoint bytes")?,
+        )
+        .context("deserialize checkpoint")?;
+        let checkpoint_end =
+            checkpoint.redo + ((XLOG_SIZE_OF_XLOG_RECORD + 8 + SIZEOF_CHECKPOINT) as u64);
+        let checkpoint_end_lsn = Lsn(checkpoint_end
+            + (if (XLOG_BLCKSZ as u64) - checkpoint.redo % (XLOG_BLCKSZ as u64)
+                < (SIZEOF_CHECKPOINT as u64)
+            {
+                if (checkpoint_end & ((WAL_SEGMENT_SIZE - 1) as u64)) < (XLOG_BLCKSZ as u64) {
+                    XLOG_SIZE_OF_XLOG_LONG_PHD
+                } else {
+                    XLOG_SIZE_OF_XLOG_SHORT_PHD
+                }
+            } else {
+                0
+            }) as u64);
+
         let lazy_slru_download = self.timeline.get_lazy_slru_download() && !self.full_backup;
 
         let pgversion = self.timeline.pg_version;
@@ -401,6 +427,11 @@ where
                 // In future we will not generate AUX record for "pg_logical/replorigin_checkpoint" at all,
                 // but now we should handle (skip) it for backward compatibility.
                 continue;
+            } else if path == "pg_stat/pgstat.stat" {
+                if checkpoint_end_lsn != self.lsn {
+                    // Drop statistic in case of abnormal termination (shtiodown checkopint was not written
+                    continue;
+                }
             }
             let header = new_tar_header(&path, content.len() as u64)?;
             self.ar
