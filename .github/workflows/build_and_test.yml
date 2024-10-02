@@ -333,7 +333,7 @@ jobs:
           test_selection: performance
           run_in_parallel: false
           save_perf_report: ${{ github.ref_name == 'main' }}
-          extra_params: --splits 5 --group ${{ matrix.pytest_split_group }}
+          extra_params: --splits 5 --group ${{ matrix.pytest_split_group }} --splitting-algorithm least_duration
           benchmark_durations: ${{ needs.get-benchmarks-durations.outputs.json }}
           pg_version: v16
         env:

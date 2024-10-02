@@ -35,7 +35,7 @@ pytest-httpserver = "^1.0.8"
 aiohttp = "3.10.2"
 pytest-rerunfailures = "^13.0"
 types-pytest-lazy-fixture = "^0.6.3.3"
-pytest-split = "^0.8.1"
+pytest-split = "^0.9.0"
 zstandard = "^0.21.0"
 httpx = {extras = ["http2"], version = "^0.26.0"}
 pytest-repeat = "^0.9.3"
