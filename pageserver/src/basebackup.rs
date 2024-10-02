@@ -289,6 +289,7 @@ where
             } else {
                 0
             }) as u64);
+        let normal_shutdown = checkpoint_end_lsn == self.lsn;
 
         let lazy_slru_download = self.timeline.get_lazy_slru_download() && !self.full_backup;
 
@@ -427,11 +428,9 @@ where
                 // In future we will not generate AUX record for "pg_logical/replorigin_checkpoint" at all,
                 // but now we should handle (skip) it for backward compatibility.
                 continue;
-            } else if path == "pg_stat/pgstat.stat" {
-                if checkpoint_end_lsn != self.lsn {
-                    // Drop statistic in case of abnormal termination (shtiodown checkopint was not written
-                    continue;
-                }
+            } else if path == "pg_stat/pgstat.stat" && !normal_shutdown {
+                // Drop statistic in case of abnormal termination (shtiodown checkopint was not written
+                continue;
             }
             let header = new_tar_header(&path, content.len() as u64)?;
             self.ar
