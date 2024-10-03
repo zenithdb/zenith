@@ -267,29 +267,29 @@ where
     async fn send_tarball(mut self) -> Result<(), BasebackupError> {
         // TODO include checksum
 
-        let checkpoint = CheckPoint::decode(
-            &self
-                .timeline
-                .get_checkpoint(self.lsn, self.ctx)
-                .await
-                .context("failed to get checkpoint bytes")?,
-        )
-        .context("deserialize checkpoint")?;
-        let checkpoint_end =
-            checkpoint.redo + ((XLOG_SIZE_OF_XLOG_RECORD + 8 + SIZEOF_CHECKPOINT) as u64);
-        let checkpoint_end_lsn = Lsn(checkpoint_end
-            + (if (XLOG_BLCKSZ as u64) - checkpoint.redo % (XLOG_BLCKSZ as u64)
-                < (SIZEOF_CHECKPOINT as u64)
-            {
-                if (checkpoint_end & ((WAL_SEGMENT_SIZE - 1) as u64)) < (XLOG_BLCKSZ as u64) {
-                    XLOG_SIZE_OF_XLOG_LONG_PHD
+        let normal_shutdown = if let Ok(checkpoint_bytes) =
+            self.timeline.get_checkpoint(self.lsn, self.ctx).await
+        {
+            let checkpoint =
+                CheckPoint::decode(&checkpoint_bytes).context("deserialize checkpoint")?;
+            let checkpoint_end =
+                checkpoint.redo + ((XLOG_SIZE_OF_XLOG_RECORD + 8 + SIZEOF_CHECKPOINT) as u64);
+            let checkpoint_end_lsn = Lsn(checkpoint_end
+                + (if (XLOG_BLCKSZ as u64) - checkpoint.redo % (XLOG_BLCKSZ as u64)
+                    < (SIZEOF_CHECKPOINT as u64)
+                {
+                    if (checkpoint_end & ((WAL_SEGMENT_SIZE - 1) as u64)) < (XLOG_BLCKSZ as u64) {
+                        XLOG_SIZE_OF_XLOG_LONG_PHD
+                    } else {
+                        XLOG_SIZE_OF_XLOG_SHORT_PHD
+                    }
                 } else {
-                    XLOG_SIZE_OF_XLOG_SHORT_PHD
-                }
-            } else {
-                0
-            }) as u64);
-        let normal_shutdown = checkpoint_end_lsn == self.lsn;
+                    0
+                }) as u64);
+            checkpoint_end_lsn == self.lsn
+        } else {
+            false
+        };
 
         let lazy_slru_download = self.timeline.get_lazy_slru_download() && !self.full_backup;
 
