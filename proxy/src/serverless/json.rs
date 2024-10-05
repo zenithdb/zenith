@@ -1,18 +1,534 @@
+use std::fmt;
+use std::marker::PhantomData;
+use std::ops::Range;
+
+use itertools::Itertools;
+use serde::de;
+use serde::de::DeserializeSeed;
+use serde::Deserialize;
+use serde::Deserializer;
 use serde_json::Map;
 use serde_json::Value;
 use tokio_postgres::types::Kind;
 use tokio_postgres::types::Type;
 use tokio_postgres::Row;
 
-//
-// Convert json non-string types to strings, so that they can be passed to Postgres
-// as parameters.
-//
-pub(crate) fn json_to_pg_text(json: Vec<Value>) -> Vec<Option<String>> {
-    json.iter().map(json_value_to_pg_text).collect()
+use super::sql_over_http::BatchQueryData;
+use super::sql_over_http::Payload;
+use super::sql_over_http::QueryData;
+
+#[derive(Clone, Copy)]
+pub struct Slice {
+    pub start: u32,
+    pub len: u32,
 }
 
-fn json_value_to_pg_text(value: &Value) -> Option<String> {
+impl Slice {
+    pub fn into_range(self) -> Range<usize> {
+        let start = self.start as usize;
+        let end = start + self.len as usize;
+        start..end
+    }
+}
+
+#[derive(Default)]
+pub struct Arena {
+    pub str_arena: String,
+    pub params_arena: Vec<Option<Slice>>,
+}
+
+impl Arena {
+    fn alloc_str(&mut self, s: &str) -> Slice {
+        let start = self.str_arena.len() as u32;
+        let len = s.len() as u32;
+        self.str_arena.push_str(s);
+        Slice { start, len }
+    }
+}
+
+pub struct SerdeArena<'a, T> {
+    pub arena: &'a mut Arena,
+    pub _t: PhantomData<T>,
+}
+
+impl<'a, T> SerdeArena<'a, T> {
+    fn alloc_str(&mut self, s: &str) -> Slice {
+        self.arena.alloc_str(s)
+    }
+}
+
+impl<'a, 'de> DeserializeSeed<'de> for SerdeArena<'a, Vec<QueryData>> {
+    type Value = Vec<QueryData>;
+    fn deserialize<D>(self, d: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct VecVisitor<'a>(SerdeArena<'a, Vec<QueryData>>);
+
+        impl<'a, 'de> de::Visitor<'de> for VecVisitor<'a> {
+            type Value = Vec<QueryData>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a sequence")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::SeqAccess<'de>,
+            {
+                let mut values = Vec::new();
+
+                while let Some(value) = seq.next_element_seed(SerdeArena {
+                    arena: &mut *self.0.arena,
+                    _t: PhantomData::<QueryData>,
+                })? {
+                    values.push(value);
+                }
+
+                Ok(values)
+            }
+        }
+
+        d.deserialize_seq(VecVisitor(self))
+    }
+}
+
+impl<'a, 'de> DeserializeSeed<'de> for SerdeArena<'a, Slice> {
+    type Value = Slice;
+    fn deserialize<D>(self, d: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor<'a>(SerdeArena<'a, Slice>);
+
+        impl<'a, 'de> de::Visitor<'de> for Visitor<'a> {
+            type Value = Slice;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a string")
+            }
+
+            fn visit_str<E>(mut self, v: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(self.0.alloc_str(v))
+            }
+        }
+
+        d.deserialize_str(Visitor(self))
+    }
+}
+
+enum States {
+    Empty,
+    HasQueries(Vec<QueryData>),
+    HasPartialQueryData {
+        query: Option<Slice>,
+        params: Option<Slice>,
+        #[allow(clippy::option_option)]
+        array_mode: Option<Option<bool>>,
+    },
+}
+
+enum Field {
+    Queries,
+    Query,
+    Params,
+    ArrayMode,
+    Ignore,
+}
+
+struct FieldVisitor;
+
+impl<'de> de::Visitor<'de> for FieldVisitor {
+    type Value = Field;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(
+            r#"a JSON object string of either "query", "params", "arrayMode", or "queries"."#,
+        )
+    }
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.visit_bytes(v.as_bytes())
+    }
+    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        match v {
+            b"queries" => Ok(Field::Queries),
+            b"query" => Ok(Field::Query),
+            b"params" => Ok(Field::Params),
+            b"arrayMode" => Ok(Field::ArrayMode),
+            _ => Ok(Field::Ignore),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Field {
+    #[inline]
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        d.deserialize_identifier(FieldVisitor)
+    }
+}
+
+impl<'a, 'de> DeserializeSeed<'de> for SerdeArena<'a, QueryData> {
+    type Value = QueryData;
+    fn deserialize<D>(self, d: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor<'a>(SerdeArena<'a, QueryData>);
+        impl<'a, 'de> de::Visitor<'de> for Visitor<'a> {
+            type Value = QueryData;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str(
+                    "a json object containing either a query object, or a list of query objects",
+                )
+            }
+            #[inline]
+            fn visit_map<A>(self, mut m: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let mut state = States::Empty;
+
+                while let Some(key) = m.next_key()? {
+                    match key {
+                        Field::Query => {
+                            let (params, array_mode) = match state {
+                                States::HasQueries(_) => unreachable!(),
+                                States::HasPartialQueryData { query: Some(_), .. } => {
+                                    return Err(<A::Error as de::Error>::duplicate_field("query"))
+                                }
+                                States::Empty => (None, None),
+                                States::HasPartialQueryData {
+                                    query: None,
+                                    params,
+                                    array_mode,
+                                } => (params, array_mode),
+                            };
+                            state = States::HasPartialQueryData {
+                                query: Some(m.next_value_seed(SerdeArena {
+                                    arena: &mut *self.0.arena,
+                                    _t: PhantomData::<Slice>,
+                                })?),
+                                params,
+                                array_mode,
+                            };
+                        }
+                        Field::Params => {
+                            let (query, array_mode) = match state {
+                                States::HasQueries(_) => unreachable!(),
+                                States::HasPartialQueryData {
+                                    params: Some(_), ..
+                                } => {
+                                    return Err(<A::Error as de::Error>::duplicate_field("params"))
+                                }
+                                States::Empty => (None, None),
+                                States::HasPartialQueryData {
+                                    query,
+                                    params: None,
+                                    array_mode,
+                                } => (query, array_mode),
+                            };
+
+                            let params = m.next_value::<PgText>()?.value;
+                            let start = self.0.arena.params_arena.len() as u32;
+                            let len = params.len() as u32;
+                            for param in params {
+                                match param {
+                                    Some(s) => {
+                                        let s = self.0.arena.alloc_str(&s);
+                                        self.0.arena.params_arena.push(Some(s));
+                                    }
+                                    None => self.0.arena.params_arena.push(None),
+                                }
+                            }
+
+                            state = States::HasPartialQueryData {
+                                query,
+                                params: Some(Slice { start, len }),
+                                array_mode,
+                            };
+                        }
+                        Field::ArrayMode => {
+                            let (query, params) = match state {
+                                States::HasQueries(_) => unreachable!(),
+                                States::HasPartialQueryData {
+                                    array_mode: Some(_),
+                                    ..
+                                } => {
+                                    return Err(<A::Error as de::Error>::duplicate_field(
+                                        "arrayMode",
+                                    ))
+                                }
+                                States::Empty => (None, None),
+                                States::HasPartialQueryData {
+                                    query,
+                                    params,
+                                    array_mode: None,
+                                } => (query, params),
+                            };
+                            state = States::HasPartialQueryData {
+                                query,
+                                params,
+                                array_mode: Some(m.next_value()?),
+                            };
+                        }
+                        Field::Queries | Field::Ignore => {
+                            let _ = m.next_value::<de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                match state {
+                    States::HasQueries(_) => unreachable!(),
+                    States::HasPartialQueryData {
+                        query: Some(query),
+                        params: Some(params),
+                        array_mode,
+                    } => Ok(QueryData {
+                        query,
+                        params,
+                        array_mode: array_mode.unwrap_or_default(),
+                    }),
+                    States::Empty | States::HasPartialQueryData { query: None, .. } => {
+                        Err(<A::Error as de::Error>::missing_field("query"))
+                    }
+                    States::HasPartialQueryData { params: None, .. } => {
+                        Err(<A::Error as de::Error>::missing_field("params"))
+                    }
+                }
+            }
+        }
+
+        Deserializer::deserialize_struct(
+            d,
+            "QueryData",
+            &["query", "params", "arrayMode"],
+            Visitor(self),
+        )
+    }
+}
+
+impl<'a, 'de> DeserializeSeed<'de> for SerdeArena<'a, Payload> {
+    type Value = Payload;
+    fn deserialize<D>(self, d: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor<'a>(SerdeArena<'a, Payload>);
+        impl<'a, 'de> de::Visitor<'de> for Visitor<'a> {
+            type Value = Payload;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str(
+                    "a json object containing either a query object, or a list of query objects",
+                )
+            }
+            #[inline]
+            fn visit_map<A>(self, mut m: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let mut state = States::Empty;
+
+                while let Some(key) = m.next_key()? {
+                    match key {
+                        Field::Queries => match state {
+                            States::Empty => {
+                                state = States::HasQueries(m.next_value_seed(SerdeArena {
+                                    arena: &mut *self.0.arena,
+                                    _t: PhantomData::<Vec<QueryData>>,
+                                })?);
+                            }
+                            States::HasQueries(_) => {
+                                return Err(<A::Error as de::Error>::duplicate_field("queries"))
+                            }
+                            States::HasPartialQueryData { .. } => {
+                                return Err(<A::Error as de::Error>::unknown_field(
+                                    "queries",
+                                    &["query", "params", "arrayMode"],
+                                ))
+                            }
+                        },
+                        Field::Query => {
+                            let (params, array_mode) = match state {
+                                States::HasQueries(_) => {
+                                    return Err(<A::Error as de::Error>::unknown_field(
+                                        "query",
+                                        &["queries"],
+                                    ))
+                                }
+                                States::HasPartialQueryData { query: Some(_), .. } => {
+                                    return Err(<A::Error as de::Error>::duplicate_field("query"))
+                                }
+                                States::Empty => (None, None),
+                                States::HasPartialQueryData {
+                                    query: None,
+                                    params,
+                                    array_mode,
+                                } => (params, array_mode),
+                            };
+                            state = States::HasPartialQueryData {
+                                query: Some(m.next_value_seed(SerdeArena {
+                                    arena: &mut *self.0.arena,
+                                    _t: PhantomData::<Slice>,
+                                })?),
+                                params,
+                                array_mode,
+                            };
+                        }
+                        Field::Params => {
+                            let (query, array_mode) = match state {
+                                States::HasQueries(_) => {
+                                    return Err(<A::Error as de::Error>::unknown_field(
+                                        "params",
+                                        &["queries"],
+                                    ))
+                                }
+                                States::HasPartialQueryData {
+                                    params: Some(_), ..
+                                } => {
+                                    return Err(<A::Error as de::Error>::duplicate_field("params"))
+                                }
+                                States::Empty => (None, None),
+                                States::HasPartialQueryData {
+                                    query,
+                                    params: None,
+                                    array_mode,
+                                } => (query, array_mode),
+                            };
+
+                            let params = m.next_value::<PgText>()?.value;
+                            let start = self.0.arena.params_arena.len() as u32;
+                            let len = params.len() as u32;
+                            for param in params {
+                                match param {
+                                    Some(s) => {
+                                        let s = self.0.arena.alloc_str(&s);
+                                        self.0.arena.params_arena.push(Some(s));
+                                    }
+                                    None => self.0.arena.params_arena.push(None),
+                                }
+                            }
+
+                            state = States::HasPartialQueryData {
+                                query,
+                                params: Some(Slice { start, len }),
+                                array_mode,
+                            };
+                        }
+                        Field::ArrayMode => {
+                            let (query, params) = match state {
+                                States::HasQueries(_) => {
+                                    return Err(<A::Error as de::Error>::unknown_field(
+                                        "arrayMode",
+                                        &["queries"],
+                                    ))
+                                }
+                                States::HasPartialQueryData {
+                                    array_mode: Some(_),
+                                    ..
+                                } => {
+                                    return Err(<A::Error as de::Error>::duplicate_field(
+                                        "arrayMode",
+                                    ))
+                                }
+                                States::Empty => (None, None),
+                                States::HasPartialQueryData {
+                                    query,
+                                    params,
+                                    array_mode: None,
+                                } => (query, params),
+                            };
+                            state = States::HasPartialQueryData {
+                                query,
+                                params,
+                                array_mode: Some(m.next_value()?),
+                            };
+                        }
+                        Field::Ignore => {
+                            let _ = m.next_value::<de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                match state {
+                    States::HasQueries(queries) => Ok(Payload::Batch(BatchQueryData { queries })),
+                    States::HasPartialQueryData {
+                        query: Some(query),
+                        params: Some(params),
+                        array_mode,
+                    } => Ok(Payload::Single(QueryData {
+                        query,
+                        params,
+                        array_mode: array_mode.unwrap_or_default(),
+                    })),
+                    States::Empty | States::HasPartialQueryData { query: None, .. } => {
+                        Err(<A::Error as de::Error>::missing_field("query"))
+                    }
+                    States::HasPartialQueryData { params: None, .. } => {
+                        Err(<A::Error as de::Error>::missing_field("params"))
+                    }
+                }
+            }
+        }
+
+        Deserializer::deserialize_struct(
+            d,
+            "Payload",
+            &["queries", "query", "params", "arrayMode"],
+            Visitor(self),
+        )
+    }
+}
+
+struct PgText {
+    value: Vec<Option<String>>,
+}
+
+impl<'de> Deserialize<'de> for PgText {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct VecVisitor;
+
+        impl<'de> de::Visitor<'de> for VecVisitor {
+            type Value = Vec<Option<String>>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a sequence of postgres parameters")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Vec<Option<String>>, A::Error>
+            where
+                A: de::SeqAccess<'de>,
+            {
+                let mut values = Vec::new();
+
+                // TODO: consider avoiding the allocations for json::Value here.
+                while let Some(value) = seq.next_element()? {
+                    values.push(json_value_to_pg_text(value));
+                }
+
+                Ok(values)
+            }
+        }
+
+        let value = d.deserialize_seq(VecVisitor)?;
+
+        Ok(PgText { value })
+    }
+}
+
+fn json_value_to_pg_text(value: Value) -> Option<String> {
     match value {
         // special care for nulls
         Value::Null => None,
@@ -21,10 +537,10 @@ fn json_value_to_pg_text(value: &Value) -> Option<String> {
         v @ (Value::Bool(_) | Value::Number(_) | Value::Object(_)) => Some(v.to_string()),
 
         // avoid escaping here, as we pass this as a parameter
-        Value::String(s) => Some(s.to_string()),
+        Value::String(s) => Some(s),
 
         // special care for arrays
-        Value::Array(_) => json_array_to_pg_array(value),
+        Value::Array(arr) => Some(json_array_to_pg_array(arr)),
     }
 }
 
@@ -36,7 +552,17 @@ fn json_value_to_pg_text(value: &Value) -> Option<String> {
 //
 // Example of the same escaping in node-postgres: packages/pg/lib/utils.js
 //
-fn json_array_to_pg_array(value: &Value) -> Option<String> {
+fn json_array_to_pg_array(arr: Vec<Value>) -> String {
+    let vals = arr
+        .into_iter()
+        .map(json_array_value_to_pg_array)
+        .map(|v| v.unwrap_or_else(|| "NULL".to_string()))
+        .join(",");
+
+    format!("{{{vals}}}")
+}
+
+fn json_array_value_to_pg_array(value: Value) -> Option<String> {
     match value {
         // special care for nulls
         Value::Null => None,
@@ -44,19 +570,10 @@ fn json_array_to_pg_array(value: &Value) -> Option<String> {
         // convert to text with escaping
         // here string needs to be escaped, as it is part of the array
         v @ (Value::Bool(_) | Value::Number(_) | Value::String(_)) => Some(v.to_string()),
-        v @ Value::Object(_) => json_array_to_pg_array(&Value::String(v.to_string())),
+        v @ Value::Object(_) => json_array_value_to_pg_array(Value::String(v.to_string())),
 
         // recurse into array
-        Value::Array(arr) => {
-            let vals = arr
-                .iter()
-                .map(json_array_to_pg_array)
-                .map(|v| v.unwrap_or_else(|| "NULL".to_string()))
-                .collect::<Vec<_>>()
-                .join(",");
-
-            Some(format!("{{{vals}}}"))
-        }
+        Value::Array(arr) => Some(json_array_to_pg_array(arr)),
     }
 }
 
@@ -261,24 +778,22 @@ mod tests {
 
     #[test]
     fn test_atomic_types_to_pg_params() {
-        let json = vec![Value::Bool(true), Value::Bool(false)];
-        let pg_params = json_to_pg_text(json);
-        assert_eq!(
-            pg_params,
-            vec![Some("true".to_owned()), Some("false".to_owned())]
-        );
+        let pg_params = json_value_to_pg_text(Value::Bool(true));
+        assert_eq!(pg_params, Some("true".to_owned()));
+        let pg_params = json_value_to_pg_text(Value::Bool(false));
+        assert_eq!(pg_params, Some("false".to_owned()));
 
-        let json = vec![Value::Number(serde_json::Number::from(42))];
-        let pg_params = json_to_pg_text(json);
-        assert_eq!(pg_params, vec![Some("42".to_owned())]);
+        let json = Value::Number(serde_json::Number::from(42));
+        let pg_params = json_value_to_pg_text(json);
+        assert_eq!(pg_params, Some("42".to_owned()));
 
-        let json = vec![Value::String("foo\"".to_string())];
-        let pg_params = json_to_pg_text(json);
-        assert_eq!(pg_params, vec![Some("foo\"".to_owned())]);
+        let json = Value::String("foo\"".to_string());
+        let pg_params = json_value_to_pg_text(json);
+        assert_eq!(pg_params, Some("foo\"".to_owned()));
 
-        let json = vec![Value::Null];
-        let pg_params = json_to_pg_text(json);
-        assert_eq!(pg_params, vec![None]);
+        let json = Value::Null;
+        let pg_params = json_value_to_pg_text(json);
+        assert_eq!(pg_params, None);
     }
 
     #[test]
@@ -286,31 +801,27 @@ mod tests {
         // atoms and escaping
         let json = "[true, false, null, \"NULL\", 42, \"foo\", \"bar\\\"-\\\\\"]";
         let json: Value = serde_json::from_str(json).unwrap();
-        let pg_params = json_to_pg_text(vec![json]);
+        let pg_params = json_value_to_pg_text(json);
         assert_eq!(
             pg_params,
-            vec![Some(
-                "{true,false,NULL,\"NULL\",42,\"foo\",\"bar\\\"-\\\\\"}".to_owned()
-            )]
+            Some("{true,false,NULL,\"NULL\",42,\"foo\",\"bar\\\"-\\\\\"}".to_owned())
         );
 
         // nested arrays
         let json = "[[true, false], [null, 42], [\"foo\", \"bar\\\"-\\\\\"]]";
         let json: Value = serde_json::from_str(json).unwrap();
-        let pg_params = json_to_pg_text(vec![json]);
+        let pg_params = json_value_to_pg_text(json);
         assert_eq!(
             pg_params,
-            vec![Some(
-                "{{true,false},{NULL,42},{\"foo\",\"bar\\\"-\\\\\"}}".to_owned()
-            )]
+            Some("{{true,false},{NULL,42},{\"foo\",\"bar\\\"-\\\\\"}}".to_owned())
         );
         // array of objects
         let json = r#"[{"foo": 1},{"bar": 2}]"#;
         let json: Value = serde_json::from_str(json).unwrap();
-        let pg_params = json_to_pg_text(vec![json]);
+        let pg_params = json_value_to_pg_text(json);
         assert_eq!(
             pg_params,
-            vec![Some(r#"{"{\"foo\":1}","{\"bar\":2}"}"#.to_owned())]
+            Some(r#"{"{\"foo\":1}","{\"bar\":2}"}"#.to_owned())
         );
     }
 

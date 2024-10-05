@@ -9,7 +9,8 @@ use measured::{
     text::TextEncoder,
     LabelGroup, MetricGroup,
 };
-use tikv_jemalloc_ctl::{config, epoch, epoch_mib, stats, version};
+use tikv_jemalloc_ctl::{config, epoch, epoch_mib, stats, version, Access, AsName, Name};
+use tracing::info;
 
 pub struct MetricRecorder {
     epoch: epoch_mib,
@@ -114,3 +115,10 @@ jemalloc_gauge!(mapped, mapped_mib);
 jemalloc_gauge!(metadata, metadata_mib);
 jemalloc_gauge!(resident, resident_mib);
 jemalloc_gauge!(retained, retained_mib);
+
+pub fn inspect_thp() -> Result<(), tikv_jemalloc_ctl::Error> {
+    let opt_thp: &Name = c"opt.thp".to_bytes_with_nul().name();
+    let s: &str = opt_thp.read()?;
+    info!("jemalloc opt.thp {s}");
+    Ok(())
+}

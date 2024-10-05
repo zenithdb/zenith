@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    marker::PhantomData,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -147,14 +148,15 @@ impl JwkCacheEntryLock {
                 Err(e) => tracing::warn!(url=?rule.jwks_url, error=?e, "could not fetch JWKs"),
                 Ok(r) => {
                     let resp: http::Response<reqwest::Body> = r.into();
-                    match parse_json_body_with_limit::<jose_jwk::JwkSet>(
+                    match parse_json_body_with_limit::<jose_jwk::JwkSet, _>(
+                        PhantomData,
                         resp.into_body(),
                         MAX_JWK_BODY_SIZE,
                     )
                     .await
                     {
                         Err(e) => {
-                            tracing::warn!(url=?rule.jwks_url, error=?e, "could not decode JWKs");
+                            tracing::warn!(url=?rule.jwks_url, error=%e, "could not decode JWKs");
                         }
                         Ok(jwks) => {
                             key_sets.insert(

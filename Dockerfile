@@ -42,6 +42,7 @@ COPY --from=pg-build /home/nonroot/pg_install/v17/lib                       pg_i
 COPY --chown=nonroot . .
 
 ARG ADDITIONAL_RUSTFLAGS
+ENV _RJEM_MALLOC_CONF="thp:never"
 RUN set -e \
     && PQ_LIB_DIR=$(pwd)/pg_install/v${STABLE_PG_VERSION}/lib RUSTFLAGS="-Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=-Wl,--no-rosegment ${ADDITIONAL_RUSTFLAGS}" cargo build \
       --bin pg_sni_router  \

@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::pin::pin;
 use std::sync::Arc;
 
@@ -21,8 +22,6 @@ use hyper1::Response;
 use hyper1::StatusCode;
 use hyper1::{HeaderMap, Request};
 use pq_proto::StartupMessageParamsBuilder;
-use serde::Serialize;
-use serde_json::Value;
 use tokio::time;
 use tokio_postgres::error::DbError;
 use tokio_postgres::error::ErrorPosition;
@@ -51,15 +50,18 @@ use crate::context::RequestMonitoring;
 use crate::error::ErrorKind;
 use crate::error::ReportableError;
 use crate::error::UserFacingError;
+use crate::http::parse_json_body_with_limit;
 use crate::metrics::HttpDirection;
 use crate::metrics::Metrics;
 use crate::proxy::run_until_cancelled;
 use crate::proxy::NeonOptions;
-use crate::serverless::backend::HttpConnError;
+use crate::serverless::json::Arena;
+use crate::serverless::json::SerdeArena;
 use crate::usage_metrics::MetricCounterRecorder;
 use crate::DbName;
 use crate::RoleName;
 
+use super::backend::HttpConnError;
 use super::backend::LocalProxyConnError;
 use super::backend::PoolingBackend;
 use super::conn_pool::AuthData;
@@ -67,28 +69,21 @@ use super::conn_pool::Client;
 use super::conn_pool::ConnInfo;
 use super::conn_pool::ConnInfoWithAuth;
 use super::http_util::json_response;
-use super::json::json_to_pg_text;
 use super::json::pg_text_row_to_json;
 use super::json::JsonConversionError;
+use super::json::Slice;
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct QueryData {
-    query: String,
-    #[serde(deserialize_with = "bytes_to_pg_text")]
-    params: Vec<Option<String>>,
-    #[serde(default)]
-    array_mode: Option<bool>,
+pub(crate) struct QueryData {
+    pub(crate) query: Slice,
+    pub(crate) params: Slice,
+    pub(crate) array_mode: Option<bool>,
 }
 
-#[derive(serde::Deserialize)]
-struct BatchQueryData {
-    queries: Vec<QueryData>,
+pub(crate) struct BatchQueryData {
+    pub(crate) queries: Vec<QueryData>,
 }
 
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum Payload {
+pub(crate) enum Payload {
     Single(QueryData),
     Batch(BatchQueryData),
 }
@@ -102,15 +97,6 @@ static TXN_READ_ONLY: HeaderName = HeaderName::from_static("neon-batch-read-only
 static TXN_DEFERRABLE: HeaderName = HeaderName::from_static("neon-batch-deferrable");
 
 static HEADER_VALUE_TRUE: HeaderValue = HeaderValue::from_static("true");
-
-fn bytes_to_pg_text<'de, D>(deserializer: D) -> Result<Vec<Option<String>>, D::Error>
-where
-    D: serde::de::Deserializer<'de>,
-{
-    // TODO: consider avoiding the allocation here.
-    let json: Vec<Value> = serde::de::Deserialize::deserialize(deserializer)?;
-    Ok(json_to_pg_text(json))
-}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ConnInfoError {
@@ -381,7 +367,7 @@ pub(crate) async fn handle(
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SqlOverHttpError {
     #[error("{0}")]
-    ReadPayload(#[from] ReadPayloadError),
+    ReadPayload(ReadPayloadError),
     #[error("{0}")]
     ConnectCompute(#[from] HttpConnError),
     #[error("{0}")]
@@ -435,9 +421,9 @@ impl UserFacingError for SqlOverHttpError {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ReadPayloadError {
     #[error("could not read the HTTP request body: {0}")]
-    Read(#[from] hyper1::Error),
+    Read(hyper1::Error),
     #[error("could not parse the HTTP request body: {0}")]
-    Parse(#[from] serde_json::Error),
+    Parse(serde_json::Error),
 }
 
 impl ReportableError for ReadPayloadError {
@@ -445,6 +431,18 @@ impl ReportableError for ReadPayloadError {
         match self {
             ReadPayloadError::Read(_) => ErrorKind::ClientDisconnect,
             ReadPayloadError::Parse(_) => ErrorKind::User,
+        }
+    }
+}
+
+impl From<crate::http::ReadPayloadError<hyper1::Error>> for SqlOverHttpError {
+    fn from(value: crate::http::ReadPayloadError<hyper1::Error>) -> Self {
+        match value {
+            crate::http::ReadPayloadError::Read(e) => Self::ReadPayload(ReadPayloadError::Read(e)),
+            crate::http::ReadPayloadError::Parse(e) => {
+                Self::ReadPayload(ReadPayloadError::Parse(e))
+            }
+            crate::http::ReadPayloadError::LengthExceeded(x) => Self::RequestTooLarge(x as u64),
         }
     }
 }
@@ -581,16 +579,16 @@ async fn handle_db_inner(
     //
     // Determine the destination and connection params
     //
-    let headers = request.headers();
+    let (parts, body) = request.into_parts();
 
     // Allow connection pooling only if explicitly requested
     // or if we have decided that http pool is no longer opt-in
     let allow_pool = !config.http_config.pool_options.opt_in
-        || headers.get(&ALLOW_POOL) == Some(&HEADER_VALUE_TRUE);
+        || parts.headers.get(&ALLOW_POOL) == Some(&HEADER_VALUE_TRUE);
 
-    let parsed_headers = HttpHeaders::try_parse(headers)?;
+    let parsed_headers = HttpHeaders::try_parse(&parts.headers)?;
 
-    let request_content_length = match request.body().size_hint().upper() {
+    let request_content_length = match body.size_hint().upper() {
         Some(v) => v,
         None => config.http_config.max_request_size_bytes + 1,
     };
@@ -608,15 +606,20 @@ async fn handle_db_inner(
         ));
     }
 
-    let fetch_and_process_request = Box::pin(
-        async {
-            let body = request.into_body().collect().await?.to_bytes();
-            info!(length = body.len(), "request payload read");
-            let payload: Payload = serde_json::from_slice(&body)?;
-            Ok::<Payload, ReadPayloadError>(payload) // Adjust error type accordingly
-        }
-        .map_err(SqlOverHttpError::from),
-    );
+    let fetch_and_process_request = Box::pin(async move {
+        let mut arena = Arena::default();
+        let seed = SerdeArena {
+            arena: &mut arena,
+            _t: PhantomData::<Payload>,
+        };
+        let payload = parse_json_body_with_limit(
+            seed,
+            body,
+            config.http_config.max_request_size_bytes as usize,
+        )
+        .await?;
+        Ok::<(Arena, Payload), SqlOverHttpError>((arena, payload)) // Adjust error type accordingly
+    });
 
     let authenticate_and_connect = Box::pin(
         async {
@@ -659,7 +662,7 @@ async fn handle_db_inner(
         .map_err(SqlOverHttpError::from),
     );
 
-    let (payload, mut client) = match run_until_cancelled(
+    let ((mut arena, payload), mut client) = match run_until_cancelled(
         // Run both operations in parallel
         try_join(
             pin!(fetch_and_process_request),
@@ -673,6 +676,9 @@ async fn handle_db_inner(
         None => return Err(SqlOverHttpError::Cancelled(SqlOverHttpCancel::Connect)),
     };
 
+    arena.params_arena.shrink_to_fit();
+    arena.str_arena.shrink_to_fit();
+
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json");
@@ -680,7 +686,7 @@ async fn handle_db_inner(
     // Now execute the query and return the result.
     let json_output = match payload {
         Payload::Single(stmt) => {
-            stmt.process(config, cancel, &mut client, parsed_headers)
+            stmt.process(config, &arena, cancel, &mut client, parsed_headers)
                 .await?
         }
         Payload::Batch(statements) => {
@@ -698,10 +704,17 @@ async fn handle_db_inner(
             }
 
             statements
-                .process(config, cancel, &mut client, parsed_headers)
+                .process(config, &arena, cancel, &mut client, parsed_headers)
                 .await?
         }
     };
+
+    info!(
+        str_len = arena.str_arena.len(),
+        params = arena.params_arena.len(),
+        response = json_output.len(),
+        "data size"
+    );
 
     let metrics = client.metrics();
 
@@ -790,6 +803,7 @@ impl QueryData {
     async fn process(
         self,
         config: &'static ProxyConfig,
+        arena: &Arena,
         cancel: CancellationToken,
         client: &mut Client<tokio_postgres::Client>,
         parsed_headers: HttpHeaders,
@@ -798,7 +812,14 @@ impl QueryData {
         let cancel_token = inner.cancel_token();
 
         let res = match select(
-            pin!(query_to_json(config, &*inner, self, &mut 0, parsed_headers)),
+            pin!(query_to_json(
+                config,
+                arena,
+                &*inner,
+                self,
+                &mut 0,
+                parsed_headers
+            )),
             pin!(cancel.cancelled()),
         )
         .await
@@ -806,10 +827,7 @@ impl QueryData {
             // The query successfully completed.
             Either::Left((Ok((status, results)), __not_yet_cancelled)) => {
                 discard.check_idle(status);
-
-                let json_output =
-                    serde_json::to_string(&results).expect("json serialization should not fail");
-                Ok(json_output)
+                Ok(results)
             }
             // The query failed with an error
             Either::Left((Err(e), __not_yet_cancelled)) => {
@@ -864,6 +882,7 @@ impl BatchQueryData {
     async fn process(
         self,
         config: &'static ProxyConfig,
+        arena: &Arena,
         cancel: CancellationToken,
         client: &mut Client<tokio_postgres::Client>,
         parsed_headers: HttpHeaders,
@@ -890,6 +909,7 @@ impl BatchQueryData {
 
         let json_output = match query_batch(
             config,
+            arena,
             cancel.child_token(),
             &transaction,
             self,
@@ -934,16 +954,20 @@ impl BatchQueryData {
 
 async fn query_batch(
     config: &'static ProxyConfig,
+    arena: &Arena,
     cancel: CancellationToken,
     transaction: &Transaction<'_>,
     queries: BatchQueryData,
     parsed_headers: HttpHeaders,
 ) -> Result<String, SqlOverHttpError> {
-    let mut results = Vec::with_capacity(queries.queries.len());
+    let mut comma = false;
+    let mut results = r#"{"results":["#.to_string();
+
     let mut current_size = 0;
     for stmt in queries.queries {
         let query = pin!(query_to_json(
             config,
+            arena,
             transaction,
             stmt,
             &mut current_size,
@@ -954,7 +978,11 @@ async fn query_batch(
         match res {
             // TODO: maybe we should check that the transaction bit is set here
             Either::Left((Ok((_, values)), _cancelled)) => {
-                results.push(values);
+                if comma {
+                    results.push(',');
+                }
+                results.push_str(&values);
+                comma = true;
             }
             Either::Left((Err(e), _cancelled)) => {
                 return Err(e);
@@ -965,22 +993,28 @@ async fn query_batch(
         }
     }
 
-    let results = json!({ "results": results });
-    let json_output = serde_json::to_string(&results).expect("json serialization should not fail");
+    results.push_str("]}");
 
-    Ok(json_output)
+    Ok(results)
 }
 
 async fn query_to_json<T: GenericClient>(
     config: &'static ProxyConfig,
+    arena: &Arena,
     client: &T,
     data: QueryData,
     current_size: &mut usize,
     parsed_headers: HttpHeaders,
-) -> Result<(ReadyForQueryStatus, impl Serialize), SqlOverHttpError> {
+) -> Result<(ReadyForQueryStatus, String), SqlOverHttpError> {
     info!("executing query");
-    let query_params = data.params;
-    let mut row_stream = std::pin::pin!(client.query_raw_txt(&data.query, query_params).await?);
+
+    let query_params = arena.params_arena[data.params.into_range()]
+        .iter()
+        .map(|p| p.map(|p| &arena.str_arena[p.into_range()]));
+
+    let query = &arena.str_arena[data.query.into_range()];
+
+    let mut row_stream = std::pin::pin!(client.query_raw_txt(query, query_params).await?);
     info!("finished executing query");
 
     // Manually drain the stream into a vector to leave row_stream hanging
@@ -1049,12 +1083,13 @@ async fn query_to_json<T: GenericClient>(
 
     // Resulting JSON format is based on the format of node-postgres result.
     let results = json!({
-        "command": command_tag_name.to_string(),
+        "command": command_tag_name,
         "rowCount": command_tag_count,
         "rows": rows,
         "fields": fields,
         "rowAsArray": array_mode,
-    });
+    })
+    .to_string();
 
     Ok((ready, results))
 }
