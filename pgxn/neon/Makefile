@@ -62,11 +62,14 @@ libwalproposer.a: $(WALPROP_OBJS)
 # INDENT pointing to pg_bsd_indent
 # PGINDENT_SCRIPT pointing to pgindent (be careful with PGINDENT var name:
 #   pgindent will pick it up as pg_bsd_indent path).
+#
+# optional vars:
+# PGINDENT_FLAGS additional flags to pass to pgindent
 .PHONY: pgindent
 pgindent:
 	+@ echo top_srcdir=$(top_srcdir) top_builddir=$(top_builddir) srcdir=$(srcdir)
 	$(FIND_TYPEDEF) . > neon.typedefs
-	INDENT=$(INDENT) $(PGINDENT_SCRIPT) --typedefs neon.typedefs $(srcdir)/*.c $(srcdir)/*.h
+	INDENT=$(INDENT) $(PGINDENT_SCRIPT) $(PGINDENT_FLAGS) --typedefs neon.typedefs $(srcdir)/*.c $(srcdir)/*.h
 
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)

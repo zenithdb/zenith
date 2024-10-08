@@ -19,6 +19,7 @@ ln -s ../../pre-commit.py .git/hooks/pre-commit
 ```
 
 This will run following checks on staged files before each commit:
+- `pgindent` over any Neon Postgres extension files
 - `rustfmt`
 - checks for Python files, see [obligatory checks](/docs/sourcetree.md#obligatory-checks).
 

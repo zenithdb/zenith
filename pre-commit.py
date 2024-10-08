@@ -5,7 +5,7 @@ import enum
 import os
 import subprocess
 import sys
-from typing import List
+from typing import List, Union
 
 
 @enum.unique
@@ -55,14 +55,39 @@ def mypy() -> str:
     return "poetry run mypy"
 
 
+def pgindent(fix_inplace: bool) -> str:
+    if fix_inplace:
+        return "make neon-pgindent"
+
+    return "make -s -j neon-pgindent-check"
+
+
 def get_commit_files() -> List[str]:
     files = subprocess.check_output("git diff --cached --name-only --diff-filter=ACM".split())
     return files.decode().splitlines()
 
 
-def check(name: str, suffix: str, cmd: str, changed_files: List[str], no_color: bool = False):
+def is_applicable(fname: str, suffix: Union[str, List[str]]) -> bool:
+    fname = fname.strip()
+    if isinstance(suffix, str):
+        suffix = [suffix]
+
+    for s in suffix:
+        if fname.endswith(s):
+            return True
+
+    return False
+
+
+def check(
+    name: str,
+    suffix: Union[str, List[str]],
+    cmd: str,
+    changed_files: List[str],
+    no_color: bool = False,
+):
     print(f"Checking: {name} ", end="")
-    applicable_files = list(filter(lambda fname: fname.strip().endswith(suffix), changed_files))
+    applicable_files = list(filter(lambda fname: is_applicable(fname, suffix), changed_files))
     if not applicable_files:
         print(colorify("[NOT APPLICABLE]", Color.CYAN, no_color))
         return
@@ -73,6 +98,8 @@ def check(name: str, suffix: str, cmd: str, changed_files: List[str], no_color: 
         print(colorify("[FAILED]", Color.RED, no_color))
         if name == "mypy":
             print("Please inspect the output below and fix type mismatches.")
+        elif name == "pgindent":
+            print("pgindent does not print output.")
         else:
             print("Please inspect the output below and run make fmt to fix automatically.")
         if suffix == ".py":
@@ -80,8 +107,11 @@ def check(name: str, suffix: str, cmd: str, changed_files: List[str], no_color: 
                 "If the output is empty, ensure that you've installed Python tooling by\n"
                 "running './scripts/pysync' in the current directory (no root needed)"
             )
-        print()
-        print(res.stdout.decode())
+
+        output = res.stdout.decode()
+        if len(output) > 0:
+            print()
+            print(res.stdout.decode())
         sys.exit(1)
 
     print(colorify("[OK]", Color.GREEN, no_color))
@@ -129,4 +159,10 @@ if __name__ == "__main__":
         cmd=mypy(),
         changed_files=files,
         no_color=args.no_color,
+    )
+    check(
+        name="pgindent",
+        suffix=["c", "h"],
+        cmd=pgindent(fix_inplace=args.fix_inplace),
+        changed_files=files,
     )
