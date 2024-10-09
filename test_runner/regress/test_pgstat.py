@@ -15,8 +15,7 @@ def test_pgstat(neon_simple_env: NeonEnv):
         pytest.skip("PG14 doesn't support pgstat statistic persistence")
 
     n = 10000
-    env.neon_cli.create_branch("test_pgstat", "empty")
-    endpoint = env.endpoints.create_start("test_pgstat")
+    endpoint = env.endpoints.create_start("main")
 
     con = endpoint.connect()
     cur = con.cursor()
