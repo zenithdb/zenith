@@ -54,6 +54,7 @@ const AUX_DIR_PG_UNKNOWN: u8 = 0xFF;
 /// * pg_logical/replorigin_checkpoint -> 0x0103
 /// * pg_logical/others -> 0x01FF
 /// * pg_replslot/ -> 0x0201
+/// * pg_stat/pgstat.stat -> 0x0301
 /// * others -> 0xFFFF
 ///
 /// If you add new AUX files to this function, please also add a test case to `test_encoding_portable`.
