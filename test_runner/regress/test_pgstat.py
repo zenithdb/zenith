@@ -33,16 +33,7 @@ def test_pgstat(neon_simple_env: NeonEnv):
         "select seq_scan,seq_tup_read,n_tup_ins,n_tup_upd,n_live_tup,n_dead_tup, vacuum_count,analyze_count from pg_stat_user_tables"
     )
     rec = cur.fetchall()[0]
-    assert (
-        rec[0] == 2
-        and rec[1] == n * 2
-        and rec[2] == n
-        and rec[3] == n
-        and rec[4] == n * 2
-        and rec[5] == n
-        and rec[6] == 1
-        and rec[7] == 1
-    )
+    assert (rec == (2, n * 2, n, n, n * 2, n, 1, 1))
 
     endpoint.stop()
     endpoint.start()
