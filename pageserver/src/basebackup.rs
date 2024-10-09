@@ -429,7 +429,8 @@ where
                 // but now we should handle (skip) it for backward compatibility.
                 continue;
             } else if path == "pg_stat/pgstat.stat" && !normal_shutdown {
-                // Drop statistic in case of abnormal termination (shtiodown checkopint was not written
+                // Drop statistic in case of abnormal termination, i.e. if we're not starting from the exact LSN
+                // of a shutdown checkpoint.
                 continue;
             }
             let header = new_tar_header(&path, content.len() as u64)?;
