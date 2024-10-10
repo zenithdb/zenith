@@ -267,8 +267,7 @@ where
     async fn send_tarball(mut self) -> Result<(), BasebackupError> {
         // TODO include checksum
 
-        // On normal Postgres shutdown, shutdown checkpoint should be performed and correspondent
-        // WAL record should be the last record in the WAL.
+        // Detect if we are creating the basebackup exactly at a shutdown checkpoint.
         let normal_shutdown = if let Ok(checkpoint_bytes) =
             self.timeline.get_checkpoint(self.lsn, self.ctx).await
         {
