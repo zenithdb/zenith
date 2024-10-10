@@ -379,7 +379,7 @@ pub async fn import_basebackup_from_tar(
                     file_path.as_ref(),
                     &mut entry,
                     len,
-                    true,
+                    false,
                     ctx,
                 )
                 .await?
