@@ -34,10 +34,9 @@ use postgres_ffi::pg_constants::{PGDATA_SPECIAL_FILES, PG_HBA};
 use postgres_ffi::relfile_utils::{INIT_FORKNUM, MAIN_FORKNUM};
 use postgres_ffi::XLogFileName;
 use postgres_ffi::PG_TLI;
-use postgres_ffi::{dispatch_pgversion, CheckPoint};
+use postgres_ffi::{calculate_walrecord_end_lsn, dispatch_pgversion, CheckPoint};
 use postgres_ffi::{
-    BLCKSZ, RELSEG_SIZE, SIZEOF_CHECKPOINT, WAL_SEGMENT_SIZE, XLOG_BLCKSZ,
-    XLOG_SIZE_OF_XLOG_LONG_PHD, XLOG_SIZE_OF_XLOG_RECORD, XLOG_SIZE_OF_XLOG_SHORT_PHD,
+    BLCKSZ, RELSEG_SIZE, SIZEOF_CHECKPOINT, WAL_SEGMENT_SIZE, XLOG_SIZE_OF_XLOG_RECORD,
 };
 use utils::lsn::Lsn;
 
@@ -268,29 +267,18 @@ where
         // TODO include checksum
 
         // Detect if we are creating the basebackup exactly at a shutdown checkpoint.
-        let normal_shutdown = if let Ok(checkpoint_bytes) =
-            self.timeline.get_checkpoint(self.lsn, self.ctx).await
-        {
-            let checkpoint =
-                CheckPoint::decode(&checkpoint_bytes).context("deserialize checkpoint")?;
-            let checkpoint_end =
-                checkpoint.redo + ((XLOG_SIZE_OF_XLOG_RECORD + 8 + SIZEOF_CHECKPOINT) as u64);
-            let checkpoint_end_lsn = Lsn(checkpoint_end
-                + (if (XLOG_BLCKSZ as u64) - checkpoint.redo % (XLOG_BLCKSZ as u64)
-                    < (SIZEOF_CHECKPOINT as u64)
-                {
-                    if (checkpoint_end & ((WAL_SEGMENT_SIZE - 1) as u64)) < (XLOG_BLCKSZ as u64) {
-                        XLOG_SIZE_OF_XLOG_LONG_PHD
-                    } else {
-                        XLOG_SIZE_OF_XLOG_SHORT_PHD
-                    }
-                } else {
-                    0
-                }) as u64);
-            checkpoint_end_lsn == self.lsn
-        } else {
-            false
-        };
+        let normal_shutdown =
+            if let Ok(checkpoint_bytes) = self.timeline.get_checkpoint(self.lsn, self.ctx).await {
+                let checkpoint =
+                    CheckPoint::decode(&checkpoint_bytes).context("deserialize checkpoint")?;
+                let checkpoint_end_lsn = calculate_walrecord_end_lsn(
+                    Lsn(checkpoint.redo),
+                    XLOG_SIZE_OF_XLOG_RECORD + 8 + SIZEOF_CHECKPOINT,
+                );
+                checkpoint_end_lsn == self.lsn
+            } else {
+                false
+            };
 
         let lazy_slru_download = self.timeline.get_lazy_slru_download() && !self.full_backup;
 

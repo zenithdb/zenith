@@ -6269,6 +6269,10 @@ impl TimelineWriter<'_> {
             let state = self.write_guard.as_mut().unwrap();
 
             state.current_size += buf_size;
+            info!(
+                "Current layer size is {}, buf_size={}",
+                state.current_size, buf_size
+            );
             state.prev_lsn = Some(batch_max_lsn);
             state.max_lsn = std::cmp::max(state.max_lsn, Some(batch_max_lsn));
         }
