@@ -30,7 +30,9 @@ use crate::tenant::Timeline;
 use pageserver_api::reltag::{RelTag, SlruKind};
 
 use postgres_ffi::pg_constants::{DEFAULTTABLESPACE_OID, GLOBALTABLESPACE_OID};
-use postgres_ffi::pg_constants::{PGDATA_SPECIAL_FILES, PG_HBA};
+use postgres_ffi::pg_constants::{
+    PGDATA_SPECIAL_FILES, PG_HBA, SIZE_OF_XLOG_RECORD_DATA_HEADER_SHORT,
+};
 use postgres_ffi::relfile_utils::{INIT_FORKNUM, MAIN_FORKNUM};
 use postgres_ffi::XLogFileName;
 use postgres_ffi::PG_TLI;
@@ -273,7 +275,9 @@ where
                     CheckPoint::decode(&checkpoint_bytes).context("deserialize checkpoint")?;
                 let checkpoint_end_lsn = calculate_walrecord_end_lsn(
                     Lsn(checkpoint.redo),
-                    XLOG_SIZE_OF_XLOG_RECORD + 8 + SIZEOF_CHECKPOINT,
+                    XLOG_SIZE_OF_XLOG_RECORD
+                        + SIZE_OF_XLOG_RECORD_DATA_HEADER_SHORT
+                        + SIZEOF_CHECKPOINT,
                 );
                 checkpoint_end_lsn == self.lsn
             } else {

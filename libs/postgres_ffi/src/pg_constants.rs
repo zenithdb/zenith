@@ -211,6 +211,8 @@ pub const BKPBLOCK_HAS_DATA: u8 = 0x20;
 pub const BKPBLOCK_WILL_INIT: u8 = 0x40; /* redo will re-init the page */
 pub const BKPBLOCK_SAME_REL: u8 = 0x80; /* RelFileNode omitted, same as previous */
 
+pub const SIZE_OF_XLOG_RECORD_DATA_HEADER_SHORT: usize = 2;
+
 /* Information stored in bimg_info */
 pub const BKPIMAGE_HAS_HOLE: u8 = 0x01; /* page image has "hole" */
 
