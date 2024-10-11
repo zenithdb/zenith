@@ -79,6 +79,7 @@ def test_import_from_vanilla(test_output_dir, pg_bin, vanilla_pg, neon_env_build
 
     branch_name = "import_from_vanilla"
     tenant = TenantId.generate()
+    timeline = TimelineId.generate()
 
     # Set up pageserver for import
     neon_env_builder.enable_pageserver_remote_storage(RemoteStorageKind.LOCAL_FS)
@@ -251,7 +252,6 @@ def _import(
     # Import using another tenant_id, because we use the same pageserver.
     # TODO Create another pageserver to make test more realistic.
     tenant = TenantId.generate()
-    timeline = TimelineId.generate()
 
     # Import to pageserver
     branch_name = "import_from_pageserver"
