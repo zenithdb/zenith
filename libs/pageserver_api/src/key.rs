@@ -811,9 +811,14 @@ impl Key {
             && self.field6 == 1
     }
 
+<<<<<<< HEAD
     #[inline(always)]
     pub fn is_aux_file_key(&self) -> bool {
         self.field1 == AUX_KEY_PREFIX
+=======
+    pub fn is_aux_file_key(&self) -> bool {
+        self.field1 = AUX_KEY_PREFIX
+>>>>>>> a96135dde (Do not import AUX files)
     }
 
     /// Guaranteed to return `Ok()` if [`Self::is_rel_block_key`] returns `true` for `key`.
