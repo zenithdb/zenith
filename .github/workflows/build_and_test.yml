@@ -1076,98 +1076,93 @@ jobs:
     # `!failure() && !cancelled()` is required because the workflow depends on the job that can be skipped: `push-to-acr-dev` and `push-to-acr-prod`
     if: (github.ref_name == 'main' || github.ref_name == 'release' || github.ref_name == 'release-proxy') && !failure() && !cancelled()
 
-    runs-on: [ self-hosted, small ]
-    container: 369495373322.dkr.ecr.eu-central-1.amazonaws.com/ansible:latest
+    runs-on: ubuntu-22.04
+    env:
+      BUILD_TAG: ${{ needs.tag.outputs.build-tag }}
+
     steps:
-      - name: Fix git ownership
-        run: |
-          # Workaround for `fatal: detected dubious ownership in repository at ...`
-          #
-          # Use both ${{ github.workspace }} and ${GITHUB_WORKSPACE} because they're different on host and in containers
-          #   Ref https://github.com/actions/checkout/issues/785
-          #
-          git config --global --add safe.directory ${{ github.workspace }}
-          git config --global --add safe.directory ${GITHUB_WORKSPACE}
-          for r in 14 15 16 17; do
-            git config --global --add safe.directory "${{ github.workspace }}/vendor/postgres-v$r"
-            git config --global --add safe.directory "${GITHUB_WORKSPACE}/vendor/postgres-v$r"
-          done
-
-      - uses: actions/checkout@v4
-
-      - name: Trigger deploy workflow
+      - name: Trigger deploy workflow for `main` branch
+        if: github.ref_name == 'main'
         env:
           GH_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
         run: |
-          if [[ "$GITHUB_REF_NAME" == "main" ]]; then
-            gh workflow --repo neondatabase/infra run deploy-dev.yml --ref main -f branch=main -f dockerTag=${{needs.tag.outputs.build-tag}} -f deployPreprodRegion=false
-            gh workflow --repo neondatabase/azure run deploy.yml -f dockerTag=${{needs.tag.outputs.build-tag}}
-          elif [[ "$GITHUB_REF_NAME" == "release" ]]; then
-            gh workflow --repo neondatabase/infra run deploy-dev.yml --ref main \
-              -f deployPgSniRouter=false \
-              -f deployProxy=false \
-              -f deployStorage=true \
-              -f deployStorageBroker=true \
-              -f deployStorageController=true \
-              -f branch=main \
-              -f dockerTag=${{needs.tag.outputs.build-tag}} \
-              -f deployPreprodRegion=true
+          gh workflow --repo neondatabase/infra run deploy-dev.yml \
+            --ref main \
+            -f branch=main \
+            -f dockerTag=${BUILD_TAG} \
+            -f deployPreprodRegion=false
 
-            gh workflow --repo neondatabase/infra run deploy-prod.yml --ref main \
-              -f deployStorage=true \
-              -f deployStorageBroker=true \
-              -f deployStorageController=true \
-              -f branch=main \
-              -f dockerTag=${{needs.tag.outputs.build-tag}}
-          elif [[ "$GITHUB_REF_NAME" == "release-proxy" ]]; then
-            gh workflow --repo neondatabase/infra run deploy-dev.yml --ref main \
-              -f deployPgSniRouter=true \
-              -f deployProxy=true \
-              -f deployStorage=false \
-              -f deployStorageBroker=false \
-              -f deployStorageController=false \
-              -f branch=main \
-              -f dockerTag=${{needs.tag.outputs.build-tag}} \
-              -f deployPreprodRegion=true
+          gh workflow --repo neondatabase/azure run deploy.yml \
+            -f dockerTag=${BUILD_TAG}
 
-            gh workflow --repo neondatabase/infra run deploy-proxy-prod.yml --ref main \
-              -f deployPgSniRouter=true \
-              -f deployProxy=true \
-              -f branch=main \
-              -f dockerTag=${{needs.tag.outputs.build-tag}}
-          else
-            echo "GITHUB_REF_NAME (value '$GITHUB_REF_NAME') is not set to either 'main' or 'release'"
-            exit 1
-          fi
-
-      - name: Create git tag
-        if: github.ref_name == 'release' || github.ref_name == 'release-proxy'
-        uses: actions/github-script@v7
-        with:
-          # Retry script for 5XX server errors: https://github.com/actions/github-script#retries
-          retries: 5
-          script: |
-            await github.rest.git.createRef({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: "refs/tags/${{ needs.tag.outputs.build-tag }}",
-              sha: context.sha,
-            })
-
-      # TODO: check how GitHub releases looks for proxy releases and enable it if it's ok
-      - name: Create GitHub release
+      - name: Trigger deploy workflow for `release` branch
         if: github.ref_name == 'release'
-        uses: actions/github-script@v7
-        with:
-          # Retry script for 5XX server errors: https://github.com/actions/github-script#retries
-          retries: 5
-          script: |
-            await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: "${{ needs.tag.outputs.build-tag }}",
-              generate_release_notes: true,
-            })
+        env:
+          GH_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
+        run: |
+          # deploy preprod
+          gh workflow --repo neondatabase/infra run deploy-dev.yml \
+            --ref main \
+            -f deployPgSniRouter=false \
+            -f deployProxy=false \
+            -f deployStorage=true \
+            -f deployStorageBroker=true \
+            -f deployStorageController=true \
+            -f branch=main \
+            -f dockerTag=${BUILD_TAG} \
+            -f deployPreprodRegion=true
+
+          # deploy prod
+          gh workflow --repo neondatabase/infra run deploy-prod.yml \
+            --ref main \
+            -f deployStorage=true \
+            -f deployStorageBroker=true \
+            -f deployStorageController=true \
+            -f branch=main \
+            -f dockerTag=${BUILD_TAG}
+
+      - name: Trigger deploy workflow for `release-proxy` branch
+        if: github.ref_name == 'release-proxy'
+        env:
+          GH_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
+        run: |
+          # deploy preprod
+          gh workflow --repo neondatabase/infra run deploy-dev.yml \
+            --ref main \
+            -f deployPgSniRouter=true \
+            -f deployProxy=true \
+            -f deployStorage=false \
+            -f deployStorageBroker=false \
+            -f deployStorageController=false \
+            -f branch=main \
+            -f dockerTag=${BUILD_TAG} \
+            -f deployPreprodRegion=true
+
+          # deploy prod
+          gh workflow --repo neondatabase/infra run deploy-proxy-prod.yml \
+            --ref main \
+            -f deployPgSniRouter=true \
+            -f deployProxy=true \
+            -f branch=main \
+            -f dockerTag=${BUILD_TAG}
+
+      - name: Create git tag & GitHub Release
+        if: github.ref_name == 'release' || github.ref_name == 'release-proxy'
+        env:
+          GH_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
+        run: |
+          previous_release_tag=$(gh release list --repo neondatabase/neon \
+            --json name \
+            | jq --arg tag_prefix ${GITHUB_REF_NAME} --raw-output '.[].name | select(test($tag_prefix + "-[0-9]"))' | head -1)
+
+          # `gh release create` automatically creates a tag if it doesn't exist
+          # Ref https://cli.github.com/manual/gh_release_create
+          gh release create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --generate-notes \
+            --notes-start-tag "${previous_release_tag}" \
+            --title "${BUILD_TAG}"
 
   # The job runs on `release` branch and copies compatibility data and Neon artifact from the last *release PR* to the latest directory
   promote-compatibility-data:
