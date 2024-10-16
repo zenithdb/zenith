@@ -8,6 +8,7 @@ mod conn_pool;
 mod http_conn_pool;
 mod http_util;
 mod json;
+mod json_raw_value;
 mod local_conn_pool;
 mod sql_over_http;
 mod websocket;

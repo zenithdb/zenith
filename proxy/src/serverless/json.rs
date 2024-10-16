@@ -1,30 +1,40 @@
+use itertools::Itertools;
+use serde_json::value::RawValue;
 use serde_json::Map;
 use serde_json::Value;
 use tokio_postgres::types::Kind;
 use tokio_postgres::types::Type;
 use tokio_postgres::Row;
+use typed_json::json;
+
+use super::json_raw_value::LazyValue;
 
 //
 // Convert json non-string types to strings, so that they can be passed to Postgres
 // as parameters.
 //
-pub(crate) fn json_to_pg_text(json: Vec<Value>) -> Vec<Option<String>> {
-    json.iter().map(json_value_to_pg_text).collect()
+pub(crate) fn json_to_pg_text(
+    json: &[&RawValue],
+) -> Result<Vec<Option<String>>, serde_json::Error> {
+    json.iter().copied().map(json_value_to_pg_text).try_collect()
 }
 
-fn json_value_to_pg_text(value: &Value) -> Option<String> {
-    match value {
+fn json_value_to_pg_text(value: &RawValue) -> Result<Option<String>, serde_json::Error> {
+    let lazy_value = serde_json::from_str(value.get())?;
+    match lazy_value {
         // special care for nulls
-        Value::Null => None,
+        LazyValue::Null => Ok(None),
 
         // convert to text with escaping
-        v @ (Value::Bool(_) | Value::Number(_) | Value::Object(_)) => Some(v.to_string()),
+        LazyValue::Bool | LazyValue::Number | LazyValue::Object => {
+            Ok(Some(value.get().to_string()))
+        }
 
         // avoid escaping here, as we pass this as a parameter
-        Value::String(s) => Some(s.to_string()),
+        LazyValue::String(s) => Ok(Some(s.into_owned())),
 
         // special care for arrays
-        Value::Array(_) => json_array_to_pg_array(value),
+        LazyValue::Array(arr) => Ok(Some(json_array_to_pg_array(arr)?)),
     }
 }
 
@@ -36,27 +46,42 @@ fn json_value_to_pg_text(value: &Value) -> Option<String> {
 //
 // Example of the same escaping in node-postgres: packages/pg/lib/utils.js
 //
-fn json_array_to_pg_array(value: &Value) -> Option<String> {
-    match value {
+fn json_array_to_pg_array(arr: Vec<&RawValue>) -> Result<String, serde_json::Error> {
+    let mut output = String::new();
+    let mut first = true;
+
+    output.push('{');
+
+    for value in arr {
+        if !first {
+            output.push(',');
+        }
+        first = false;
+
+        let value = json_array_to_pg_array_inner(value)?;
+        output.push_str(value.as_deref().unwrap_or("NULL"));
+    }
+
+    output.push('}');
+
+    Ok(output)
+}
+
+fn json_array_to_pg_array_inner(value: &RawValue) -> Result<Option<String>, serde_json::Error> {
+    let lazy_value = serde_json::from_str(value.get())?;
+    match lazy_value {
         // special care for nulls
-        Value::Null => None,
+        LazyValue::Null => Ok(None),
 
         // convert to text with escaping
         // here string needs to be escaped, as it is part of the array
-        v @ (Value::Bool(_) | Value::Number(_) | Value::String(_)) => Some(v.to_string()),
-        v @ Value::Object(_) => json_array_to_pg_array(&Value::String(v.to_string())),
+        LazyValue::Bool | LazyValue::Number | LazyValue::String(_) => {
+            Ok(Some(value.get().to_string()))
+        }
+        LazyValue::Object => Ok(Some(json!(value.get().to_string()).to_string())),
 
         // recurse into array
-        Value::Array(arr) => {
-            let vals = arr
-                .iter()
-                .map(json_array_to_pg_array)
-                .map(|v| v.unwrap_or_else(|| "NULL".to_string()))
-                .collect::<Vec<_>>()
-                .join(",");
-
-            Some(format!("{{{vals}}}"))
-        }
+        LazyValue::Array(arr) => Ok(Some(json_array_to_pg_array(arr)?)),
     }
 }
 
@@ -259,25 +284,31 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn json_to_pg_text_test(json: Vec<serde_json::Value>) -> Vec<Option<String>> {
+        let json = serde_json::Value::Array(json).to_string();
+        let json: Vec<&RawValue> = serde_json::from_str(&json).unwrap();
+        json_to_pg_text(&json).unwrap()
+    }
+
     #[test]
     fn test_atomic_types_to_pg_params() {
         let json = vec![Value::Bool(true), Value::Bool(false)];
-        let pg_params = json_to_pg_text(json);
+        let pg_params = json_to_pg_text_test(json);
         assert_eq!(
             pg_params,
             vec![Some("true".to_owned()), Some("false".to_owned())]
         );
 
         let json = vec![Value::Number(serde_json::Number::from(42))];
-        let pg_params = json_to_pg_text(json);
+        let pg_params = json_to_pg_text_test(json);
         assert_eq!(pg_params, vec![Some("42".to_owned())]);
 
         let json = vec![Value::String("foo\"".to_string())];
-        let pg_params = json_to_pg_text(json);
+        let pg_params = json_to_pg_text_test(json);
         assert_eq!(pg_params, vec![Some("foo\"".to_owned())]);
 
         let json = vec![Value::Null];
-        let pg_params = json_to_pg_text(json);
+        let pg_params = json_to_pg_text_test(json);
         assert_eq!(pg_params, vec![None]);
     }
 
@@ -286,7 +317,7 @@ mod tests {
         // atoms and escaping
         let json = "[true, false, null, \"NULL\", 42, \"foo\", \"bar\\\"-\\\\\"]";
         let json: Value = serde_json::from_str(json).unwrap();
-        let pg_params = json_to_pg_text(vec![json]);
+        let pg_params = json_to_pg_text_test(vec![json]);
         assert_eq!(
             pg_params,
             vec![Some(
@@ -297,7 +328,7 @@ mod tests {
         // nested arrays
         let json = "[[true, false], [null, 42], [\"foo\", \"bar\\\"-\\\\\"]]";
         let json: Value = serde_json::from_str(json).unwrap();
-        let pg_params = json_to_pg_text(vec![json]);
+        let pg_params = json_to_pg_text_test(vec![json]);
         assert_eq!(
             pg_params,
             vec![Some(
@@ -307,7 +338,7 @@ mod tests {
         // array of objects
         let json = r#"[{"foo": 1},{"bar": 2}]"#;
         let json: Value = serde_json::from_str(json).unwrap();
-        let pg_params = json_to_pg_text(vec![json]);
+        let pg_params = json_to_pg_text_test(vec![json]);
         assert_eq!(
             pg_params,
             vec![Some(r#"{"{\"foo\":1}","{\"bar\":2}"}"#.to_owned())]
