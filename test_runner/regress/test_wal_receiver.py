@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 # Ensures that walreceiver does not run without any data inserted and only starts after the insertion.
 def test_pageserver_lsn_wait_error_start(neon_env_builder: NeonEnvBuilder):
     # Trigger WAL wait timeout faster
-    neon_env_builder.pageserver_config_override = "wait_lsn_timeout = '1s'"
+    neon_env_builder.pageserver_config_override = "wait_lsn_timeout = '2s'"
     env = neon_env_builder.init_start()
     env.pageserver.http_client()
 
