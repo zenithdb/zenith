@@ -132,18 +132,9 @@ def insert_test_elements(env: NeonEnv, tenant_id: TenantId, start: int, count: i
     last_element_id = first_element_id + count
     with env.endpoints.create_start("main", tenant_id=tenant_id) as endpoint:
         with endpoint.cursor() as cur:
-            log.info(f"connstr is {endpoint.connstr()}")
             cur.execute("CREATE TABLE IF NOT EXISTS t(key serial primary key, value text)")
-            ts_before = time.time()
-            lsn_before = Lsn(endpoint.safe_psql_scalar("select pg_current_wal_lsn()"))
             cur.execute(
                 f"INSERT INTO t SELECT i, CONCAT('payload_', i) FROM generate_series({first_element_id},{last_element_id}) as i"
-            )
-            lsn_after = Lsn(endpoint.safe_psql_scalar("select pg_current_wal_lsn()"))
-            lsn_diff = lsn_after - lsn_before
-            time_diff = time.time() - ts_before
-            log.info(
-                f"inserted {(lsn_diff / 1024 / 1024):.3f} MB of WAL in {time_diff:.3f}s, MB/s: {(lsn_diff / 1024 / 1024) / time_diff}"
             )
 
 
