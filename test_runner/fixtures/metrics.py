@@ -85,6 +85,29 @@ class MetricsGetter:
 
         return result
 
+    def get_metric_sum(
+        self, names: list[str], filter: dict[str, str] | None = None, absence_ok: bool = False
+    ) -> float:
+        """
+        Fetch all metrics matching `names` and `filter`, and sum their values
+        """
+        metrics = self.get_metrics()
+        samples = []
+        for name in names:
+            samples.extend(metrics.query_all(name, filter=filter))
+
+        found = False
+        result = 0.0
+        for sample in samples:
+            result += sample.value
+            found = True
+
+        if not found and not absence_ok:
+            log.info(f"Metrics found: {metrics.metrics}")
+            raise RuntimeError(f"could not find any metrics matching {names}, {filter}")
+
+        return result
+
 
 def parse_metrics(text: str, name: str = "") -> Metrics:
     metrics = Metrics(name)
