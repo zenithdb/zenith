@@ -22,13 +22,17 @@
 #include "neon_pgversioncompat.h"
 
 #include "access/parallel.h"
+#include "access/xlog.h"
+#include "access/xloginsert.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "pagestore_client.h"
+#include "file_cache.h"
 #include "common/hashfn.h"
 #include "pgstat.h"
 #include "port/pg_iovec.h"
 #include "postmaster/bgworker.h"
+#include "postmaster/interrupt.h"
 #include RELFILEINFO_HDR
 #include "storage/buf_internals.h"
 #include "storage/fd.h"
@@ -39,11 +43,17 @@
 #include "utils/builtins.h"
 #include "utils/dynahash.h"
 #include "utils/guc.h"
+#include "../neon_rmgr/neon_rmgr.h"
 
 #include "hll.h"
 #include "bitmap.h"
 #include "neon.h"
 #include "neon_perf_counters.h"
+
+#if PG_VERSION_NUM>=160000
+#include "access/neon_xlog.h"
+#endif
+
 
 #define CriticalAssert(cond) do if (!(cond)) elog(PANIC, "Assertion %s failed at %s:%d: ", #cond, __FILE__, __LINE__); while (0)
 
@@ -78,29 +88,17 @@
  * before extending the nominal size of the file.
  */
 
-/* Local file storage allocation chunk.
- * Should be power of two. Using larger than page chunks can
- * 1. Reduce hash-map memory footprint: 8TB database contains billion pages
- *    and size of hash entry is 40 bytes, so we need 40Gb just for hash map.
- *    1Mb chunks can reduce hash map size to 320Mb.
- * 2. Improve access locality, subsequent pages will be allocated together improving seqscan speed
- */
-#define BLOCKS_PER_CHUNK	128 /* 1Mb chunk */
-/*
- * Smaller chunk seems to be better for OLTP workload
- */
-// #define BLOCKS_PER_CHUNK	8 /* 64kb chunk */
 #define MB					((uint64)1024*1024)
 
 #define SIZE_MB_TO_CHUNKS(size) ((uint32)((size) * MB / BLCKSZ / BLOCKS_PER_CHUNK))
-#define CHUNK_BITMAP_SIZE ((BLOCKS_PER_CHUNK + 31) / 32)
 
 typedef struct FileCacheEntry
 {
 	BufferTag	key;
 	uint32		hash;
 	uint32		offset;
-	uint32		access_count;
+	uint32		access_count : 31;
+	uint32      synced : 1;
 	uint32		bitmap[CHUNK_BITMAP_SIZE];
 	dlist_node	list_node;		/* LRU/holes list node */
 } FileCacheEntry;
@@ -124,11 +122,15 @@ typedef struct FileCacheControl
 	HyperLogLogState wss_estimation; /* estimation of working set size */
 } FileCacheControl;
 
+#define LFC_MAX_PREWARM_SIZE      1024
+#define LFC_PREWARM_POLL_INTERVAL 1000000 /* 1 second */
+
 static HTAB *lfc_hash;
 static int	lfc_desc = 0;
 static LWLockId lfc_lock;
 static int	lfc_max_size;
 static int	lfc_size_limit;
+static int  lfc_prewarm_rate;
 static char *lfc_path;
 static FileCacheControl *lfc_ctl;
 static shmem_startup_hook_type prev_shmem_startup_hook;
@@ -374,6 +376,7 @@ lfc_change_limit_hook(int newval, void *extra)
 		hole->hash = hash;
 		hole->offset = offset;
 		hole->access_count = 0;
+		hole->synced = 0;
 		CriticalAssert(!found);
 		dlist_push_tail(&lfc_ctl->holes, &hole->list_node);
 
@@ -386,6 +389,26 @@ lfc_change_limit_hook(int newval, void *extra)
 	neon_log(DEBUG1, "set local file cache limit to %d", new_size);
 
 	LWLockRelease(lfc_lock);
+}
+
+static void
+lfc_register_prewarm_worker()
+{
+#if PG_MAJORVERSION_NUM >= 16
+	BackgroundWorker bgw;
+	memset(&bgw, 0, sizeof(bgw));
+	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS;
+	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
+	snprintf(bgw.bgw_library_name, BGW_MAXLEN, "neon");
+	snprintf(bgw.bgw_function_name, BGW_MAXLEN, "FileCachePrewarmMain");
+	snprintf(bgw.bgw_name, BGW_MAXLEN, "LFC prewarm");
+	snprintf(bgw.bgw_type, BGW_MAXLEN, "LFC prewarm");
+	bgw.bgw_restart_time = 5;
+	bgw.bgw_notify_pid = 0;
+	bgw.bgw_main_arg = (Datum) 0;
+
+	RegisterBackgroundWorker(&bgw);
+#endif
 }
 
 void
@@ -436,6 +459,19 @@ lfc_init(void)
 							   NULL,
 							   NULL);
 
+	DefineCustomIntVariable("neon.file_cache_prewarm_rate",
+							"Interval of generating prewarm WAL records",
+							NULL,
+							&lfc_prewarm_rate,
+							0,	/* disabled by default */
+							0,
+							INT_MAX,
+							PGC_SIGHUP,
+							GUC_UNIT_MS,
+							NULL,
+							NULL,
+							NULL);
+
 	if (lfc_max_size == 0)
 		return;
 
@@ -447,6 +483,8 @@ lfc_init(void)
 #else
 	lfc_shmem_request();
 #endif
+
+	lfc_register_prewarm_worker();
 }
 
 /*
@@ -693,7 +731,7 @@ lfc_readv_select(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 
 	CriticalAssert(BufTagGetRelNumber(&tag) != InvalidRelFileNumber);
 
-	/* 
+	/*
 	 * For every chunk that has blocks we're interested in, we
 	 * 1. get the chunk header
 	 * 2. Check if the chunk actually has the blocks we're interested in
@@ -961,6 +999,7 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 			entry->hash = hash;
 			memset(entry->bitmap, 0, sizeof entry->bitmap);
 		}
+		entry->synced = false;
 
 		generation = lfc_ctl->generation;
 		entry_offset = entry->offset;
@@ -1013,6 +1052,57 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 	}
 }
 
+#if PG_MAJORVERSION_NUM >= 16
+PGDLLEXPORT void
+FileCachePrewarmMain(Datum main_arg)
+{
+	pqsignal(SIGHUP, SignalHandlerForConfigReload);
+	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
+	BackgroundWorkerUnblockSignals();
+
+	while (!ShutdownRequestPending)
+	{
+		FileCacheEntryDesc prewarm[LFC_MAX_PREWARM_SIZE];
+		size_t n_prewarm = 0;
+		dlist_iter iter;
+
+		pg_usleep(lfc_prewarm_rate ? lfc_prewarm_rate*1000 : LFC_PREWARM_POLL_INTERVAL);
+
+		CHECK_FOR_INTERRUPTS();
+
+		if (lfc_prewarm_rate == 0)
+			continue;
+
+		LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
+
+		/* First send most recently used entryies */
+		dlist_reverse_foreach(iter, &lfc_ctl->lru)
+		{
+			FileCacheEntry* entry = dlist_container(FileCacheEntry, list_node, iter.cur);
+			if (!entry->synced)
+			{
+				prewarm[n_prewarm].key = entry->key;
+				memcpy(prewarm[n_prewarm].bitmap, entry->bitmap, sizeof(entry->bitmap));
+				entry->synced = true;
+				if (++n_prewarm == LFC_MAX_PREWARM_SIZE)
+					break;
+			}
+		}
+		LWLockRelease(lfc_lock);
+
+		if (n_prewarm > 0)
+		{
+			XLogBeginInsert();
+			XLogRegisterData((char *) &prewarm, n_prewarm*sizeof(FileCacheEntryDesc));
+			XLogFlush(XLogInsert(RM_NEON_ID, XLOG_NEON_LFC_PREWARM));
+		}
+	}
+}
+#endif
+
+/*
+ * Admin functions
+ */
 typedef struct
 {
 	TupleDesc	tupdesc;

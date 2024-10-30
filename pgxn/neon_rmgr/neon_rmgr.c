@@ -13,9 +13,12 @@
 #include "miscadmin.h"
 #include "storage/buf.h"
 #include "storage/bufmgr.h"
+#include "storage/buf_internals.h"
 #include "storage/bufpage.h"
 #include "storage/freespace.h"
 #include "neon_rmgr.h"
+#include "../neon/file_cache.h"
+#include "../neon/neon_pgversioncompat.h"
 
 PG_MODULE_MAGIC;
 void		_PG_init(void);
@@ -30,6 +33,7 @@ static void redo_neon_heap_delete(XLogReaderState *record);
 static void redo_neon_heap_update(XLogReaderState *record, bool hot_update);
 static void redo_neon_heap_lock(XLogReaderState *record);
 static void redo_neon_heap_multi_insert(XLogReaderState *record);
+static void redo_neon_lfc_prewarm(XLogReaderState *record);
 
 const static RmgrData NeonRmgr = {
 	.rm_name = "neon",
@@ -75,6 +79,9 @@ neon_rm_redo(XLogReaderState *record)
 			break;
 		case XLOG_NEON_HEAP_MULTI_INSERT:
 			redo_neon_heap_multi_insert(record);
+			break;
+		case XLOG_NEON_LFC_PREWARM:
+			redo_neon_lfc_prewarm(record);
 			break;
 		default:
 			elog(PANIC, "neon_rm_redo: unknown op code %u", info);
@@ -880,6 +887,28 @@ redo_neon_heap_multi_insert(XLogReaderState *record)
 	 */
 	if (action == BLK_NEEDS_REDO && freespace < BLCKSZ / 5)
 		XLogRecordPageWithFreeSpace(rlocator, blkno, freespace);
+}
+
+static void
+redo_neon_lfc_prewarm(XLogReaderState *record)
+{
+	FileCacheEntryDesc* entries = (FileCacheEntryDesc*)XLogRecGetData(record);
+	size_t n_entries = XLogRecGetDataLen(record)/sizeof(FileCacheEntryDesc);
+	char buf[BLCKSZ];
+
+	for (size_t i = 0; i < n_entries; i++)
+	{
+		FileCacheEntryDesc* entry = &entries[i];
+		NRelFileInfo rinfo = BufTagGetNRelFileInfo(entry->key);
+		SMgrRelation reln = smgropen(rinfo, INVALID_PROC_NUMBER, RELPERSISTENCE_PERMANENT);
+		for (size_t j = 0; j < CHUNK_BITMAP_SIZE; j++)
+		{
+			if (entry->bitmap[j >> 5] & (1 << (i & 31)))
+			{
+				smgrread(reln, entry->key.forkNum, entry->key.blockNum + j, buf);
+			}
+		}
+	}
 }
 
 #else

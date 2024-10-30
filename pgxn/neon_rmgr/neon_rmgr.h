@@ -5,6 +5,8 @@
 #include "replication/decode.h"
 #include "replication/logical.h"
 
+#define XLOG_NEON_LFC_PREWARM	0x60
+
 extern void neon_rm_desc(StringInfo buf, XLogReaderState *record);
 extern void neon_rm_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
 extern const char *neon_rm_identify(uint8 info);

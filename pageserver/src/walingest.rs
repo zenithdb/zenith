@@ -978,6 +978,7 @@ impl WalIngest {
                             flags = pg_constants::VISIBILITYMAP_ALL_FROZEN;
                         }
                     }
+                    pg_constants::XLOG_NEON_LFC_PREWARM => {}
                     info => bail!("Unknown WAL record type for Neon RMGR: {}", info),
                 }
             }

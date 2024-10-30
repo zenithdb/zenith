@@ -33,6 +33,7 @@
 #include "neon_perf_counters.h"
 #include "neon_utils.h"
 #include "pagestore_client.h"
+#include "file_cache.h"
 #include "walproposer.h"
 
 #define PageStoreTrace DEBUG5

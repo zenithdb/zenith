@@ -68,6 +68,7 @@
 
 #include "neon_perf_counters.h"
 #include "pagestore_client.h"
+#include "file_cache.h"
 #include "bitmap.h"
 
 #if PG_VERSION_NUM >= 150000

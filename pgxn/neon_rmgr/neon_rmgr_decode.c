@@ -456,6 +456,8 @@ neon_rm_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 			if (SnapBuildProcessChange(builder, xid, buf->origptr))
 				DecodeNeonMultiInsert(ctx, buf);
 			break;
+		case XLOG_NEON_LFC_PREWARM:
+			break;
 		default:
 			elog(ERROR, "unexpected RM_HEAP_ID record type: %u", info);
 			break;

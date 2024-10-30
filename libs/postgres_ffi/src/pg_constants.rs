@@ -184,6 +184,7 @@ pub const XLOG_NEON_HEAP_UPDATE: u8 = 0x20;
 pub const XLOG_NEON_HEAP_HOT_UPDATE: u8 = 0x30;
 pub const XLOG_NEON_HEAP_LOCK: u8 = 0x40;
 pub const XLOG_NEON_HEAP_MULTI_INSERT: u8 = 0x50;
+pub const XLOG_NEON_LFC_PREWARM: u8 = 0x60;
 
 pub const XLOG_NEON_HEAP_VISIBLE: u8 = 0x40;
 

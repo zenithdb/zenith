@@ -113,6 +113,10 @@ neon_rm_desc(StringInfo buf, XLogReaderState *record)
 					   xlrec->ntuples, &offset_elem_desc, NULL);
 		}
 	}
+	else if (info == XLOG_NEON_LFC_PREWARM)
+	{
+		appendStringInfo(buf, "%d chunks", XLogRecGetDataLen(record));
+	}
 }
 
 const char *
@@ -151,6 +155,9 @@ neon_rm_identify(uint8 info)
 			break;
 		case XLOG_NEON_HEAP_MULTI_INSERT | XLOG_NEON_INIT_PAGE:
 			id = "MULTI_INSERT+INIT";
+			break;
+		case XLOG_NEON_LFC_PREWARM:
+			id = "LFC_PREWARM";
 			break;
 	}
 
