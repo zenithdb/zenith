@@ -203,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
 
     let task = serverless::task_main(
         config,
-        auth_backend,
+        auth::ServerlessBackend::Local(auth_backend),
         http_listener,
         shutdown.clone(),
         Arc::new(CancellationHandlerMain::new(
@@ -295,12 +295,8 @@ fn build_config(args: &LocalProxyCliArgs) -> anyhow::Result<&'static ProxyConfig
 }
 
 /// auth::Backend is created at proxy startup, and lives forever.
-fn build_auth_backend(
-    args: &LocalProxyCliArgs,
-) -> anyhow::Result<&'static auth::Backend<'static, ()>> {
-    let auth_backend = proxy::auth::Backend::Local(proxy::auth::backend::MaybeOwned::Owned(
-        LocalBackend::new(args.postgres, args.compute_ctl.clone()),
-    ));
+fn build_auth_backend(args: &LocalProxyCliArgs) -> anyhow::Result<&'static LocalBackend> {
+    let auth_backend = LocalBackend::new(args.postgres, args.compute_ctl.clone());
 
     Ok(Box::leak(Box::new(auth_backend)))
 }

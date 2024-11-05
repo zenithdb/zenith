@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context};
 use async_trait::async_trait;
+use auth::backend::ControlPlaneComputeBackend;
 use http::StatusCode;
 use retry::{retry_after, ShouldRetryWakeCompute};
 use rstest::rstest;
@@ -20,7 +21,7 @@ use super::connect_compute::ConnectMechanism;
 use super::retry::CouldRetry;
 use super::*;
 use crate::auth::backend::{
-    ComputeCredentialKeys, ComputeCredentials, ComputeUserInfo, MaybeOwned, TestBackend,
+    ComputeCredentialKeys, ComputeCredentials, ComputeUserInfo, TestBackend,
 };
 use crate::config::{CertResolver, RetryConfig};
 use crate::control_plane::messages::{ControlPlaneError, Details, MetricsAuxInfo, Status};
@@ -560,19 +561,21 @@ fn helper_create_cached_node_info(cache: &'static NodeInfoCache) -> CachedNodeIn
 
 fn helper_create_connect_info(
     mechanism: &TestConnectMechanism,
-) -> auth::Backend<'static, ComputeCredentials> {
-    let user_info = auth::Backend::ControlPlane(
-        MaybeOwned::Owned(ControlPlaneBackend::Test(Box::new(mechanism.clone()))),
-        ComputeCredentials {
-            info: ComputeUserInfo {
-                endpoint: "endpoint".into(),
-                user: "user".into(),
-                options: NeonOptions::parse_options_raw(""),
-            },
-            keys: ComputeCredentialKeys::Password("password".into()),
+) -> ControlPlaneComputeBackend<'static> {
+    let api = Box::leak(Box::new(ControlPlaneBackend::Test(Box::new(
+        mechanism.clone(),
+    ))));
+
+    let creds = ComputeCredentials {
+        info: ComputeUserInfo {
+            endpoint: "endpoint".into(),
+            user: "user".into(),
+            options: NeonOptions::parse_options_raw(""),
         },
-    );
-    user_info
+        keys: ComputeCredentialKeys::Password("password".into()),
+    };
+
+    api.attach_to_credentials(creds)
 }
 
 #[tokio::test]

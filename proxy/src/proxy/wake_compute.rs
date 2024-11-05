@@ -11,10 +11,10 @@ use crate::metrics::{
 };
 use crate::proxy::retry::{retry_after, should_retry};
 
-pub(crate) async fn wake_compute<B: ComputeConnectBackend>(
+pub(crate) async fn wake_compute(
     num_retries: &mut u32,
     ctx: &RequestMonitoring,
-    api: &B,
+    api: &dyn ComputeConnectBackend,
     config: RetryConfig,
 ) -> Result<CachedNodeInfo, WakeComputeError> {
     let retry_type = RetryType::WakeCompute;

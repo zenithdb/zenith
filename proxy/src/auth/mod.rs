@@ -1,7 +1,7 @@
 //! Client authentication mechanisms.
 
 pub mod backend;
-pub use backend::Backend;
+pub use backend::ServerlessBackend;
 
 mod credentials;
 pub(crate) use credentials::{

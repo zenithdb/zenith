@@ -26,6 +26,7 @@ use self::passthrough::ProxyPassthrough;
 use crate::cancellation::{self, CancellationHandlerMain, CancellationHandlerMainInternal};
 use crate::config::{ProxyConfig, ProxyProtocolV2, TlsConfig};
 use crate::context::RequestMonitoring;
+use crate::control_plane::provider::ControlPlaneBackend;
 use crate::error::ReportableError;
 use crate::metrics::{Metrics, NumClientConnectionsGuard};
 use crate::protocol2::{read_proxy_protocol, ConnectionInfo};
@@ -54,7 +55,7 @@ pub async fn run_until_cancelled<F: std::future::Future>(
 
 pub async fn task_main(
     config: &'static ProxyConfig,
-    auth_backend: &'static auth::Backend<'static, ()>,
+    auth_backend: &'static ControlPlaneBackend,
     listener: tokio::net::TcpListener,
     cancellation_token: CancellationToken,
     cancellation_handler: Arc<CancellationHandlerMain>,
@@ -241,7 +242,7 @@ impl ReportableError for ClientRequestError {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
     config: &'static ProxyConfig,
-    auth_backend: &'static auth::Backend<'static, ()>,
+    auth_backend: &'static ControlPlaneBackend,
     ctx: &RequestMonitoring,
     cancellation_handler: Arc<CancellationHandlerMain>,
     stream: S,
@@ -282,20 +283,17 @@ pub(crate) async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
     let common_names = tls.map(|tls| &tls.common_names);
 
     // Extract credentials which we're going to use for auth.
-    let result = auth_backend
-        .as_ref()
-        .map(|()| auth::ComputeUserInfoMaybeEndpoint::parse(ctx, &params, hostname, common_names))
-        .transpose();
-
+    let result = auth::ComputeUserInfoMaybeEndpoint::parse(ctx, &params, hostname, common_names);
     let user_info = match result {
         Ok(user_info) => user_info,
         Err(e) => stream.throw_error(e).await?,
     };
 
-    let user = user_info.get_user().to_owned();
-    let user_info = match user_info
+    let user = user_info.user.clone();
+    let user_info = match auth_backend
         .authenticate(
             ctx,
+            user_info,
             &mut stream,
             mode.allow_cleartext(),
             &config.authentication_config,

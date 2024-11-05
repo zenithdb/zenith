@@ -43,6 +43,7 @@ use tokio_util::task::TaskTracker;
 use tracing::{info, warn, Instrument};
 use utils::http::error::ApiError;
 
+use crate::auth::ServerlessBackend;
 use crate::cancellation::CancellationHandlerMain;
 use crate::config::{ProxyConfig, ProxyProtocolV2};
 use crate::context::RequestMonitoring;
@@ -57,7 +58,7 @@ pub(crate) const SERVERLESS_DRIVER_SNI: &str = "api";
 
 pub async fn task_main(
     config: &'static ProxyConfig,
-    auth_backend: &'static crate::auth::Backend<'static, ()>,
+    auth_backend: ServerlessBackend<'static>,
     ws_listener: TcpListener,
     cancellation_token: CancellationToken,
     cancellation_handler: Arc<CancellationHandlerMain>,
@@ -113,7 +114,6 @@ pub async fn task_main(
         local_pool,
         pool: Arc::clone(&conn_pool),
         config,
-        auth_backend,
         endpoint_rate_limiter: Arc::clone(&endpoint_rate_limiter),
     });
     let tls_acceptor: Arc<dyn MaybeTlsAcceptor> = match config.tls_config.as_ref() {
@@ -186,6 +186,7 @@ pub async fn task_main(
 
                 Box::pin(connection_handler(
                     config,
+                    auth_backend,
                     backend,
                     connections2,
                     cancellation_handler,
@@ -306,6 +307,7 @@ async fn connection_startup(
 #[allow(clippy::too_many_arguments)]
 async fn connection_handler(
     config: &'static ProxyConfig,
+    auth_backend: ServerlessBackend<'static>,
     backend: Arc<PoolingBackend>,
     connections: TaskTracker,
     cancellation_handler: Arc<CancellationHandlerMain>,
@@ -352,6 +354,7 @@ async fn connection_handler(
                 request_handler(
                     req,
                     config,
+                    auth_backend,
                     backend.clone(),
                     connections.clone(),
                     cancellation_handler.clone(),
@@ -398,6 +401,7 @@ async fn connection_handler(
 async fn request_handler(
     mut request: hyper::Request<Incoming>,
     config: &'static ProxyConfig,
+    auth_backend: ServerlessBackend<'static>,
     backend: Arc<PoolingBackend>,
     ws_connections: TaskTracker,
     cancellation_handler: Arc<CancellationHandlerMain>,
@@ -418,6 +422,10 @@ async fn request_handler(
     if config.http_config.accept_websockets
         && framed_websockets::upgrade::is_upgrade_request(&request)
     {
+        let ServerlessBackend::ControlPlane(auth_backend) = auth_backend else {
+            return json_response(StatusCode::BAD_REQUEST, "query is not supported");
+        };
+
         let ctx = RequestMonitoring::new(
             session_id,
             conn_info,
@@ -435,7 +443,7 @@ async fn request_handler(
             async move {
                 if let Err(e) = websocket::serve_websocket(
                     config,
-                    backend.auth_backend,
+                    auth_backend,
                     ctx,
                     websocket,
                     cancellation_handler,
@@ -461,9 +469,16 @@ async fn request_handler(
         );
         let span = ctx.span();
 
-        sql_over_http::handle(config, ctx, request, backend, http_cancellation_token)
-            .instrument(span)
-            .await
+        sql_over_http::handle(
+            config,
+            ctx,
+            request,
+            auth_backend,
+            backend,
+            http_cancellation_token,
+        )
+        .instrument(span)
+        .await
     } else if request.uri().path() == "/sql" && *request.method() == Method::OPTIONS {
         Response::builder()
             .header("Allow", "OPTIONS, POST")

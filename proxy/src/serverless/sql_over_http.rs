@@ -32,10 +32,11 @@ use super::error::HttpCodeError;
 use super::http_util::json_response;
 use super::json::{json_to_pg_text, pg_text_row_to_json, JsonConversionError};
 use super::local_conn_pool;
-use crate::auth::backend::{ComputeCredentialKeys, ComputeUserInfo};
-use crate::auth::{endpoint_sni, ComputeUserInfoParseError};
+use crate::auth::backend::{ComputeCredentialKeys, ComputeCredentials, ComputeUserInfo};
+use crate::auth::{endpoint_sni, ComputeUserInfoParseError, ServerlessBackend};
 use crate::config::{AuthenticationConfig, HttpConfig, ProxyConfig, TlsConfig};
 use crate::context::RequestMonitoring;
+use crate::control_plane::provider::ControlPlaneBackend;
 use crate::error::{ErrorKind, ReportableError, UserFacingError};
 use crate::metrics::{HttpDirection, Metrics};
 use crate::proxy::{run_until_cancelled, NeonOptions};
@@ -243,10 +244,11 @@ pub(crate) async fn handle(
     config: &'static ProxyConfig,
     ctx: RequestMonitoring,
     request: Request<Incoming>,
+    auth_backend: ServerlessBackend<'static>,
     backend: Arc<PoolingBackend>,
     cancel: CancellationToken,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, ApiError> {
-    let result = handle_inner(cancel, config, &ctx, request, backend).await;
+    let result = handle_inner(cancel, config, &ctx, request, auth_backend, backend).await;
 
     let mut response = match result {
         Ok(r) => {
@@ -519,6 +521,7 @@ async fn handle_inner(
     config: &'static ProxyConfig,
     ctx: &RequestMonitoring,
     request: Request<Incoming>,
+    auth_backend: ServerlessBackend<'static>,
     backend: Arc<PoolingBackend>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, SqlOverHttpError> {
     let _requeset_gauge = Metrics::get()
@@ -543,7 +546,11 @@ async fn handle_inner(
 
     match conn_info.auth {
         AuthData::Jwt(jwt) if config.authentication_config.is_auth_broker => {
-            handle_auth_broker_inner(ctx, request, conn_info.conn_info, jwt, backend).await
+            let ServerlessBackend::ControlPlane(cplane) = auth_backend else {
+                panic!("auth_broker must be configured with a control-plane auth backend.")
+            };
+
+            handle_auth_broker_inner(ctx, request, conn_info.conn_info, jwt, cplane, backend).await
         }
         auth => {
             handle_db_inner(
@@ -553,6 +560,7 @@ async fn handle_inner(
                 request,
                 conn_info.conn_info,
                 auth,
+                auth_backend,
                 backend,
             )
             .await
@@ -560,6 +568,7 @@ async fn handle_inner(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_db_inner(
     cancel: CancellationToken,
     config: &'static ProxyConfig,
@@ -567,6 +576,7 @@ async fn handle_db_inner(
     request: Request<Incoming>,
     conn_info: ConnInfo,
     auth: AuthData,
+    auth_backend: ServerlessBackend<'static>,
     backend: Arc<PoolingBackend>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, SqlOverHttpError> {
     //
@@ -609,45 +619,58 @@ async fn handle_db_inner(
         .map_err(SqlOverHttpError::from),
     );
 
-    let authenticate_and_connect = Box::pin(
-        async {
-            let is_local_proxy = matches!(backend.auth_backend, crate::auth::Backend::Local(_));
+    let authenticate_and_connect = Box::pin(async {
+        let creds = match auth {
+            AuthData::Password(pw) => {
+                let ServerlessBackend::ControlPlane(cplane) = auth_backend else {
+                    return Err(SqlOverHttpError::ConnInfo(
+                        ConnInfoError::MissingCredentials(Credentials::BearerJwt),
+                    ));
+                };
 
-            let keys = match auth {
-                AuthData::Password(pw) => {
-                    backend
-                        .authenticate_with_password(ctx, &conn_info.user_info, &pw)
-                        .await?
-                }
-                AuthData::Jwt(jwt) => {
-                    backend
-                        .authenticate_with_jwt(ctx, &conn_info.user_info, jwt)
-                        .await?
-                }
-            };
+                backend
+                    .authenticate_with_password(ctx, cplane, &conn_info.user_info, &pw)
+                    .await
+                    .map_err(HttpConnError::from)?
+            }
+            AuthData::Jwt(jwt) => backend
+                .authenticate_with_jwt(ctx, auth_backend, &conn_info.user_info, jwt)
+                .await
+                .map_err(HttpConnError::from)?,
+        };
 
-            let client = match keys.keys {
-                ComputeCredentialKeys::JwtPayload(payload) if is_local_proxy => {
-                    let mut client = backend.connect_to_local_postgres(ctx, conn_info).await?;
-                    let (cli_inner, _dsc) = client.client_inner();
-                    cli_inner.set_jwt_session(&payload).await?;
-                    Client::Local(client)
-                }
-                _ => {
-                    let client = backend
-                        .connect_to_compute(ctx, conn_info, keys, !allow_pool)
-                        .await?;
-                    Client::Remote(client)
-                }
-            };
+        let client = match (creds.keys, auth_backend) {
+            (ComputeCredentialKeys::JwtPayload(payload), ServerlessBackend::Local(local)) => {
+                let mut client = backend
+                    .connect_to_local_postgres(ctx, local, conn_info)
+                    .await?;
+                let (cli_inner, _dsc) = client.client_inner();
+                cli_inner.set_jwt_session(&payload).await?;
+                Client::Local(client)
+            }
+            (keys, auth_backend) => {
+                let client = backend
+                    .connect_to_compute(
+                        ctx,
+                        auth_backend,
+                        conn_info,
+                        ComputeCredentials {
+                            keys,
+                            info: creds.info,
+                        },
+                        !allow_pool,
+                    )
+                    .await
+                    .map_err(HttpConnError::from)?;
+                Client::Remote(client)
+            }
+        };
 
-            // not strictly necessary to mark success here,
-            // but it's just insurance for if we forget it somewhere else
-            ctx.success();
-            Ok::<_, HttpConnError>(client)
-        }
-        .map_err(SqlOverHttpError::from),
-    );
+        // not strictly necessary to mark success here,
+        // but it's just insurance for if we forget it somewhere else
+        ctx.success();
+        Ok::<_, SqlOverHttpError>(client)
+    });
 
     let (payload, mut client) = match run_until_cancelled(
         // Run both operations in parallel
@@ -738,14 +761,22 @@ async fn handle_auth_broker_inner(
     request: Request<Incoming>,
     conn_info: ConnInfo,
     jwt: String,
+    auth_backend: &'static ControlPlaneBackend,
     backend: Arc<PoolingBackend>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, SqlOverHttpError> {
     backend
-        .authenticate_with_jwt(ctx, &conn_info.user_info, jwt)
+        .authenticate_with_jwt(
+            ctx,
+            ServerlessBackend::ControlPlane(auth_backend),
+            &conn_info.user_info,
+            jwt,
+        )
         .await
         .map_err(HttpConnError::from)?;
 
-    let mut client = backend.connect_to_local_proxy(ctx, conn_info).await?;
+    let mut client = backend
+        .connect_to_local_proxy(ctx, auth_backend, conn_info)
+        .await?;
 
     let local_proxy_uri = ::http::Uri::from_static("http://proxy.local/sql");
 
