@@ -197,7 +197,7 @@ impl Escaping for PgIdent {
 }
 
 /// Build a list of existing Postgres roles
-pub fn get_existing_roles(xact: &mut Transaction<'_>) -> Result<Vec<Role>> {
+pub fn get_existing_roles(xact: &mut Transaction<'_>) -> Result<Vec<Role>, postgres::Error> {
     let postgres_roles = xact
         .query("SELECT rolname, rolpassword FROM pg_catalog.pg_authid", &[])?
         .iter()
@@ -212,7 +212,7 @@ pub fn get_existing_roles(xact: &mut Transaction<'_>) -> Result<Vec<Role>> {
 }
 
 /// Build a list of existing Postgres databases
-pub fn get_existing_dbs(client: &mut Client) -> Result<HashMap<String, Database>> {
+pub fn get_existing_dbs(client: &mut Client) -> Result<HashMap<String, Database>, postgres::Error> {
     // `pg_database.datconnlimit = -2` means that the database is in the
     // invalid state. See:
     //   https://github.com/postgres/postgres/commit/a4b4cc1d60f7e8ccfcc8ff8cb80c28ee411ad9a9

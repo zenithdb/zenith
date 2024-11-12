@@ -39,6 +39,7 @@ tracing-subscriber.workspace = true
 tracing-utils.workspace = true
 thiserror.workspace = true
 url.workspace = true
+urlencoding.workspace = true
 
 compute_api.workspace = true
 utils.workspace = true
