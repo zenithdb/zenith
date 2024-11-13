@@ -12,7 +12,7 @@ use bytes::Bytes;
 use camino::{Utf8Path, Utf8PathBuf};
 use futures::future::BoxFuture;
 use postgres_ffi::v14::xlog_utils::{IsPartialXLogFileName, IsXLogFileName, XLogFromFileName};
-use postgres_ffi::{dispatch_pgversion, XLogSegNo, PG_TLI};
+use postgres_ffi::{dispatch_pgversion, XLogRecord, XLogSegNo, PG_TLI, XLOG_SIZE_OF_XLOG_RECORD};
 use remote_storage::RemotePath;
 use std::cmp::{max, min};
 use std::future::Future;
@@ -449,11 +449,23 @@ impl Storage for PhysicalStorage {
             // We may have flushed a previously written record.
             self.flush_record_lsn = self.write_record_lsn;
         }
-        while let Some((lsn, _rec)) = self.decoder.poll_decode()? {
+        let mut xact_commit = false;
+        while let Some((lsn, rec)) = self.decoder.poll_decode()? {
             self.write_record_lsn = lsn;
             if lsn <= self.flush_lsn {
                 self.flush_record_lsn = lsn;
             }
+            // TODO: the decoder already has the record header, make it return it.
+            let header = XLogRecord::from_slice(&rec[0..XLOG_SIZE_OF_XLOG_RECORD])
+                .expect("invalid record header");
+            xact_commit = xact_commit || header.is_xact_commit();
+        }
+
+        // If a transaction committed, flush the WAL. This will emit an AppendResponse to the
+        // compute. Otherwise, with pipelined ingestion, the txn may have to wait until the next
+        // periodic flush in 1 second, causing commit latency.
+        if xact_commit {
+            self.flush_wal().await?;
         }
 
         Ok(())

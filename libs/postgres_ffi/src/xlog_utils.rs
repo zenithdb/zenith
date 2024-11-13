@@ -14,7 +14,7 @@ use super::bindings::{
 };
 use super::wal_generator::LogicalMessageGenerator;
 use super::PG_MAJORVERSION;
-use crate::pg_constants;
+use crate::pg_constants::{self, XLOG_XACT_COMMIT, XLOG_XACT_COMMIT_PREPARED};
 use crate::PG_TLI;
 use crate::{uint32, uint64, Oid};
 use crate::{WAL_SEGMENT_SIZE, XLOG_BLCKSZ};
@@ -295,6 +295,13 @@ impl XLogRecord {
     // Is this record an XLOG_SWITCH record? They need some special processing,
     pub fn is_xlog_switch_record(&self) -> bool {
         self.xl_info == pg_constants::XLOG_SWITCH && self.xl_rmid == pg_constants::RM_XLOG_ID
+    }
+
+    // Is this record a transaction commit?
+    pub fn is_xact_commit(&self) -> bool {
+        self.xl_rmid == pg_constants::RM_XACT_ID
+            && (self.xl_info & pg_constants::XLOG_XACT_OPMASK == XLOG_XACT_COMMIT
+                || self.xl_info & pg_constants::XLOG_XACT_OPMASK == XLOG_XACT_COMMIT_PREPARED)
     }
 }
 
