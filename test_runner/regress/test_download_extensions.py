@@ -12,6 +12,7 @@ from fixtures.neon_fixtures import (
     NeonEnvBuilder,
 )
 from fixtures.pg_version import PgVersion
+from fixtures.utils import skip_on_postgres
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers.request import Request
 from werkzeug.wrappers.response import Response
@@ -41,17 +42,14 @@ def neon_env_builder_local(
     return neon_env_builder
 
 
+@skip_on_postgres(PgVersion.V16, reason="TODO: PG16 extension building")
+@skip_on_postgres(PgVersion.V17, reason="TODO: PG17 extension building")
 def test_remote_extensions(
     httpserver: HTTPServer,
     neon_env_builder_local: NeonEnvBuilder,
     httpserver_listen_address,
     pg_version,
 ):
-    if pg_version == PgVersion.V16:
-        pytest.skip("TODO: PG16 extension building")
-    if pg_version == PgVersion.V17:
-        pytest.skip("TODO: PG17 extension building")
-
     # setup mock http server
     # that expects request for anon.tar.zst
     # and returns the requested file

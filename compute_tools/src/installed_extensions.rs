@@ -1,4 +1,5 @@
 use compute_api::responses::{InstalledExtension, InstalledExtensions};
+use metrics::proto::MetricFamily;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use tracing::info;
@@ -7,6 +8,10 @@ use url::Url;
 use anyhow::Result;
 use postgres::{Client, NoTls};
 use tokio::task;
+
+use metrics::core::Collector;
+use metrics::{register_uint_gauge_vec, UIntGaugeVec};
+use once_cell::sync::Lazy;
 
 /// We don't reuse get_existing_dbs() just for code clarity
 /// and to make database listing query here more explicit.
@@ -59,6 +64,12 @@ pub async fn get_installed_extensions(connstr: Url) -> Result<InstalledExtension
 
             for (extname, v) in extensions.iter() {
                 let version = v.to_string();
+
+                // increment the number of databases where the version of extension is installed
+                INSTALLED_EXTENSIONS
+                    .with_label_values(&[extname, &version])
+                    .inc();
+
                 extensions_map
                     .entry(extname.to_string())
                     .and_modify(|e| {
@@ -74,9 +85,11 @@ pub async fn get_installed_extensions(connstr: Url) -> Result<InstalledExtension
             }
         }
 
-        Ok(InstalledExtensions {
+        let res = InstalledExtensions {
             extensions: extensions_map.values().cloned().collect(),
-        })
+        };
+
+        Ok(res)
     })
     .await?
 }
@@ -97,6 +110,18 @@ pub fn get_installed_extensions_sync(connstr: Url) -> Result<()> {
         "[NEON_EXT_STAT] {}",
         serde_json::to_string(&result).expect("failed to serialize extensions list")
     );
-
     Ok(())
+}
+
+static INSTALLED_EXTENSIONS: Lazy<UIntGaugeVec> = Lazy::new(|| {
+    register_uint_gauge_vec!(
+        "installed_extensions",
+        "Number of databases where the version of extension is installed",
+        &["extension_name", "version"]
+    )
+    .expect("failed to define a metric")
+});
+
+pub fn collect() -> Vec<MetricFamily> {
+    INSTALLED_EXTENSIONS.collect()
 }

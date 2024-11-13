@@ -265,6 +265,9 @@ impl PhysicalStorage {
             // Try to open existing partial file
             Ok((file, true))
         } else {
+            let _timer = WAL_STORAGE_OPERATION_SECONDS
+                .with_label_values(&["initialize_segment"])
+                .start_timer();
             // Create and fill new partial file
             //
             // We're using fdatasync during WAL writing, so file size must not
@@ -282,8 +285,6 @@ impl PhysicalStorage {
             });
             file.set_len(self.wal_seg_size as u64).await?;
 
-            // Note: this doesn't get into observe_flush_seconds metric. But
-            // segment init should be separate metric, if any.
             if let Err(e) = durable_rename(&tmp_path, &wal_file_partial_path, !self.no_sync).await {
                 // Probably rename succeeded, but fsync of it failed. Remove
                 // the file then to avoid using it.

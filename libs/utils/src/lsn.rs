@@ -138,6 +138,11 @@ impl Lsn {
         self.0.checked_sub(other).map(Lsn)
     }
 
+    /// Subtract a number, saturating at numeric bounds instead of overflowing.
+    pub fn saturating_sub<T: Into<u64>>(self, other: T) -> Lsn {
+        Lsn(self.0.saturating_sub(other.into()))
+    }
+
     /// Subtract a number, returning the difference as i128 to avoid overflow.
     pub fn widening_sub<T: Into<u64>>(self, other: T) -> i128 {
         let other: u64 = other.into();

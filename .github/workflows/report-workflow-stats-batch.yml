@@ -1,0 +1,29 @@
+name: Report Workflow Stats Batch
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+    - cron: '25 0 * * *'
+
+jobs:
+  gh-workflow-stats-batch:
+    name: GitHub Workflow Stats Batch
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+    steps:
+    - name: Export Workflow Run for the past 2 hours
+      uses: neondatabase/gh-workflow-stats-action@v0.2.1
+      with:
+        db_uri: ${{ secrets.GH_REPORT_STATS_DB_RW_CONNSTR }}
+        db_table: "gh_workflow_stats_batch_neon"
+        gh_token: ${{ secrets.GITHUB_TOKEN }}
+        duration: '2h'
+    - name: Export Workflow Run for the past 24 hours
+      if: github.event.schedule == '25 0 * * *'
+      uses: neondatabase/gh-workflow-stats-action@v0.2.1
+      with:
+        db_uri: ${{ secrets.GH_REPORT_STATS_DB_RW_CONNSTR }}
+        db_table: "gh_workflow_stats_batch_neon"
+        gh_token: ${{ secrets.GITHUB_TOKEN }}
+        duration: '24h'

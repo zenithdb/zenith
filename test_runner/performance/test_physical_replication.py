@@ -102,15 +102,21 @@ def test_ro_replica_lag(
                     check_pgbench_still_running(master_workload)
                     check_pgbench_still_running(replica_workload)
                     time.sleep(sync_interval_min * 60)
+
+                    conn_master = psycopg2.connect(master_connstr)
+                    conn_replica = psycopg2.connect(replica_connstr)
+                    conn_master.autocommit = True
+                    conn_replica.autocommit = True
+
                     with (
-                        psycopg2.connect(master_connstr) as conn_master,
-                        psycopg2.connect(replica_connstr) as conn_replica,
+                        conn_master.cursor() as cur_master,
+                        conn_replica.cursor() as cur_replica,
                     ):
-                        with (
-                            conn_master.cursor() as cur_master,
-                            conn_replica.cursor() as cur_replica,
-                        ):
-                            lag = measure_replication_lag(cur_master, cur_replica)
+                        lag = measure_replication_lag(cur_master, cur_replica)
+
+                    conn_master.close()
+                    conn_replica.close()
+
                     log.info(f"Replica lagged behind master by {lag} seconds")
                     zenbenchmark.record("replica_lag", lag, "s", MetricReport.LOWER_IS_BETTER)
             finally:
@@ -219,11 +225,15 @@ def test_replication_start_stop(
         pg_bin.run_capture(["pgbench", "-i", "-I", "dtGvp", "-s10"], env=master_env)
 
         # Sync replicas
-        with psycopg2.connect(master_connstr) as conn_master:
-            with conn_master.cursor() as cur_master:
-                for i in range(num_replicas):
-                    conn_replica = psycopg2.connect(replica_connstr[i])
-                    measure_replication_lag(cur_master, conn_replica.cursor())
+        conn_master = psycopg2.connect(master_connstr)
+        conn_master.autocommit = True
+
+        with conn_master.cursor() as cur_master:
+            for i in range(num_replicas):
+                conn_replica = psycopg2.connect(replica_connstr[i])
+                measure_replication_lag(cur_master, conn_replica.cursor())
+
+        conn_master.close()
 
         master_pgbench = pg_bin.run_nonblocking(
             [
@@ -277,17 +287,22 @@ def test_replication_start_stop(
 
             time.sleep(configuration_test_time_sec)
 
-            with psycopg2.connect(master_connstr) as conn_master:
-                with conn_master.cursor() as cur_master:
-                    for ireplica in range(num_replicas):
-                        replica_conn = psycopg2.connect(replica_connstr[ireplica])
-                        lag = measure_replication_lag(cur_master, replica_conn.cursor())
-                        zenbenchmark.record(
-                            f"Replica {ireplica} lag", lag, "s", MetricReport.LOWER_IS_BETTER
-                        )
-                        log.info(
-                            f"Replica {ireplica} lagging behind master by {lag} seconds after configuration {iconfig:>b}"
-                        )
+            conn_master = psycopg2.connect(master_connstr)
+            conn_master.autocommit = True
+
+            with conn_master.cursor() as cur_master:
+                for ireplica in range(num_replicas):
+                    replica_conn = psycopg2.connect(replica_connstr[ireplica])
+                    lag = measure_replication_lag(cur_master, replica_conn.cursor())
+                    zenbenchmark.record(
+                        f"Replica {ireplica} lag", lag, "s", MetricReport.LOWER_IS_BETTER
+                    )
+                    log.info(
+                        f"Replica {ireplica} lagging behind master by {lag} seconds after configuration {iconfig:>b}"
+                    )
+
+            conn_master.close()
+
         master_pgbench.terminate()
     except Exception as e:
         error_occurred = True

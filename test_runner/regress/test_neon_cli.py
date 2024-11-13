@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 from typing import cast
@@ -15,7 +14,7 @@ from fixtures.neon_fixtures import (
     parse_project_git_version_output,
 )
 from fixtures.pageserver.http import PageserverHttpClient
-from fixtures.pg_version import PgVersion, skip_on_postgres
+from fixtures.utils import run_only_on_default_postgres, skip_in_debug_build
 
 
 def helper_compare_timeline_list(
@@ -195,10 +194,8 @@ def test_cli_start_stop_multi(neon_env_builder: NeonEnvBuilder):
     res.check_returncode()
 
 
-@skip_on_postgres(PgVersion.V14, reason="does not use postgres")
-@pytest.mark.skipif(
-    os.environ.get("BUILD_TYPE") == "debug", reason="unit test for test support, either build works"
-)
+@run_only_on_default_postgres(reason="does not use postgres")
+@skip_in_debug_build("unit test for test support, either build works")
 def test_parse_project_git_version_output_positive():
     commit = "b6f77b5816cf1dba12a3bc8747941182ce220846"
 
@@ -217,10 +214,8 @@ def test_parse_project_git_version_output_positive():
         assert parse_project_git_version_output(example) == commit
 
 
-@skip_on_postgres(PgVersion.V14, reason="does not use postgres")
-@pytest.mark.skipif(
-    os.environ.get("BUILD_TYPE") == "debug", reason="unit test for test support, either build works"
-)
+@run_only_on_default_postgres(reason="does not use postgres")
+@skip_in_debug_build("unit test for test support, either build works")
 def test_parse_project_git_version_output_local_docker():
     """
     Makes sure the tests don't accept the default version in Dockerfile one gets without providing
@@ -234,10 +229,8 @@ def test_parse_project_git_version_output_local_docker():
     assert input in str(e)
 
 
-@skip_on_postgres(PgVersion.V14, reason="does not use postgres")
-@pytest.mark.skipif(
-    os.environ.get("BUILD_TYPE") == "debug", reason="cli api sanity, either build works"
-)
+@run_only_on_default_postgres(reason="does not use postgres")
+@skip_in_debug_build("unit test for test support, either build works")
 def test_binaries_version_parses(neon_binpath: Path):
     """
     Ensures that we can parse the actual outputs of --version from a set of binaries.

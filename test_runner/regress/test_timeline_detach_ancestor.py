@@ -869,8 +869,17 @@ def test_sharded_timeline_detach_ancestor(neon_env_builder: NeonEnvBuilder):
         assert count == 10000
 
 
-@pytest.mark.parametrize("mode", ["delete_timeline", "delete_tenant"])
-@pytest.mark.parametrize("sharded", [False, True])
+@pytest.mark.parametrize(
+    "mode, sharded",
+    [
+        ("delete_timeline", False),
+        ("delete_timeline", True),
+        ("delete_tenant", False),
+        # the shared/exclusive lock for tenant is blocking this:
+        # timeline detach ancestor takes shared, delete tenant takes exclusive
+        # ("delete_tenant", True)
+    ],
+)
 def test_timeline_detach_ancestor_interrupted_by_deletion(
     neon_env_builder: NeonEnvBuilder, mode: str, sharded: bool
 ):
@@ -884,11 +893,6 @@ def test_timeline_detach_ancestor_interrupted_by_deletion(
     What remains not tested by this:
     - shutdown winning over complete, see test_timeline_is_deleted_before_timeline_detach_ancestor_completes
     """
-
-    if sharded and mode == "delete_tenant":
-        # the shared/exclusive lock for tenant is blocking this:
-        # timeline detach ancestor takes shared, delete tenant takes exclusive
-        pytest.skip("tenant deletion while timeline ancestor detach is underway cannot happen")
 
     shard_count = 2 if sharded else 1
 

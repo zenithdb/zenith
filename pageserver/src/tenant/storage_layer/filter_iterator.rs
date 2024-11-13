@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 use anyhow::bail;
 use pageserver_api::{
@@ -9,7 +9,10 @@ use utils::lsn::Lsn;
 
 use pageserver_api::value::Value;
 
-use super::merge_iterator::MergeIterator;
+use super::{
+    merge_iterator::{MergeIterator, MergeIteratorItem},
+    PersistentLayerKey,
+};
 
 /// A filter iterator over merge iterators (and can be easily extended to other types of iterators).
 ///
@@ -48,10 +51,10 @@ impl<'a> FilterIterator<'a> {
         })
     }
 
-    pub async fn next(&mut self) -> anyhow::Result<Option<(Key, Lsn, Value)>> {
-        while let Some(item) = self.inner.next().await? {
+    async fn next_inner<R: MergeIteratorItem>(&mut self) -> anyhow::Result<Option<R>> {
+        while let Some(item) = self.inner.next_inner::<R>().await? {
             while self.current_filter_idx < self.retain_key_filters.len()
-                && item.0 >= self.retain_key_filters[self.current_filter_idx].end
+                && item.key_lsn_value().0 >= self.retain_key_filters[self.current_filter_idx].end
             {
                 // [filter region]    [filter region]     [filter region]
                 //                                     ^ item
@@ -68,7 +71,7 @@ impl<'a> FilterIterator<'a> {
                 //                                                 ^ current filter (nothing)
                 return Ok(None);
             }
-            if self.retain_key_filters[self.current_filter_idx].contains(&item.0) {
+            if self.retain_key_filters[self.current_filter_idx].contains(&item.key_lsn_value().0) {
                 // [filter region]    [filter region]     [filter region]
                 //                                              ^ item
                 //                                        ^ current filter
@@ -80,6 +83,16 @@ impl<'a> FilterIterator<'a> {
             //                                        ^ current filter
         }
         Ok(None)
+    }
+
+    pub async fn next(&mut self) -> anyhow::Result<Option<(Key, Lsn, Value)>> {
+        self.next_inner().await
+    }
+
+    pub async fn next_with_trace(
+        &mut self,
+    ) -> anyhow::Result<Option<((Key, Lsn, Value), Arc<PersistentLayerKey>)>> {
+        self.next_inner().await
     }
 }
 

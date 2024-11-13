@@ -91,7 +91,7 @@ generating the basebackup by scanning the `REPL_ORIGIN_KEY_PREFIX` keyspace.
 There are two places we need to read the aux files from the pageserver:
 
 * On the write path, when the compute node adds an aux file to the pageserver, we will retrieve the key from the storage, append the file to the hashed key, and write it back. The current `get` API already supports that.
-*  We use the vectored get API to retrieve all aux files during generating the basebackup. Because we need to scan a sparse keyspace, we slightly modified the vectored get path. The vectorized API will attempt to retrieve every single key within the requested key range, and therefore, we modified it in a way that keys within `NON_INHERITED_SPARSE_RANGE` will not trigger missing key error.
+*  We use the vectored get API to retrieve all aux files during generating the basebackup. Because we need to scan a sparse keyspace, we slightly modified the vectored get path. The vectorized API used to always attempt to retrieve every single key within the requested key range, and therefore, we modified it in a way that keys within `NON_INHERITED_SPARSE_RANGE` will not trigger missing key error. Furthermore, as aux file reads usually need all layer files intersecting with that key range within the branch and cover a big keyspace, it incurs large overhead for tracking keyspaces that have not been read. Therefore, for sparse keyspaces, we [do not track](https://github.com/neondatabase/neon/pull/9631) `ummapped_keyspace`.
 
 ## Compaction and Image Layer Generation
 

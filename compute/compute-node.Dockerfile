@@ -624,16 +624,12 @@ FROM build-deps AS pg-cron-pg-build
 ARG PG_VERSION
 COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
-# 1.6.4 available, supports v17
 # This is an experimental extension that we do not support on prod yet.
 # !Do not remove!
 # We set it in shared_preload_libraries and computes will fail to start if library is not found.
 ENV PATH="/usr/local/pgsql/bin/:$PATH"
-RUN case "${PG_VERSION}" in "v17") \
-    echo "v17 extensions are not supported yet. Quit" && exit 0;; \
-    esac && \
-    wget https://github.com/citusdata/pg_cron/archive/refs/tags/v1.6.0.tar.gz -O pg_cron.tar.gz && \
-    echo "383a627867d730222c272bfd25cd5e151c578d73f696d32910c7db8c665cc7db pg_cron.tar.gz" | sha256sum --check && \
+RUN wget https://github.com/citusdata/pg_cron/archive/refs/tags/v1.6.4.tar.gz -O pg_cron.tar.gz && \
+    echo "52d1850ee7beb85a4cb7185731ef4e5a90d1de216709d8988324b0d02e76af61 pg_cron.tar.gz" | sha256sum --check && \
     mkdir pg_cron-src && cd pg_cron-src && tar xzf ../pg_cron.tar.gz --strip-components=1 -C . && \
     make -j $(getconf _NPROCESSORS_ONLN) && \
     make -j $(getconf _NPROCESSORS_ONLN) install && \
@@ -1474,6 +1470,8 @@ RUN mkdir -p /etc/local_proxy && chown postgres:postgres /etc/local_proxy
 # Metrics exporter binaries and  configuration files
 COPY --from=postgres-exporter /bin/postgres_exporter /bin/postgres_exporter
 COPY --from=sql-exporter      /bin/sql_exporter      /bin/sql_exporter
+
+COPY --chown=postgres compute/etc/postgres_exporter.yml /etc/postgres_exporter.yml
 
 COPY --from=sql_exporter_preprocessor --chmod=0644 /home/nonroot/compute/etc/sql_exporter.yml               /etc/sql_exporter.yml
 COPY --from=sql_exporter_preprocessor --chmod=0644 /home/nonroot/compute/etc/neon_collector.yml             /etc/neon_collector.yml

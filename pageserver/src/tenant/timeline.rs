@@ -3531,7 +3531,7 @@ impl Timeline {
                         self.get_compaction_threshold(),
                         DEFAULT_COMPACTION_THRESHOLD,
                     )
-                    && frozen_layer_total_size >= /* 64 MB */ 64000000
+                    && frozen_layer_total_size >= /* 128 MB */ 128000000
                 {
                     tracing::warn!(
                         "too many frozen layers: {num_frozen_layers} layers with estimated in-mem size of {frozen_layer_total_size} bytes",

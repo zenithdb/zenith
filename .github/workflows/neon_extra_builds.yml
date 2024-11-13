@@ -201,6 +201,8 @@ jobs:
           REPORT_URL: ${{ steps.upload-stats.outputs.report-url }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         with:
+          # Retry script for 5XX server errors: https://github.com/actions/github-script#retries
+          retries: 5
           script: |
             const { REPORT_URL, SHA } = process.env
 

@@ -19,7 +19,8 @@ pub fn check_permission(claims: &Claims, tenant_id: Option<TenantId>) -> Result<
             | Scope::SafekeeperData
             | Scope::GenerationsApi
             | Scope::Infra
-            | Scope::Scrubber,
+            | Scope::Scrubber
+            | Scope::ControllerPeer,
             _,
         ) => Err(AuthError(
             format!(

@@ -1,6 +1,7 @@
 use std::{
     cmp::Ordering,
     collections::{binary_heap, BinaryHeap},
+    sync::Arc,
 };
 
 use anyhow::bail;
@@ -13,10 +14,11 @@ use pageserver_api::value::Value;
 use super::{
     delta_layer::{DeltaLayerInner, DeltaLayerIterator},
     image_layer::{ImageLayerInner, ImageLayerIterator},
+    PersistentLayerDesc, PersistentLayerKey,
 };
 
 #[derive(Clone, Copy)]
-enum LayerRef<'a> {
+pub(crate) enum LayerRef<'a> {
     Image(&'a ImageLayerInner),
     Delta(&'a DeltaLayerInner),
 }
@@ -62,18 +64,20 @@ impl LayerIterRef<'_> {
 /// 1. Unified iterator for image and delta layers.
 /// 2. `Ord` for use in [`MergeIterator::heap`] (for the k-merge).
 /// 3. Lazy creation of the real delta/image iterator.
-enum IteratorWrapper<'a> {
+pub(crate) enum IteratorWrapper<'a> {
     NotLoaded {
         ctx: &'a RequestContext,
         first_key_lower_bound: (Key, Lsn),
         layer: LayerRef<'a>,
+        source_desc: Arc<PersistentLayerKey>,
     },
     Loaded {
         iter: PeekableLayerIterRef<'a>,
+        source_desc: Arc<PersistentLayerKey>,
     },
 }
 
-struct PeekableLayerIterRef<'a> {
+pub(crate) struct PeekableLayerIterRef<'a> {
     iter: LayerIterRef<'a>,
     peeked: Option<(Key, Lsn, Value)>, // None == end
 }
@@ -151,6 +155,12 @@ impl<'a> IteratorWrapper<'a> {
             layer: LayerRef::Image(image_layer),
             first_key_lower_bound: (image_layer.key_range().start, image_layer.lsn()),
             ctx,
+            source_desc: PersistentLayerKey {
+                key_range: image_layer.key_range().clone(),
+                lsn_range: PersistentLayerDesc::image_layer_lsn_range(image_layer.lsn()),
+                is_delta: false,
+            }
+            .into(),
         }
     }
 
@@ -162,12 +172,18 @@ impl<'a> IteratorWrapper<'a> {
             layer: LayerRef::Delta(delta_layer),
             first_key_lower_bound: (delta_layer.key_range().start, delta_layer.lsn_range().start),
             ctx,
+            source_desc: PersistentLayerKey {
+                key_range: delta_layer.key_range().clone(),
+                lsn_range: delta_layer.lsn_range().clone(),
+                is_delta: true,
+            }
+            .into(),
         }
     }
 
     fn peek_next_key_lsn_value(&self) -> Option<(&Key, Lsn, Option<&Value>)> {
         match self {
-            Self::Loaded { iter } => iter
+            Self::Loaded { iter, .. } => iter
                 .peek()
                 .as_ref()
                 .map(|(key, lsn, val)| (key, *lsn, Some(val))),
@@ -191,6 +207,7 @@ impl<'a> IteratorWrapper<'a> {
             ctx,
             first_key_lower_bound,
             layer,
+            source_desc,
         } = self
         else {
             unreachable!()
@@ -206,7 +223,10 @@ impl<'a> IteratorWrapper<'a> {
                 );
             }
         }
-        *self = Self::Loaded { iter };
+        *self = Self::Loaded {
+            iter,
+            source_desc: source_desc.clone(),
+        };
         Ok(())
     }
 
@@ -220,10 +240,18 @@ impl<'a> IteratorWrapper<'a> {
     /// The public interfaces to use are [`crate::tenant::storage_layer::delta_layer::DeltaLayerIterator`] and
     /// [`crate::tenant::storage_layer::image_layer::ImageLayerIterator`].
     async fn next(&mut self) -> anyhow::Result<Option<(Key, Lsn, Value)>> {
-        let Self::Loaded { iter } = self else {
+        let Self::Loaded { iter, .. } = self else {
             panic!("must load the iterator before using")
         };
         iter.next().await
+    }
+
+    /// Get the persistent layer key corresponding to this iterator
+    fn trace_source(&self) -> Arc<PersistentLayerKey> {
+        match self {
+            Self::Loaded { source_desc, .. } => source_desc.clone(),
+            Self::NotLoaded { source_desc, .. } => source_desc.clone(),
+        }
     }
 }
 
@@ -240,6 +268,32 @@ impl<'a> IteratorWrapper<'a> {
 /// The iterator will always put the image before the delta.
 pub struct MergeIterator<'a> {
     heap: BinaryHeap<IteratorWrapper<'a>>,
+}
+
+pub(crate) trait MergeIteratorItem {
+    fn new(item: (Key, Lsn, Value), iterator: &IteratorWrapper<'_>) -> Self;
+
+    fn key_lsn_value(&self) -> &(Key, Lsn, Value);
+}
+
+impl MergeIteratorItem for (Key, Lsn, Value) {
+    fn new(item: (Key, Lsn, Value), _: &IteratorWrapper<'_>) -> Self {
+        item
+    }
+
+    fn key_lsn_value(&self) -> &(Key, Lsn, Value) {
+        self
+    }
+}
+
+impl MergeIteratorItem for ((Key, Lsn, Value), Arc<PersistentLayerKey>) {
+    fn new(item: (Key, Lsn, Value), iter: &IteratorWrapper<'_>) -> Self {
+        (item, iter.trace_source().clone())
+    }
+
+    fn key_lsn_value(&self) -> &(Key, Lsn, Value) {
+        &self.0
+    }
 }
 
 impl<'a> MergeIterator<'a> {
@@ -260,7 +314,7 @@ impl<'a> MergeIterator<'a> {
         }
     }
 
-    pub async fn next(&mut self) -> anyhow::Result<Option<(Key, Lsn, Value)>> {
+    pub(crate) async fn next_inner<R: MergeIteratorItem>(&mut self) -> anyhow::Result<Option<R>> {
         while let Some(mut iter) = self.heap.peek_mut() {
             if !iter.is_loaded() {
                 // Once we load the iterator, we can know the real first key-value pair in the iterator.
@@ -275,9 +329,21 @@ impl<'a> MergeIterator<'a> {
                 binary_heap::PeekMut::pop(iter);
                 continue;
             };
-            return Ok(Some(item));
+            return Ok(Some(R::new(item, &iter)));
         }
         Ok(None)
+    }
+
+    /// Get the next key-value pair from the iterator.
+    pub async fn next(&mut self) -> anyhow::Result<Option<(Key, Lsn, Value)>> {
+        self.next_inner().await
+    }
+
+    /// Get the next key-value pair from the iterator, and trace where the key comes from.
+    pub async fn next_with_trace(
+        &mut self,
+    ) -> anyhow::Result<Option<((Key, Lsn, Value), Arc<PersistentLayerKey>)>> {
+        self.next_inner().await
     }
 }
 
@@ -496,7 +562,7 @@ mod tests {
             (
                 get_key(0),
                 Lsn(0x10),
-                Value::WalRecord(NeonWalRecord::wal_init()),
+                Value::WalRecord(NeonWalRecord::wal_init("")),
             ),
             (
                 get_key(0),
@@ -506,7 +572,7 @@ mod tests {
             (
                 get_key(5),
                 Lsn(0x10),
-                Value::WalRecord(NeonWalRecord::wal_init()),
+                Value::WalRecord(NeonWalRecord::wal_init("")),
             ),
             (
                 get_key(5),

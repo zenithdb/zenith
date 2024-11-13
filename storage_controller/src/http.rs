@@ -1033,7 +1033,7 @@ async fn handle_update_preferred_azs(req: Request<Body>) -> Result<Response<Body
 }
 
 async fn handle_step_down(req: Request<Body>) -> Result<Response<Body>, ApiError> {
-    check_permissions(&req, Scope::Admin)?;
+    check_permissions(&req, Scope::ControllerPeer)?;
 
     let req = match maybe_forward(req).await {
         ForwardOutcome::Forwarded(res) => {

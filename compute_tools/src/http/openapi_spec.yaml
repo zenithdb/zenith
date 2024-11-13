@@ -37,6 +37,21 @@ paths:
               schema:
                 $ref: "#/components/schemas/ComputeMetrics"
 
+  /metrics
+    get:
+      tags:
+      - Info
+      summary: Get compute node metrics in text format.
+      description: ""
+      operationId: getComputeMetrics
+      responses:
+        200:
+          description: ComputeMetrics
+          content:
+            text/plain:
+              schema:
+                type: string
+                description: Metrics in text format.
   /insights:
     get:
       tags:

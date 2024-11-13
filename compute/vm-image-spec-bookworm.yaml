@@ -26,7 +26,7 @@ commands:
   - name: postgres-exporter
     user: nobody
     sysvInitAction: respawn
-    shell: 'DATA_SOURCE_NAME="user=cloud_admin sslmode=disable dbname=postgres application_name=postgres-exporter" /bin/postgres_exporter'
+    shell: 'DATA_SOURCE_NAME="user=cloud_admin sslmode=disable dbname=postgres application_name=postgres-exporter" /bin/postgres_exporter --config.file=/etc/postgres_exporter.yml'
   - name: sql-exporter
     user: nobody
     sysvInitAction: respawn

@@ -40,6 +40,11 @@ pub enum Scope {
     /// Allows access to storage controller APIs used by the scrubber, to interrogate the state
     /// of a tenant & post scrub results.
     Scrubber,
+
+    /// This scope is used for communication with other storage controller instances.
+    /// At the time of writing, this is only used for the step down request.
+    #[serde(rename = "controller_peer")]
+    ControllerPeer,
 }
 
 /// JWT payload. See docs/authentication.md for the format

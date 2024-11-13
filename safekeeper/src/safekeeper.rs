@@ -980,7 +980,8 @@ where
             self.wal_store.flush_wal().await?;
         }
 
-        // Update commit_lsn.
+        // Update commit_lsn. It will be flushed to the control file regularly by the timeline
+        // manager, off of the WAL ingest hot path.
         if msg.h.commit_lsn != Lsn(0) {
             self.update_commit_lsn(msg.h.commit_lsn).await?;
         }
@@ -992,15 +993,6 @@ where
         // Thus, take max before adopting.
         self.state.inmem.peer_horizon_lsn =
             max(self.state.inmem.peer_horizon_lsn, msg.h.truncate_lsn);
-
-        // Update truncate and commit LSN in control file.
-        // To avoid negative impact on performance of extra fsync, do it only
-        // when commit_lsn delta exceeds WAL segment size.
-        if self.state.commit_lsn + (self.state.server.wal_seg_size as u64)
-            < self.state.inmem.commit_lsn
-        {
-            self.state.flush().await?;
-        }
 
         trace!(
             "processed AppendRequest of len {}, begin_lsn={}, end_lsn={:?}, commit_lsn={:?}, truncate_lsn={:?}, flushed={:?}",

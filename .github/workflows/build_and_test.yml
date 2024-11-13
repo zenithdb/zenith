@@ -497,6 +497,8 @@ jobs:
           REPORT_URL_NEW: ${{ steps.upload-coverage-report-new.outputs.report-url }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         with:
+          # Retry script for 5XX server errors: https://github.com/actions/github-script#retries
+          retries: 5
           script: |
             const { REPORT_URL_NEW, COMMIT_SHA } = process.env
 

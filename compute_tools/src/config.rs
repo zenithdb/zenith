@@ -74,10 +74,17 @@ pub fn write_postgres_conf(
     }
 
     // Locales
-    writeln!(file, "lc_messages='C.UTF-8'")?;
-    writeln!(file, "lc_monetary='C.UTF-8'")?;
-    writeln!(file, "lc_time='C.UTF-8'")?;
-    writeln!(file, "lc_numeric='C.UTF-8'")?;
+    if cfg!(target_os = "macos") {
+        writeln!(file, "lc_messages='C'")?;
+        writeln!(file, "lc_monetary='C'")?;
+        writeln!(file, "lc_time='C'")?;
+        writeln!(file, "lc_numeric='C'")?;
+    } else {
+        writeln!(file, "lc_messages='C.UTF-8'")?;
+        writeln!(file, "lc_monetary='C.UTF-8'")?;
+        writeln!(file, "lc_time='C.UTF-8'")?;
+        writeln!(file, "lc_numeric='C.UTF-8'")?;
+    }
 
     match spec.mode {
         ComputeMode::Primary => {}

@@ -9,6 +9,7 @@ use crate::catalog::SchemaDumpError;
 use crate::catalog::{get_database_schema, get_dbs_and_roles};
 use crate::compute::forward_termination_signal;
 use crate::compute::{ComputeNode, ComputeState, ParsedSpec};
+use crate::installed_extensions;
 use compute_api::requests::{ConfigurationRequest, ExtensionInstallRequest, SetRoleGrantsRequest};
 use compute_api::responses::{
     ComputeStatus, ComputeStatusResponse, ExtensionInstallResult, GenericAPIError,
@@ -19,6 +20,8 @@ use anyhow::Result;
 use hyper::header::CONTENT_TYPE;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
+use metrics::Encoder;
+use metrics::TextEncoder;
 use tokio::task;
 use tracing::{debug, error, info, warn};
 use tracing_utils::http::OtelName;
@@ -65,6 +68,28 @@ async fn routes(req: Request<Body>, compute: &Arc<ComputeNode>) -> Response<Body
             Response::new(Body::from(serde_json::to_string(&metrics).unwrap()))
         }
 
+        // Prometheus metrics
+        (&Method::GET, "/metrics") => {
+            debug!("serving /metrics GET request");
+
+            let mut buffer = vec![];
+            let metrics = installed_extensions::collect();
+            let encoder = TextEncoder::new();
+            encoder.encode(&metrics, &mut buffer).unwrap();
+
+            match Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, encoder.format_type())
+                .body(Body::from(buffer))
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    let msg = format!("error handling /metrics request: {err}");
+                    error!(msg);
+                    render_json_error(&msg, StatusCode::INTERNAL_SERVER_ERROR)
+                }
+            }
+        }
         // Collect Postgres current usage insights
         (&Method::GET, "/insights") => {
             info!("serving /insights GET request");

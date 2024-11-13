@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from typing import TYPE_CHECKING
 
@@ -16,7 +15,7 @@ from fixtures.neon_fixtures import (
 )
 from fixtures.pageserver.http import PageserverHttpClient
 from fixtures.pageserver.utils import wait_for_last_record_lsn, wait_for_upload
-from fixtures.utils import wait_until
+from fixtures.utils import skip_in_debug_build, wait_until
 
 if TYPE_CHECKING:
     from typing import Optional
@@ -227,12 +226,9 @@ def test_idle_checkpoints(neon_env_builder: NeonEnvBuilder):
         assert get_dirty_bytes(env) >= dirty_after_write
 
 
-@pytest.mark.skipif(
-    # We have to use at least ~100MB of data to hit the lowest limit we can configure, which is
-    # prohibitively slow in debug mode
-    os.getenv("BUILD_TYPE") == "debug",
-    reason="Avoid running bulkier ingest tests in debug mode",
-)
+# We have to use at least ~100MB of data to hit the lowest limit we can configure, which is
+# prohibitively slow in debug mode
+@skip_in_debug_build("Avoid running bulkier ingest tests in debug mode")
 def test_total_size_limit(neon_env_builder: NeonEnvBuilder):
     """
     Test that checkpoints are done based on total ephemeral layer size, even if no one timeline is

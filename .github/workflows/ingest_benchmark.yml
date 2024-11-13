@@ -1,0 +1,372 @@
+name: Benchmarking
+
+on:
+  # uncomment to run on push for debugging your PR
+  # push:
+  #   branches: [ your branch ]
+  schedule:
+    # * is a special character in YAML so you have to quote this string
+    #          ┌───────────── minute (0 - 59)
+    #          │ ┌───────────── hour (0 - 23)
+    #          │ │ ┌───────────── day of the month (1 - 31)
+    #          │ │ │ ┌───────────── month (1 - 12 or JAN-DEC)
+    #          │ │ │ │ ┌───────────── day of the week (0 - 6 or SUN-SAT)
+    - cron:   '0 9 * * *' # run once a day, timezone is utc
+  workflow_dispatch: # adds ability to run this manually
+    
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
+concurrency:
+  # Allow only one workflow globally because we need dedicated resources which only exist once
+  group: ingest-bench-workflow
+  cancel-in-progress: true
+
+jobs:
+  ingest:
+    strategy:
+      matrix:
+        target_project: [new_empty_project, large_existing_project]  
+    permissions:
+      contents: write
+      statuses: write
+      id-token: write # aws-actions/configure-aws-credentials
+    env:
+      PG_CONFIG: /tmp/neon/pg_install/v16/bin/pg_config
+      PSQL: /tmp/neon/pg_install/v16/bin/psql
+      PG_16_LIB_PATH: /tmp/neon/pg_install/v16/lib
+      PGCOPYDB: /pgcopydb/bin/pgcopydb
+      PGCOPYDB_LIB_PATH: /pgcopydb/lib
+    runs-on: [ self-hosted, us-east-2, x64 ]
+    container:
+      image: neondatabase/build-tools:pinned-bookworm
+      credentials:
+        username: ${{ secrets.NEON_DOCKERHUB_USERNAME }}
+        password: ${{ secrets.NEON_DOCKERHUB_PASSWORD }}
+      options: --init
+    timeout-minutes: 1440
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS credentials # necessary to download artefacts
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: eu-central-1
+        role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
+        role-duration-seconds: 18000 # 5 hours is currently max associated with IAM role 
+
+    - name: Download Neon artifact
+      uses: ./.github/actions/download
+      with:
+        name: neon-${{ runner.os }}-${{ runner.arch }}-release-artifact
+        path: /tmp/neon/
+        prefix: latest
+
+    - name: Create Neon Project
+      if: ${{ matrix.target_project == 'new_empty_project' }}
+      id: create-neon-project-ingest-target
+      uses: ./.github/actions/neon-project-create
+      with:
+        region_id: aws-us-east-2
+        postgres_version: 16
+        compute_units: '[7, 7]' # we want to test large compute here to avoid compute-side bottleneck
+        api_key: ${{ secrets.NEON_STAGING_API_KEY }}
+
+    - name: Initialize Neon project and retrieve current backpressure seconds
+      if: ${{ matrix.target_project == 'new_empty_project' }}
+      env:
+          NEW_PROJECT_CONNSTR: ${{ steps.create-neon-project-ingest-target.outputs.dsn }}
+          NEW_PROJECT_ID: ${{ steps.create-neon-project-ingest-target.outputs.project_id }}
+      run: |
+        echo "Initializing Neon project with project_id: ${NEW_PROJECT_ID}"
+        export LD_LIBRARY_PATH=${PG_16_LIB_PATH}
+        ${PSQL} "${NEW_PROJECT_CONNSTR}" -c "CREATE EXTENSION IF NOT EXISTS neon; CREATE EXTENSION IF NOT EXISTS neon_utils;"
+        BACKPRESSURE_TIME_BEFORE_INGEST=$(${PSQL} "${NEW_PROJECT_CONNSTR}" -t -c "select backpressure_throttling_time()/1000000;")
+        echo "BACKPRESSURE_TIME_BEFORE_INGEST=${BACKPRESSURE_TIME_BEFORE_INGEST}" >> $GITHUB_ENV
+        echo "NEW_PROJECT_CONNSTR=${NEW_PROJECT_CONNSTR}" >> $GITHUB_ENV
+
+    - name: Create Neon Branch for large tenant
+      if: ${{ matrix.target_project == 'large_existing_project' }}
+      id: create-neon-branch-ingest-target
+      uses: ./.github/actions/neon-branch-create
+      with:
+        project_id: ${{ vars.BENCHMARK_INGEST_TARGET_PROJECTID }}
+        api_key: ${{ secrets.NEON_STAGING_API_KEY }}
+
+    - name: Initialize Neon project and retrieve current backpressure seconds
+      if: ${{ matrix.target_project == 'large_existing_project' }}
+      env:
+          NEW_PROJECT_CONNSTR: ${{ steps.create-neon-branch-ingest-target.outputs.dsn }}
+          NEW_BRANCH_ID: ${{ steps.create-neon-branch-ingest-target.outputs.branch_id }}
+      run: |
+        echo "Initializing Neon branch with branch_id: ${NEW_BRANCH_ID}"
+        export LD_LIBRARY_PATH=${PG_16_LIB_PATH}
+        # Extract the part before the database name
+        base_connstr="${NEW_PROJECT_CONNSTR%/*}"
+        # Extract the query parameters (if any) after the database name
+        query_params="${NEW_PROJECT_CONNSTR#*\?}"
+        # Reconstruct the new connection string
+        if [ "$query_params" != "$NEW_PROJECT_CONNSTR" ]; then
+          new_connstr="${base_connstr}/neondb?${query_params}"
+        else
+          new_connstr="${base_connstr}/neondb"
+        fi
+        ${PSQL} "${new_connstr}" -c "drop database ludicrous;"
+        ${PSQL} "${new_connstr}" -c "CREATE DATABASE ludicrous;"
+        if [ "$query_params" != "$NEW_PROJECT_CONNSTR" ]; then
+          NEW_PROJECT_CONNSTR="${base_connstr}/ludicrous?${query_params}"
+        else
+          NEW_PROJECT_CONNSTR="${base_connstr}/ludicrous"
+        fi
+        ${PSQL} "${NEW_PROJECT_CONNSTR}" -c "CREATE EXTENSION IF NOT EXISTS neon; CREATE EXTENSION IF NOT EXISTS neon_utils;"
+        BACKPRESSURE_TIME_BEFORE_INGEST=$(${PSQL} "${NEW_PROJECT_CONNSTR}" -t -c "select backpressure_throttling_time()/1000000;")
+        echo "BACKPRESSURE_TIME_BEFORE_INGEST=${BACKPRESSURE_TIME_BEFORE_INGEST}" >> $GITHUB_ENV
+        echo "NEW_PROJECT_CONNSTR=${NEW_PROJECT_CONNSTR}" >> $GITHUB_ENV
+      
+        
+    - name: Create pgcopydb filter file
+      run: |
+        cat << EOF > /tmp/pgcopydb_filter.txt
+          [include-only-table]
+          public.events
+          public.emails
+          public.email_transmissions
+          public.payments
+          public.editions
+          public.edition_modules
+          public.sp_content
+          public.email_broadcasts
+          public.user_collections
+          public.devices
+          public.user_accounts
+          public.lessons
+          public.lesson_users
+          public.payment_methods
+          public.orders
+          public.course_emails
+          public.modules
+          public.users
+          public.module_users
+          public.courses
+          public.payment_gateway_keys
+          public.accounts
+          public.roles
+          public.payment_gateways
+          public.management
+          public.event_names
+        EOF
+
+    - name: Invoke pgcopydb
+      env:
+          BENCHMARK_INGEST_SOURCE_CONNSTR: ${{ secrets.BENCHMARK_INGEST_SOURCE_CONNSTR }}
+      run: |
+        export LD_LIBRARY_PATH=${PGCOPYDB_LIB_PATH}:${PG_16_LIB_PATH}
+        export PGCOPYDB_SOURCE_PGURI="${BENCHMARK_INGEST_SOURCE_CONNSTR}"
+        export PGCOPYDB_TARGET_PGURI="${NEW_PROJECT_CONNSTR}"
+        export PGOPTIONS="-c maintenance_work_mem=8388608 -c max_parallel_maintenance_workers=7"
+        ${PG_CONFIG} --bindir
+        ${PGCOPYDB} --version
+        ${PGCOPYDB} clone --skip-vacuum  --no-owner --no-acl --skip-db-properties --table-jobs 4 \
+          --index-jobs 4 --restore-jobs 4 --split-tables-larger-than 10GB --skip-extensions \
+          --use-copy-binary --filters /tmp/pgcopydb_filter.txt 2>&1 | tee /tmp/pgcopydb_${{ matrix.target_project }}.log
+
+    # create dummy pgcopydb log to test parsing
+    # - name: create dummy log for parser test
+    #   run: |
+    #     cat << EOF > /tmp/pgcopydb_${{ matrix.target_project }}.log
+    #     2024-11-04 18:00:53.433 500861 INFO   main.c:136                Running pgcopydb version 0.17.10.g8361a93 from "/usr/lib/postgresql/17/bin/pgcopydb"
+    #     2024-11-04 18:00:53.434 500861 INFO   cli_common.c:1225         [SOURCE] Copying database from "postgres://neondb_owner@ep-bitter-shape-w2c1ir0a.us-east-2.aws.neon.build/neondb?sslmode=require&keepalives=1&keepalives_idle=10&keepalives_interval=10&keepalives_count=60"
+    #     2024-11-04 18:00:53.434 500861 INFO   cli_common.c:1226         [TARGET] Copying database into "postgres://neondb_owner@ep-icy-union-w25qd5pj.us-east-2.aws.neon.build/ludicrous?sslmode=require&keepalives=1&keepalives_idle=10&keepalives_interval=10&keepalives_count=60"
+    #     2024-11-04 18:00:53.442 500861 INFO   copydb.c:105              Using work dir "/tmp/pgcopydb"
+    #     2024-11-04 18:00:53.541 500861 INFO   snapshot.c:107            Exported snapshot "00000008-00000033-1" from the source database
+    #     2024-11-04 18:00:53.556 500865 INFO   cli_clone_follow.c:543    STEP 1: fetch source database tables, indexes, and sequences
+    #     2024-11-04 18:00:54.570 500865 INFO   copydb_schema.c:716       Splitting source candidate tables larger than 10 GB
+    #     2024-11-04 18:00:54.570 500865 INFO   copydb_schema.c:829       Table public.events is 96 GB large which is larger than --split-tables-larger-than 10 GB, and does not have a unique column of type integer: splitting by CTID
+    #     2024-11-04 18:01:05.538 500865 INFO   copydb_schema.c:905       Table public.events is 96 GB large, 10 COPY processes will be used, partitioning on ctid.
+    #     2024-11-04 18:01:05.564 500865 INFO   copydb_schema.c:905       Table public.email_transmissions is 27 GB large, 4 COPY processes will be used, partitioning on id.
+    #     2024-11-04 18:01:05.584 500865 INFO   copydb_schema.c:905       Table public.lessons is 25 GB large, 4 COPY processes will be used, partitioning on id.
+    #     2024-11-04 18:01:05.605 500865 INFO   copydb_schema.c:905       Table public.lesson_users is 16 GB large, 3 COPY processes will be used, partitioning on id.
+    #     2024-11-04 18:01:05.605 500865 INFO   copydb_schema.c:761       Fetched information for 26 tables (including 4 tables split in 21 partitions total), with an estimated total of 907 million tuples and 175 GB on-disk
+    #     2024-11-04 18:01:05.687 500865 INFO   copydb_schema.c:968       Fetched information for 57 indexes (supporting 25 constraints)
+    #     2024-11-04 18:01:05.753 500865 INFO   sequences.c:78            Fetching information for 24 sequences
+    #     2024-11-04 18:01:05.903 500865 INFO   copydb_schema.c:1122      Fetched information for 4 extensions
+    #     2024-11-04 18:01:06.178 500865 INFO   copydb_schema.c:1538      Found 0 indexes (supporting 0 constraints) in the target database
+    #     2024-11-04 18:01:06.184 500865 INFO   cli_clone_follow.c:584    STEP 2: dump the source database schema (pre/post data)
+    #     2024-11-04 18:01:06.186 500865 INFO   pgcmd.c:468                /usr/lib/postgresql/16/bin/pg_dump -Fc --snapshot 00000008-00000033-1 --section=pre-data --section=post-data --file /tmp/pgcopydb/schema/schema.dump 'postgres://neondb_owner@ep-bitter-shape-w2c1ir0a.us-east-2.aws.neon.build/neondb?sslmode=require&keepalives=1&keepalives_idle=10&keepalives_interval=10&keepalives_count=60'
+    #     2024-11-04 18:01:06.952 500865 INFO   cli_clone_follow.c:592    STEP 3: restore the pre-data section to the target database
+    #     2024-11-04 18:01:07.004 500865 INFO   pgcmd.c:1001               /usr/lib/postgresql/16/bin/pg_restore --dbname 'postgres://neondb_owner@ep-icy-union-w25qd5pj.us-east-2.aws.neon.build/ludicrous?sslmode=require&keepalives=1&keepalives_idle=10&keepalives_interval=10&keepalives_count=60' --section pre-data --jobs 4 --no-owner --no-acl --use-list /tmp/pgcopydb/schema/pre-filtered.list /tmp/pgcopydb/schema/schema.dump
+    #     2024-11-04 18:01:07.438 500874 INFO   table-data.c:656          STEP 4: starting 4 table-data COPY processes
+    #     2024-11-04 18:01:07.451 500877 INFO   vacuum.c:139              STEP 8: skipping VACUUM jobs per --skip-vacuum
+    #     2024-11-04 18:01:07.457 500875 INFO   indexes.c:182             STEP 6: starting 4 CREATE INDEX processes
+    #     2024-11-04 18:01:07.457 500875 INFO   indexes.c:183             STEP 7: constraints are built by the CREATE INDEX processes
+    #     2024-11-04 18:01:07.507 500865 INFO   blobs.c:74                Skipping large objects: none found.
+    #     2024-11-04 18:01:07.509 500865 INFO   sequences.c:194           STEP 9: reset sequences values
+    #     2024-11-04 18:01:07.510 500886 INFO   sequences.c:290           Set sequences values on the target database
+    #     2024-11-04 20:49:00.587 500865 INFO   cli_clone_follow.c:608    STEP 10: restore the post-data section to the target database
+    #     2024-11-04 20:49:00.600 500865 INFO   pgcmd.c:1001               /usr/lib/postgresql/16/bin/pg_restore --dbname 'postgres://neondb_owner@ep-icy-union-w25qd5pj.us-east-2.aws.neon.build/ludicrous?sslmode=require&keepalives=1&keepalives_idle=10&keepalives_interval=10&keepalives_count=60' --section post-data --jobs 4 --no-owner --no-acl --use-list /tmp/pgcopydb/schema/post-filtered.list /tmp/pgcopydb/schema/schema.dump
+    #     2024-11-05 10:50:58.508 500865 INFO   cli_clone_follow.c:639    All step are now done, 16h49m elapsed
+    #     2024-11-05 10:50:58.508 500865 INFO   summary.c:3155            Printing summary for 26 tables and 57 indexes
+
+    #       OID | Schema |                 Name | Parts | copy duration | transmitted bytes | indexes | create index duration 
+    #     ------+--------+----------------------+-------+---------------+-------------------+---------+----------------------
+    #     24654 | public |               events |    10 |         1d11h |            878 GB |       1 |                 1h41m
+    #     24623 | public |  email_transmissions |     4 |         4h46m |             99 GB |       3 |                 2h04m
+    #     24665 | public |              lessons |     4 |         4h42m |            161 GB |       4 |                 1m11s
+    #     24661 | public |         lesson_users |     3 |         2h46m |             49 GB |       3 |                39m35s
+    #     24631 | public |               emails |     1 |        34m07s |             10 GB |       2 |                   17s
+    #     24739 | public |             payments |     1 |         5m47s |           1848 MB |       4 |                 4m40s
+    #     24681 | public |         module_users |     1 |         4m57s |           1610 MB |       3 |                 1m50s
+    #     24694 | public |               orders |     1 |         2m50s |            835 MB |       3 |                 1m05s
+    #     24597 | public |              devices |     1 |         1m45s |            498 MB |       2 |                   40s
+    #     24723 | public |      payment_methods |     1 |         1m24s |            548 MB |       2 |                   31s
+    #     24765 | public |     user_collections |     1 |         2m17s |           1005 MB |       2 |                 968ms
+    #     24774 | public |                users |     1 |           52s |            291 MB |       4 |                   27s
+    #     24760 | public |        user_accounts |     1 |           16s |            172 MB |       3 |                   16s
+    #     24606 | public |      edition_modules |     1 |         8s983 |             46 MB |       3 |                 4s749
+    #     24583 | public |        course_emails |     1 |         8s526 |             26 MB |       2 |                 996ms
+    #     24685 | public |              modules |     1 |         1s592 |             21 MB |       3 |                 1s696
+    #     24610 | public |             editions |     1 |         2s199 |           7483 kB |       2 |                 1s032
+    #     24755 | public |           sp_content |     1 |         1s555 |           4177 kB |       0 |                   0ms
+    #     24619 | public |     email_broadcasts |     1 |         744ms |           2645 kB |       2 |                 677ms
+    #     24590 | public |              courses |     1 |         387ms |           1540 kB |       2 |                 367ms
+    #     24704 | public | payment_gateway_keys |     1 |         1s972 |            164 kB |       2 |                  27ms
+    #     24576 | public |             accounts |     1 |          58ms |             24 kB |       1 |                  14ms
+    #     24647 | public |          event_names |     1 |          32ms |             397 B |       1 |                   8ms
+    #     24716 | public |     payment_gateways |     1 |         1s675 |             117 B |       1 |                  11ms
+    #     24748 | public |                roles |     1 |          71ms |             173 B |       1 |                   8ms
+    #     24676 | public |           management |     1 |          33ms |              40 B |       1 |                  19ms
+
+
+    #                                                   Step   Connection    Duration    Transfer   Concurrency
+    #     --------------------------------------------------   ----------  ----------  ----------  ------------
+    #       Catalog Queries (table ordering, filtering, etc)       source         12s                         1
+    #                                             Dump Schema       source       765ms                         1
+    #                                         Prepare Schema       target       466ms                         1
+    #           COPY, INDEX, CONSTRAINTS, VACUUM (wall clock)         both       2h47m                        12
+    #                                       COPY (cumulative)         both       7h46m     1225 GB             4
+    #                               CREATE INDEX (cumulative)       target       4h36m                         4
+    #                               CONSTRAINTS (cumulative)       target       8s493                         4
+    #                                     VACUUM (cumulative)       target         0ms                         4
+    #                                         Reset Sequences         both        60ms                         1
+    #                             Large Objects (cumulative)       (null)         0ms                         0
+    #                                         Finalize Schema         both      14h01m                         4
+    #     --------------------------------------------------   ----------  ----------  ----------  ------------
+    #                               Total Wall Clock Duration         both      16h49m                        20
+
+
+    #     EOF
+
+
+    - name: show tables sizes and retrieve current backpressure seconds
+      run: |
+        export LD_LIBRARY_PATH=${PG_16_LIB_PATH}
+        ${PSQL} "${NEW_PROJECT_CONNSTR}" -c "\dt+"
+        BACKPRESSURE_TIME_AFTER_INGEST=$(${PSQL} "${NEW_PROJECT_CONNSTR}" -t -c "select backpressure_throttling_time()/1000000;")
+        echo "BACKPRESSURE_TIME_AFTER_INGEST=${BACKPRESSURE_TIME_AFTER_INGEST}" >> $GITHUB_ENV
+
+    - name: Parse pgcopydb log and report performance metrics
+      env:
+        PERF_TEST_RESULT_CONNSTR: ${{ secrets.PERF_TEST_RESULT_CONNSTR }}
+      run: |
+        export LD_LIBRARY_PATH=${PG_16_LIB_PATH}
+
+        # Define the log file path
+        LOG_FILE="/tmp/pgcopydb_${{ matrix.target_project }}.log"
+        
+        # Get the current git commit hash
+        git config --global --add safe.directory /__w/neon/neon
+        COMMIT_HASH=$(git rev-parse --short HEAD)
+        
+        # Define the platform and test suite
+        PLATFORM="pg16-${{ matrix.target_project }}-us-east-2-staging"
+        SUIT="pgcopydb_ingest_bench"
+        
+        # Function to convert time (e.g., "2h47m", "4h36m", "118ms", "8s493") to seconds
+        convert_to_seconds() {
+          local duration=$1
+          local total_seconds=0
+    
+          # Check for hours (h)
+          if [[ "$duration" =~ ([0-9]+)h ]]; then
+            total_seconds=$((total_seconds + ${BASH_REMATCH[1]#0} * 3600))
+          fi
+    
+          # Check for seconds (s)
+          if [[ "$duration" =~ ([0-9]+)s ]]; then
+            total_seconds=$((total_seconds + ${BASH_REMATCH[1]#0}))
+          fi
+    
+          # Check for milliseconds (ms) (if applicable)
+          if [[ "$duration" =~ ([0-9]+)ms ]]; then
+            total_seconds=$((total_seconds + ${BASH_REMATCH[1]#0} / 1000))
+            duration=${duration/${BASH_REMATCH[0]}/} # need to remove it to avoid double counting with m 
+          fi
+
+          # Check for minutes (m) - must be checked after ms because m is contained in ms
+          if [[ "$duration" =~ ([0-9]+)m ]]; then
+            total_seconds=$((total_seconds + ${BASH_REMATCH[1]#0} * 60))
+          fi
+    
+          echo $total_seconds
+        }
+
+        # Calculate the backpressure difference in seconds
+        BACKPRESSURE_TIME_DIFF=$(awk "BEGIN {print $BACKPRESSURE_TIME_AFTER_INGEST - $BACKPRESSURE_TIME_BEFORE_INGEST}")
+
+        # Insert the backpressure time difference into the performance database
+        if [ -n "$BACKPRESSURE_TIME_DIFF" ]; then
+          PSQL_CMD="${PSQL} \"${PERF_TEST_RESULT_CONNSTR}\" -c \"
+          INSERT INTO public.perf_test_results (suit, revision, platform, metric_name, metric_value, metric_unit, metric_report_type, recorded_at_timestamp)
+          VALUES ('${SUIT}', '${COMMIT_HASH}', '${PLATFORM}', 'backpressure_time', ${BACKPRESSURE_TIME_DIFF}, 'seconds', 'lower_is_better', now());
+          \""
+          echo "Inserting backpressure time difference: ${BACKPRESSURE_TIME_DIFF} seconds"
+          eval $PSQL_CMD
+        fi
+
+        # Extract and process log lines
+        while IFS= read -r line; do
+          METRIC_NAME=""
+          # Match each desired line and extract the relevant information
+          if [[ "$line" =~ COPY,\ INDEX,\ CONSTRAINTS,\ VACUUM.* ]]; then
+            METRIC_NAME="COPY, INDEX, CONSTRAINTS, VACUUM (wall clock)"
+          elif [[ "$line" =~ COPY\ \(cumulative\).* ]]; then
+            METRIC_NAME="COPY (cumulative)"
+          elif [[ "$line" =~ CREATE\ INDEX\ \(cumulative\).* ]]; then
+            METRIC_NAME="CREATE INDEX (cumulative)"
+          elif [[ "$line" =~ CONSTRAINTS\ \(cumulative\).* ]]; then
+            METRIC_NAME="CONSTRAINTS (cumulative)"
+          elif [[ "$line" =~ Finalize\ Schema.* ]]; then
+            METRIC_NAME="Finalize Schema"
+          elif [[ "$line" =~ Total\ Wall\ Clock\ Duration.* ]]; then
+            METRIC_NAME="Total Wall Clock Duration"
+          fi
+          
+          # If a metric was matched, insert it into the performance database
+          if [ -n "$METRIC_NAME" ]; then
+            DURATION=$(echo "$line" | grep -oP '\d+h\d+m|\d+s|\d+ms|\d{1,2}h\d{1,2}m|\d+\.\d+s' | head -n 1)
+            METRIC_VALUE=$(convert_to_seconds "$DURATION")
+            PSQL_CMD="${PSQL} \"${PERF_TEST_RESULT_CONNSTR}\" -c \"
+            INSERT INTO public.perf_test_results (suit, revision, platform, metric_name, metric_value, metric_unit, metric_report_type, recorded_at_timestamp)
+            VALUES ('${SUIT}', '${COMMIT_HASH}', '${PLATFORM}', '${METRIC_NAME}', ${METRIC_VALUE}, 'seconds', 'lower_is_better', now());
+            \""
+            echo "Inserting ${METRIC_NAME} with value ${METRIC_VALUE} seconds"
+            eval $PSQL_CMD
+          fi
+        done < "$LOG_FILE"
+      
+    - name: Delete Neon Project
+      if: ${{ always() && matrix.target_project == 'new_empty_project' }}
+      uses: ./.github/actions/neon-project-delete
+      with:
+        project_id: ${{ steps.create-neon-project-ingest-target.outputs.project_id }}
+        api_key: ${{ secrets.NEON_STAGING_API_KEY }}
+
+    - name: Delete Neon Branch for large tenant
+      if: ${{ always() && matrix.target_project == 'large_existing_project' }}
+      uses: ./.github/actions/neon-branch-delete
+      with:
+        project_id: ${{ vars.BENCHMARK_INGEST_TARGET_PROJECTID }}
+        branch_id: ${{ steps.create-neon-branch-ingest-target.outputs.branch_id }}
+        api_key: ${{ secrets.NEON_STAGING_API_KEY }}

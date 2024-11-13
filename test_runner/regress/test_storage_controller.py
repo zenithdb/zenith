@@ -36,11 +36,12 @@ from fixtures.pageserver.utils import (
     remote_storage_delete_key,
     timeline_delete_wait_completed,
 )
-from fixtures.pg_version import PgVersion, run_only_on_default_postgres
+from fixtures.pg_version import PgVersion
 from fixtures.port_distributor import PortDistributor
 from fixtures.remote_storage import RemoteStorageKind, s3_storage
 from fixtures.storage_controller_proxy import StorageControllerProxy
 from fixtures.utils import (
+    run_only_on_default_postgres,
     run_pg_bench_small,
     subprocess_capture,
     wait_until,

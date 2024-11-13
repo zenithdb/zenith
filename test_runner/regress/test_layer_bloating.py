@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 
-import pytest
 from fixtures.log_helper import log
 from fixtures.neon_fixtures import (
     NeonEnvBuilder,
@@ -10,12 +9,18 @@ from fixtures.neon_fixtures import (
     wait_for_last_flush_lsn,
 )
 from fixtures.pg_version import PgVersion
+from fixtures.utils import skip_on_postgres
 
 
+@skip_on_postgres(
+    PgVersion.V14,
+    reason="pg_log_standby_snapshot() function is available since Postgres 16",
+)
+@skip_on_postgres(
+    PgVersion.V15,
+    reason="pg_log_standby_snapshot() function is available since Postgres 16",
+)
 def test_layer_bloating(neon_env_builder: NeonEnvBuilder, vanilla_pg):
-    if neon_env_builder.pg_version != PgVersion.V16:
-        pytest.skip("pg_log_standby_snapshot() function is available only in PG16")
-
     env = neon_env_builder.init_start(
         initial_tenant_conf={
             "gc_period": "0s",

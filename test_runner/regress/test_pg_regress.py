@@ -3,7 +3,6 @@
 #
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -19,6 +18,7 @@ from fixtures.neon_fixtures import (
 )
 from fixtures.pg_version import PgVersion
 from fixtures.remote_storage import s3_storage
+from fixtures.utils import skip_in_debug_build
 
 if TYPE_CHECKING:
     from typing import Optional
@@ -329,7 +329,7 @@ def test_sql_regress(
     post_checks(env, test_output_dir, DBNAME, endpoint)
 
 
-@pytest.mark.skipif(os.environ.get("BUILD_TYPE") == "debug", reason="only run with release build")
+@skip_in_debug_build("only run with release build")
 def test_tx_abort_with_many_relations(
     neon_env_builder: NeonEnvBuilder,
 ):

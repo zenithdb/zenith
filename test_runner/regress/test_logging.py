@@ -5,8 +5,7 @@ import uuid
 import pytest
 from fixtures.log_helper import log
 from fixtures.neon_fixtures import NeonEnvBuilder
-from fixtures.pg_version import run_only_on_default_postgres
-from fixtures.utils import wait_until
+from fixtures.utils import run_only_on_default_postgres, wait_until
 
 
 @pytest.mark.parametrize("level", ["trace", "debug", "info", "warn", "error"])

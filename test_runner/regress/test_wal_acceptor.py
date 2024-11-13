@@ -54,6 +54,8 @@ from fixtures.utils import (
     PropagatingThread,
     get_dir_size,
     query_scalar,
+    run_only_on_default_postgres,
+    skip_in_debug_build,
     start_in_background,
     wait_until,
 )
@@ -2104,10 +2106,9 @@ def test_pull_timeline_while_evicted(neon_env_builder: NeonEnvBuilder):
 # The only way to verify this without manipulating time is to sleep for a while.
 # In this test we sleep for 60 seconds, so this test takes at least 1 minute to run.
 # This is longer than most other tests, we run it only for v16 to save CI resources.
+@run_only_on_default_postgres("run only on release build to save CI resources")
+@skip_in_debug_build("run only on release build to save CI resources")
 def test_idle_reconnections(neon_env_builder: NeonEnvBuilder):
-    if os.environ.get("PYTEST_CURRENT_TEST", "").find("[debug-pg16]") == -1:
-        pytest.skip("run only on debug postgres v16 to save CI resources")
-
     neon_env_builder.num_safekeepers = 3
     env = neon_env_builder.init_start()
 

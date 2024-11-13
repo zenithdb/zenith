@@ -4786,12 +4786,6 @@ async fn run_initdb(
         .args(["--username", &conf.superuser])
         .args(["--encoding", "utf8"])
         .args(["--locale", &conf.locale])
-        .args(["--lc-collate", &conf.locale])
-        .args(["--lc-ctype", &conf.locale])
-        .args(["--lc-messages", &conf.locale])
-        .args(["--lc-monetary", &conf.locale])
-        .args(["--lc-numeric", &conf.locale])
-        .args(["--lc-time", &conf.locale])
         .arg("--no-instructions")
         .arg("--no-sync")
         .env_clear()
@@ -7763,13 +7757,13 @@ mod tests {
             (
                 get_key(3),
                 Lsn(0x20),
-                Value::WalRecord(NeonWalRecord::wal_clear()),
+                Value::WalRecord(NeonWalRecord::wal_clear("c")),
             ),
             (get_key(4), Lsn(0x10), Value::Image("0x10".into())),
             (
                 get_key(4),
                 Lsn(0x20),
-                Value::WalRecord(NeonWalRecord::wal_init()),
+                Value::WalRecord(NeonWalRecord::wal_init("i")),
             ),
         ];
         let image1 = vec![(get_key(1), "0x10".into())];
@@ -7918,8 +7912,30 @@ mod tests {
 
     #[cfg(feature = "testing")]
     #[tokio::test]
-    async fn test_simple_bottom_most_compaction_deltas() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_simple_bottom_most_compaction_deltas").await?;
+    async fn test_simple_bottom_most_compaction_deltas_1() -> anyhow::Result<()> {
+        test_simple_bottom_most_compaction_deltas_helper(
+            "test_simple_bottom_most_compaction_deltas_1",
+            false,
+        )
+        .await
+    }
+
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn test_simple_bottom_most_compaction_deltas_2() -> anyhow::Result<()> {
+        test_simple_bottom_most_compaction_deltas_helper(
+            "test_simple_bottom_most_compaction_deltas_2",
+            true,
+        )
+        .await
+    }
+
+    #[cfg(feature = "testing")]
+    async fn test_simple_bottom_most_compaction_deltas_helper(
+        test_name: &'static str,
+        use_delta_bottom_layer: bool,
+    ) -> anyhow::Result<()> {
+        let harness = TenantHarness::create(test_name).await?;
         let (tenant, ctx) = harness.load().await;
 
         fn get_key(id: u32) -> Key {
@@ -7949,6 +7965,16 @@ mod tests {
         // img layer at 0x10
         let img_layer = (0..10)
             .map(|id| (get_key(id), Bytes::from(format!("value {id}@0x10"))))
+            .collect_vec();
+        // or, delta layer at 0x10 if `use_delta_bottom_layer` is true
+        let delta4 = (0..10)
+            .map(|id| {
+                (
+                    get_key(id),
+                    Lsn(0x08),
+                    Value::WalRecord(NeonWalRecord::wal_init(format!("value {id}@0x10"))),
+                )
+            })
             .collect_vec();
 
         let delta1 = vec![
@@ -8003,21 +8029,61 @@ mod tests {
             ),
         ];
 
-        let tline = tenant
-            .create_test_timeline_with_layers(
-                TIMELINE_ID,
-                Lsn(0x10),
-                DEFAULT_PG_VERSION,
-                &ctx,
-                vec![
-                    DeltaLayerTestDesc::new_with_inferred_key_range(Lsn(0x10)..Lsn(0x48), delta1),
-                    DeltaLayerTestDesc::new_with_inferred_key_range(Lsn(0x10)..Lsn(0x48), delta2),
-                    DeltaLayerTestDesc::new_with_inferred_key_range(Lsn(0x48)..Lsn(0x50), delta3),
-                ], // delta layers
-                vec![(Lsn(0x10), img_layer)], // image layers
-                Lsn(0x50),
-            )
-            .await?;
+        let tline = if use_delta_bottom_layer {
+            tenant
+                .create_test_timeline_with_layers(
+                    TIMELINE_ID,
+                    Lsn(0x08),
+                    DEFAULT_PG_VERSION,
+                    &ctx,
+                    vec![
+                        DeltaLayerTestDesc::new_with_inferred_key_range(
+                            Lsn(0x08)..Lsn(0x10),
+                            delta4,
+                        ),
+                        DeltaLayerTestDesc::new_with_inferred_key_range(
+                            Lsn(0x20)..Lsn(0x48),
+                            delta1,
+                        ),
+                        DeltaLayerTestDesc::new_with_inferred_key_range(
+                            Lsn(0x20)..Lsn(0x48),
+                            delta2,
+                        ),
+                        DeltaLayerTestDesc::new_with_inferred_key_range(
+                            Lsn(0x48)..Lsn(0x50),
+                            delta3,
+                        ),
+                    ], // delta layers
+                    vec![], // image layers
+                    Lsn(0x50),
+                )
+                .await?
+        } else {
+            tenant
+                .create_test_timeline_with_layers(
+                    TIMELINE_ID,
+                    Lsn(0x10),
+                    DEFAULT_PG_VERSION,
+                    &ctx,
+                    vec![
+                        DeltaLayerTestDesc::new_with_inferred_key_range(
+                            Lsn(0x10)..Lsn(0x48),
+                            delta1,
+                        ),
+                        DeltaLayerTestDesc::new_with_inferred_key_range(
+                            Lsn(0x10)..Lsn(0x48),
+                            delta2,
+                        ),
+                        DeltaLayerTestDesc::new_with_inferred_key_range(
+                            Lsn(0x48)..Lsn(0x50),
+                            delta3,
+                        ),
+                    ], // delta layers
+                    vec![(Lsn(0x10), img_layer)], // image layers
+                    Lsn(0x50),
+                )
+                .await?
+        };
         {
             // Update GC info
             let mut guard = tline.gc_info.write().unwrap();
@@ -8127,7 +8193,7 @@ mod tests {
             (
                 key,
                 Lsn(0x10),
-                Value::Image(Bytes::copy_from_slice(b"0x10")),
+                Value::WalRecord(NeonWalRecord::wal_init("0x10")),
             ),
             (
                 key,
@@ -8189,7 +8255,7 @@ mod tests {
                     Lsn(0x20),
                     KeyLogAtLsn(vec![(
                         Lsn(0x20),
-                        Value::Image(Bytes::copy_from_slice(b"0x10;0x20")),
+                        Value::Image(Bytes::from_static(b"0x10;0x20")),
                     )]),
                 ),
                 (
@@ -9171,7 +9237,7 @@ mod tests {
 
             let will_init = will_init_keys.contains(&i);
             if will_init {
-                delta_layer_spec.push((key, lsn, Value::WalRecord(NeonWalRecord::wal_init())));
+                delta_layer_spec.push((key, lsn, Value::WalRecord(NeonWalRecord::wal_init(""))));
 
                 expected_key_values.insert(key, "".to_string());
             } else {
@@ -9229,6 +9295,23 @@ mod tests {
         Ok(())
     }
 
+    fn sort_layer_key(k1: &PersistentLayerKey, k2: &PersistentLayerKey) -> std::cmp::Ordering {
+        (
+            k1.is_delta,
+            k1.key_range.start,
+            k1.key_range.end,
+            k1.lsn_range.start,
+            k1.lsn_range.end,
+        )
+            .cmp(&(
+                k2.is_delta,
+                k2.key_range.start,
+                k2.key_range.end,
+                k2.lsn_range.start,
+                k2.lsn_range.end,
+            ))
+    }
+
     async fn inspect_and_sort(
         tline: &Arc<Timeline>,
         filter: Option<std::ops::Range<Key>>,
@@ -9237,23 +9320,28 @@ mod tests {
         if let Some(filter) = filter {
             all_layers.retain(|layer| overlaps_with(&layer.key_range, &filter));
         }
-        all_layers.sort_by(|k1, k2| {
-            (
-                k1.is_delta,
-                k1.key_range.start,
-                k1.key_range.end,
-                k1.lsn_range.start,
-                k1.lsn_range.end,
-            )
-                .cmp(&(
-                    k2.is_delta,
-                    k2.key_range.start,
-                    k2.key_range.end,
-                    k2.lsn_range.start,
-                    k2.lsn_range.end,
-                ))
-        });
+        all_layers.sort_by(sort_layer_key);
         all_layers
+    }
+
+    #[cfg(feature = "testing")]
+    fn check_layer_map_key_eq(
+        mut left: Vec<PersistentLayerKey>,
+        mut right: Vec<PersistentLayerKey>,
+    ) {
+        left.sort_by(sort_layer_key);
+        right.sort_by(sort_layer_key);
+        if left != right {
+            eprintln!("---LEFT---");
+            for left in left.iter() {
+                eprintln!("{}", left);
+            }
+            eprintln!("---RIGHT---");
+            for right in right.iter() {
+                eprintln!("{}", right);
+            }
+            assert_eq!(left, right);
+        }
     }
 
     #[cfg(feature = "testing")]
@@ -9348,127 +9436,206 @@ mod tests {
 
         let cancel = CancellationToken::new();
 
-        // Do a partial compaction on key range 0..4, we should generate a image layer; no other layers
-        // can be removed because they might be used for other key ranges.
+        // Do a partial compaction on key range 0..2
         tline
-            .partial_compact_with_gc(Some(get_key(0)..get_key(4)), &cancel, EnumSet::new(), &ctx)
+            .partial_compact_with_gc(get_key(0)..get_key(2), &cancel, EnumSet::new(), &ctx)
             .await
             .unwrap();
         let all_layers = inspect_and_sort(&tline, Some(get_key(0)..get_key(10))).await;
-        assert_eq!(
+        check_layer_map_key_eq(
             all_layers,
             vec![
+                // newly-generated image layer for the partial compaction range 0-2
                 PersistentLayerKey {
-                    key_range: get_key(0)..get_key(4),
+                    key_range: get_key(0)..get_key(2),
                     lsn_range: Lsn(0x20)..Lsn(0x21),
-                    is_delta: false
+                    is_delta: false,
                 },
                 PersistentLayerKey {
                     key_range: get_key(0)..get_key(10),
                     lsn_range: Lsn(0x10)..Lsn(0x11),
-                    is_delta: false
+                    is_delta: false,
                 },
+                // delta1 is split and the second part is rewritten
                 PersistentLayerKey {
-                    key_range: get_key(1)..get_key(4),
+                    key_range: get_key(2)..get_key(4),
                     lsn_range: Lsn(0x20)..Lsn(0x48),
-                    is_delta: true
+                    is_delta: true,
                 },
                 PersistentLayerKey {
                     key_range: get_key(5)..get_key(7),
                     lsn_range: Lsn(0x20)..Lsn(0x48),
-                    is_delta: true
+                    is_delta: true,
                 },
                 PersistentLayerKey {
                     key_range: get_key(8)..get_key(10),
                     lsn_range: Lsn(0x48)..Lsn(0x50),
-                    is_delta: true
-                }
-            ]
+                    is_delta: true,
+                },
+            ],
         );
 
-        // Do a partial compaction on key range 4..10
+        // Do a partial compaction on key range 2..4
         tline
-            .partial_compact_with_gc(Some(get_key(4)..get_key(10)), &cancel, EnumSet::new(), &ctx)
+            .partial_compact_with_gc(get_key(2)..get_key(4), &cancel, EnumSet::new(), &ctx)
             .await
             .unwrap();
         let all_layers = inspect_and_sort(&tline, Some(get_key(0)..get_key(10))).await;
-        assert_eq!(
+        check_layer_map_key_eq(
             all_layers,
             vec![
                 PersistentLayerKey {
-                    key_range: get_key(0)..get_key(4),
+                    key_range: get_key(0)..get_key(2),
                     lsn_range: Lsn(0x20)..Lsn(0x21),
-                    is_delta: false
+                    is_delta: false,
                 },
                 PersistentLayerKey {
-                    // if (in the future) GC kicks in, this layer will be removed
                     key_range: get_key(0)..get_key(10),
                     lsn_range: Lsn(0x10)..Lsn(0x11),
-                    is_delta: false
+                    is_delta: false,
                 },
+                // image layer generated for the compaction range 2-4
                 PersistentLayerKey {
-                    key_range: get_key(4)..get_key(10),
+                    key_range: get_key(2)..get_key(4),
                     lsn_range: Lsn(0x20)..Lsn(0x21),
-                    is_delta: false
+                    is_delta: false,
                 },
+                // we have key2/key3 above the retain_lsn, so we still need this delta layer
                 PersistentLayerKey {
-                    key_range: get_key(1)..get_key(4),
+                    key_range: get_key(2)..get_key(4),
                     lsn_range: Lsn(0x20)..Lsn(0x48),
-                    is_delta: true
+                    is_delta: true,
                 },
                 PersistentLayerKey {
                     key_range: get_key(5)..get_key(7),
                     lsn_range: Lsn(0x20)..Lsn(0x48),
-                    is_delta: true
+                    is_delta: true,
                 },
                 PersistentLayerKey {
                     key_range: get_key(8)..get_key(10),
                     lsn_range: Lsn(0x48)..Lsn(0x50),
-                    is_delta: true
-                }
-            ]
+                    is_delta: true,
+                },
+            ],
+        );
+
+        // Do a partial compaction on key range 4..9
+        tline
+            .partial_compact_with_gc(get_key(4)..get_key(9), &cancel, EnumSet::new(), &ctx)
+            .await
+            .unwrap();
+        let all_layers = inspect_and_sort(&tline, Some(get_key(0)..get_key(10))).await;
+        check_layer_map_key_eq(
+            all_layers,
+            vec![
+                PersistentLayerKey {
+                    key_range: get_key(0)..get_key(2),
+                    lsn_range: Lsn(0x20)..Lsn(0x21),
+                    is_delta: false,
+                },
+                PersistentLayerKey {
+                    key_range: get_key(0)..get_key(10),
+                    lsn_range: Lsn(0x10)..Lsn(0x11),
+                    is_delta: false,
+                },
+                PersistentLayerKey {
+                    key_range: get_key(2)..get_key(4),
+                    lsn_range: Lsn(0x20)..Lsn(0x21),
+                    is_delta: false,
+                },
+                PersistentLayerKey {
+                    key_range: get_key(2)..get_key(4),
+                    lsn_range: Lsn(0x20)..Lsn(0x48),
+                    is_delta: true,
+                },
+                // image layer generated for this compaction range
+                PersistentLayerKey {
+                    key_range: get_key(4)..get_key(9),
+                    lsn_range: Lsn(0x20)..Lsn(0x21),
+                    is_delta: false,
+                },
+                PersistentLayerKey {
+                    key_range: get_key(8)..get_key(10),
+                    lsn_range: Lsn(0x48)..Lsn(0x50),
+                    is_delta: true,
+                },
+            ],
+        );
+
+        // Do a partial compaction on key range 9..10
+        tline
+            .partial_compact_with_gc(get_key(9)..get_key(10), &cancel, EnumSet::new(), &ctx)
+            .await
+            .unwrap();
+        let all_layers = inspect_and_sort(&tline, Some(get_key(0)..get_key(10))).await;
+        check_layer_map_key_eq(
+            all_layers,
+            vec![
+                PersistentLayerKey {
+                    key_range: get_key(0)..get_key(2),
+                    lsn_range: Lsn(0x20)..Lsn(0x21),
+                    is_delta: false,
+                },
+                PersistentLayerKey {
+                    key_range: get_key(0)..get_key(10),
+                    lsn_range: Lsn(0x10)..Lsn(0x11),
+                    is_delta: false,
+                },
+                PersistentLayerKey {
+                    key_range: get_key(2)..get_key(4),
+                    lsn_range: Lsn(0x20)..Lsn(0x21),
+                    is_delta: false,
+                },
+                PersistentLayerKey {
+                    key_range: get_key(2)..get_key(4),
+                    lsn_range: Lsn(0x20)..Lsn(0x48),
+                    is_delta: true,
+                },
+                PersistentLayerKey {
+                    key_range: get_key(4)..get_key(9),
+                    lsn_range: Lsn(0x20)..Lsn(0x21),
+                    is_delta: false,
+                },
+                // image layer generated for the compaction range
+                PersistentLayerKey {
+                    key_range: get_key(9)..get_key(10),
+                    lsn_range: Lsn(0x20)..Lsn(0x21),
+                    is_delta: false,
+                },
+                PersistentLayerKey {
+                    key_range: get_key(8)..get_key(10),
+                    lsn_range: Lsn(0x48)..Lsn(0x50),
+                    is_delta: true,
+                },
+            ],
         );
 
         // Do a partial compaction on key range 0..10, all image layers below LSN 20 can be replaced with new ones.
         tline
-            .partial_compact_with_gc(Some(get_key(0)..get_key(10)), &cancel, EnumSet::new(), &ctx)
+            .partial_compact_with_gc(get_key(0)..get_key(10), &cancel, EnumSet::new(), &ctx)
             .await
             .unwrap();
         let all_layers = inspect_and_sort(&tline, Some(get_key(0)..get_key(10))).await;
-        assert_eq!(
+        check_layer_map_key_eq(
             all_layers,
             vec![
-                PersistentLayerKey {
-                    key_range: get_key(0)..get_key(4),
-                    lsn_range: Lsn(0x20)..Lsn(0x21),
-                    is_delta: false
-                },
+                // aha, we removed all unnecessary image/delta layers and got a very clean layer map!
                 PersistentLayerKey {
                     key_range: get_key(0)..get_key(10),
                     lsn_range: Lsn(0x20)..Lsn(0x21),
-                    is_delta: false
+                    is_delta: false,
                 },
                 PersistentLayerKey {
-                    key_range: get_key(4)..get_key(10),
-                    lsn_range: Lsn(0x20)..Lsn(0x21),
-                    is_delta: false
-                },
-                PersistentLayerKey {
-                    key_range: get_key(1)..get_key(4),
+                    key_range: get_key(2)..get_key(4),
                     lsn_range: Lsn(0x20)..Lsn(0x48),
-                    is_delta: true
-                },
-                PersistentLayerKey {
-                    key_range: get_key(5)..get_key(7),
-                    lsn_range: Lsn(0x20)..Lsn(0x48),
-                    is_delta: true
+                    is_delta: true,
                 },
                 PersistentLayerKey {
                     key_range: get_key(8)..get_key(10),
                     lsn_range: Lsn(0x48)..Lsn(0x50),
-                    is_delta: true
-                }
-            ]
+                    is_delta: true,
+                },
+            ],
         );
 
         Ok(())

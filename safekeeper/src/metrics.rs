@@ -55,7 +55,7 @@ pub static WRITE_WAL_SECONDS: Lazy<Histogram> = Lazy::new(|| {
 pub static FLUSH_WAL_SECONDS: Lazy<Histogram> = Lazy::new(|| {
     register_histogram!(
         "safekeeper_flush_wal_seconds",
-        "Seconds spent syncing WAL to a disk",
+        "Seconds spent syncing WAL to a disk (excluding segment initialization)",
         DISK_FSYNC_SECONDS_BUCKETS.to_vec()
     )
     .expect("Failed to register safekeeper_flush_wal_seconds histogram")

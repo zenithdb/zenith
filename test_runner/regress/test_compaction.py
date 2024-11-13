@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import enum
 import json
-import os
 import time
 from typing import TYPE_CHECKING
 
@@ -13,7 +12,7 @@ from fixtures.neon_fixtures import (
     generate_uploads_and_deletions,
 )
 from fixtures.pageserver.http import PageserverApiException
-from fixtures.utils import wait_until
+from fixtures.utils import skip_in_debug_build, wait_until
 from fixtures.workload import Workload
 
 if TYPE_CHECKING:
@@ -32,7 +31,7 @@ AGGRESIVE_COMPACTION_TENANT_CONF = {
 }
 
 
-@pytest.mark.skipif(os.environ.get("BUILD_TYPE") == "debug", reason="only run with release build")
+@skip_in_debug_build("only run with release build")
 def test_pageserver_compaction_smoke(neon_env_builder: NeonEnvBuilder):
     """
     This is a smoke test that compaction kicks in. The workload repeatedly churns

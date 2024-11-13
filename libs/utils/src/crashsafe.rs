@@ -123,15 +123,27 @@ pub async fn fsync_async_opt(
     Ok(())
 }
 
-/// Like postgres' durable_rename, renames file issuing fsyncs do make it
-/// durable. After return, file and rename are guaranteed to be persisted.
+/// Like postgres' durable_rename, renames a file and issues fsyncs to make it durable. After
+/// returning, both the file and rename are guaranteed to be persisted. Both paths must be on the
+/// same file system.
 ///
-/// Unlike postgres, it only does fsyncs to 1) file to be renamed to make
-/// contents durable; 2) its directory entry to make rename durable 3) again to
-/// already renamed file, which is not required by standards but postgres does
-/// it, let's stick to that. Postgres additionally fsyncs newpath *before*
-/// rename if it exists to ensure that at least one of the files survives, but
-/// current callers don't need that.
+/// Unlike postgres, it only fsyncs 1) the file to make contents durable, and 2) the directory to
+/// make the rename durable. This sequence ensures the target file will never be incomplete.
+///
+/// Postgres also:
+///
+/// * Fsyncs the target file, if it exists, before the rename, to ensure either the new or existing
+///   file survives a crash. Current callers don't need this as it should already be fsynced if
+///   durability is needed.
+///
+/// * Fsyncs the file after the rename. This can be required with certain OSes or file systems (e.g.
+///   NFS), but not on Linux with most common file systems like ext4 (which we currently use).
+///
+/// An audit of 8 other databases found that none fsynced the file after a rename:
+/// <https://github.com/neondatabase/neon/pull/9686#discussion_r1837180535>
+///
+/// eBPF probes confirmed that this is sufficient with ext4, XFS, and ZFS, but possibly not Btrfs:
+/// <https://github.com/neondatabase/neon/pull/9686#discussion_r1837926218>
 ///
 /// virtual_file.rs has similar code, but it doesn't use vfs.
 ///
@@ -148,9 +160,6 @@ pub async fn durable_rename(
 
     // Time to do the real deal.
     tokio::fs::rename(old_path.as_ref(), new_path.as_ref()).await?;
-
-    // Postgres'ish fsync of renamed file.
-    fsync_async_opt(new_path.as_ref(), do_fsync).await?;
 
     // Now fsync the parent
     let parent = match new_path.as_ref().parent() {

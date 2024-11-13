@@ -17,7 +17,7 @@ from fixtures.pageserver.utils import (
     wait_for_upload_queue_empty,
 )
 from fixtures.remote_storage import LocalFsStorage, RemoteStorageKind, S3Storage, s3_storage
-from fixtures.utils import wait_until
+from fixtures.utils import skip_in_debug_build, wait_until
 from fixtures.workload import Workload
 from werkzeug.wrappers.request import Request
 from werkzeug.wrappers.response import Response
@@ -765,7 +765,7 @@ def test_secondary_background_downloads(neon_env_builder: NeonEnvBuilder):
     assert download_rate < expect_download_rate * 2
 
 
-@pytest.mark.skipif(os.environ.get("BUILD_TYPE") == "debug", reason="only run with release build")
+@skip_in_debug_build("only run with release build")
 @pytest.mark.parametrize("via_controller", [True, False])
 def test_slow_secondary_downloads(neon_env_builder: NeonEnvBuilder, via_controller: bool):
     """

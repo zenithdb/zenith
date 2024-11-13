@@ -80,18 +80,18 @@ impl NeonWalRecord {
     }
 
     #[cfg(feature = "testing")]
-    pub fn wal_clear() -> Self {
+    pub fn wal_clear(s: impl AsRef<str>) -> Self {
         Self::Test {
-            append: "".to_string(),
+            append: s.as_ref().to_string(),
             clear: true,
             will_init: false,
         }
     }
 
     #[cfg(feature = "testing")]
-    pub fn wal_init() -> Self {
+    pub fn wal_init(s: impl AsRef<str>) -> Self {
         Self::Test {
-            append: "".to_string(),
+            append: s.as_ref().to_string(),
             clear: true,
             will_init: true,
         }

@@ -653,6 +653,10 @@ impl DeltaLayerWriter {
         })
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.inner.as_ref().unwrap().num_keys == 0
+    }
+
     ///
     /// Append a key-value pair to the file.
     ///

@@ -253,6 +253,10 @@ pub(crate) fn apply_in_neon(
             use bytes::BufMut;
             if *will_init {
                 assert!(*clear, "init record must be clear to ensure correctness");
+                assert!(
+                    page.is_empty(),
+                    "init record must be the first entry to ensure correctness"
+                );
             }
             if *clear {
                 page.clear();

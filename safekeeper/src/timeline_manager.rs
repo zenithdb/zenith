@@ -515,7 +515,12 @@ impl Manager {
             return;
         }
 
-        if state.cfile_last_persist_at.elapsed() > self.conf.control_file_save_interval {
+        if state.cfile_last_persist_at.elapsed() > self.conf.control_file_save_interval
+            // If the control file's commit_lsn lags more than one segment behind the current
+            // commit_lsn, flush immediately to limit recovery time in case of a crash. We don't do
+            // this on the WAL ingest hot path since it incurs fsync latency.
+            || state.commit_lsn.saturating_sub(state.cfile_commit_lsn).0 >= self.wal_seg_size as u64
+        {
             let mut write_guard = self.tli.write_shared_state().await;
             // it should be done in the background because it blocks manager task, but flush() should
             // be fast enough not to be a problem now

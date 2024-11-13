@@ -35,6 +35,15 @@ pub fn overlaps_with<T: Ord>(a: &Range<T>, b: &Range<T>) -> bool {
     !(a.end <= b.start || b.end <= a.start)
 }
 
+/// Whether a fully contains b, example as below
+/// ```plain
+/// |      a       |
+///       |  b  |
+/// ```
+pub fn fully_contains<T: Ord>(a: &Range<T>, b: &Range<T>) -> bool {
+    a.start <= b.start && a.end >= b.end
+}
+
 pub fn union_to_keyspace<K: Ord>(a: &mut CompactionKeySpace<K>, b: CompactionKeySpace<K>) {
     let x = std::mem::take(a);
     let mut all_ranges_iter = [x.into_iter(), b.into_iter()]

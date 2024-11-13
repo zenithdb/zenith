@@ -277,7 +277,11 @@ pub mod defaults {
     pub const DEFAULT_WAL_REDO_TIMEOUT: &str = "60 s";
 
     pub const DEFAULT_SUPERUSER: &str = "cloud_admin";
-    pub const DEFAULT_LOCALE: &str = "C.UTF-8";
+    pub const DEFAULT_LOCALE: &str = if cfg!(target_os = "macos") {
+        "C"
+    } else {
+        "C.UTF-8"
+    };
 
     pub const DEFAULT_PAGE_CACHE_SIZE: usize = 8192;
     pub const DEFAULT_MAX_FILE_DESCRIPTORS: usize = 100;

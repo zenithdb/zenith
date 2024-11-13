@@ -30,7 +30,7 @@ import pytest
 from fixtures.log_helper import log
 from fixtures.neon_fixtures import NeonEnv, wait_for_last_flush_lsn, wait_replica_caughtup
 from fixtures.pg_version import PgVersion
-from fixtures.utils import query_scalar, wait_until
+from fixtures.utils import query_scalar, skip_on_postgres, wait_until
 
 CREATE_SUBXACTS_FUNC = """
 create or replace function create_subxacts(n integer) returns void as $$
@@ -137,6 +137,12 @@ def test_replica_start_scan_clog_crashed_xids(neon_simple_env: NeonEnv):
     assert secondary_cur.fetchone() == (1,)
 
 
+@skip_on_postgres(
+    PgVersion.V14, reason="pg_log_standby_snapshot() function is available since Postgres 16"
+)
+@skip_on_postgres(
+    PgVersion.V15, reason="pg_log_standby_snapshot() function is available since Postgres 16"
+)
 def test_replica_start_at_running_xacts(neon_simple_env: NeonEnv, pg_version):
     """
     Test that starting a replica works right after the primary has
@@ -148,9 +154,6 @@ def test_replica_start_at_running_xacts(neon_simple_env: NeonEnv, pg_version):
     See the module docstring for background.
     """
     env = neon_simple_env
-
-    if env.pg_version == PgVersion.V14 or env.pg_version == PgVersion.V15:
-        pytest.skip("pg_log_standby_snapshot() function is available only in PG16")
 
     primary = env.endpoints.create_start(branch_name="main", endpoint_id="primary")
     primary_conn = primary.connect()
