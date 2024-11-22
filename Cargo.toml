@@ -54,6 +54,7 @@ async-compression = { version = "0.4.0", features = ["tokio", "gzip", "zstd"] }
 atomic-take = "1.1.0"
 backtrace = "0.3.74"
 flate2 = "1.0.26"
+assert-json-diff = "2"
 async-stream = "0.3"
 async-trait = "0.1"
 aws-config = { version = "1.5", default-features = false, features=["rustls", "sso"] }
@@ -177,7 +178,7 @@ test-context = "0.3"
 thiserror = "1.0"
 tikv-jemallocator = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
-tokio = { version = "1.17", features = ["macros"] }
+tokio = { version = "1.41", features = ["macros"] }
 tokio-epoll-uring = { git = "https://github.com/neondatabase/tokio-epoll-uring.git" , branch = "main" }
 tokio-io-timeout = "1.2.0"
 tokio-postgres-rustls = "0.12.0"
@@ -194,6 +195,7 @@ tower-service = "0.3.3"
 tracing = "0.1"
 tracing-error = "0.2"
 tracing-opentelemetry = "0.28"
+tracing-serde = "0.2.0"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["smallvec", "fmt", "tracing-log", "std", "env-filter", "json"] }
 try-lock = "0.2.5"
 twox-hash = { version = "1.6.3", default-features = false }
