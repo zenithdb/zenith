@@ -170,6 +170,7 @@ pub const RM_RELMAP_ID: u8 = 7;
 pub const RM_STANDBY_ID: u8 = 8;
 pub const RM_HEAP2_ID: u8 = 9;
 pub const RM_HEAP_ID: u8 = 10;
+pub const RM_BTREE_ID: u8 = 11;
 pub const RM_REPLORIGIN_ID: u8 = 19;
 pub const RM_LOGICALMSG_ID: u8 = 21;
 

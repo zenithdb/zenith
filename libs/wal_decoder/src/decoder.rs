@@ -96,9 +96,29 @@ impl MetadataRecord {
             }
             pg_constants::RM_STANDBY_ID => Self::decode_standby_record(&mut buf, decoded),
             pg_constants::RM_REPLORIGIN_ID => Self::decode_replorigin_record(&mut buf, decoded),
-            _unexpected => {
+            pg_constants::RM_BTREE_ID => {
+                // No special handling required for these record types.
+                // We just ingest the blocks that come with it.
+                Ok(None)
+            }
+            unexpected => {
                 // TODO: consider failing here instead of blindly doing something without
                 // understanding the protocol
+                use once_cell::sync::Lazy;
+                use std::sync::Mutex;
+                use std::time::Duration;
+                use utils::rate_limit::RateLimit;
+
+                static LOGGED: Lazy<Mutex<RateLimit>> =
+                    Lazy::new(|| Mutex::new(RateLimit::new(Duration::from_secs(10))));
+                let mut rate_limit = LOGGED.try_lock().unwrap();
+                rate_limit.call(|| {
+                    tracing::warn!(
+                        "Unexpected resource manager id in PG WAL record at LSN {}: {}",
+                        lsn,
+                        unexpected
+                    );
+                });
                 Ok(None)
             }
         }

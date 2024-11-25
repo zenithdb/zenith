@@ -10,6 +10,7 @@ testing = ["pageserver_api/testing"]
 [dependencies]
 anyhow.workspace = true
 bytes.workspace = true
+once_cell.workspace = true
 pageserver_api.workspace = true
 postgres_ffi.workspace = true
 serde.workspace = true
