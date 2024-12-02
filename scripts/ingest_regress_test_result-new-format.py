@@ -65,7 +65,7 @@ class Row:
     raw: str
 
 
-TEST_NAME_RE = re.compile(r"[\[-](?P<build_type>debug|release)-pg(?P<pg_version>\d+)[-\]]")
+TEST_NAME_RE = re.compile(r"[\[-](?P<build_type>debug|release)[-\]]")
 
 
 def err(msg):
@@ -94,20 +94,18 @@ def create_table(cur):
     cur.execute(CREATE_TABLE)
 
 
-def parse_test_name(test_name: str) -> tuple[str, int, str]:
-    build_type, pg_version = None, None
+def parse_test_name(test_name: str) -> tuple[str, str]:
+    build_type = None
     if match := TEST_NAME_RE.search(test_name):
         found = match.groupdict()
         build_type = found["build_type"]
-        pg_version = int(found["pg_version"])
     else:
         # It's ok, we embed BUILD_TYPE and Postgres Version into the test name only for regress suite and do not for other suites (like performance)
         build_type = "release"
-        pg_version = 14
 
-    unparametrized_name = re.sub(rf"{build_type}-pg{pg_version}-?", "", test_name).replace("[]", "")
+    unparametrized_name = re.sub(rf"{build_type}-?", "", test_name).replace("[]", "")
 
-    return build_type, pg_version, unparametrized_name
+    return build_type, unparametrized_name
 
 
 def ingest_test_result(
@@ -135,8 +133,9 @@ def ingest_test_result(
         }
         arch = parameters.get("arch", "UNKNOWN").strip("'")
         lfc = parameters.get("lfc", "False") == "True"
+        pg_version = int(parameters.get("pg_version", 17))
 
-        build_type, pg_version, unparametrized_name = parse_test_name(test["name"])
+        build_type, unparametrized_name = parse_test_name(test["name"])
         labels = {label["name"]: label["value"] for label in test["labels"]}
         row = Row(
             parent_suite=labels["parentSuite"],
