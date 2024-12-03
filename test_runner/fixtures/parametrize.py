@@ -26,7 +26,7 @@ def pg_version() -> PgVersion | None:
 
 @pytest.fixture(scope="function", autouse=True)
 def build_type() -> str | None:
-    return None
+    return os.getenv("BUILD_TYPE", "debug").lower()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -59,13 +59,6 @@ def pageserver_default_tenant_config_compaction_algorithm() -> dict[str, Any] | 
 
 
 def pytest_generate_tests(metafunc: Metafunc):
-    if (bt := os.getenv("BUILD_TYPE")) is None:
-        build_types = ["debug", "release"]
-    else:
-        build_types = [bt.lower()]
-
-    metafunc.parametrize("build_type", build_types)
-
     # A hacky way to parametrize tests only for `pageserver_virtual_file_io_engine=std-fs`
     # And do not change test name for default `pageserver_virtual_file_io_engine=tokio-epoll-uring` to keep tests statistics
     if (io_engine := os.getenv("PAGESERVER_VIRTUAL_FILE_IO_ENGINE", "")) not in (
@@ -112,5 +105,8 @@ def pytest_runtest_makereport(*args, **kwargs):
 
     pg_version = int(PgVersion(os.getenv("DEFAULT_PG_VERSION", PgVersion.DEFAULT)))
     allure.dynamic.parameter("__pg_version", pg_version)
+
+    build_type = os.getenv("BUILD_TYPE", "debug").lower()
+    allure.dynamic.parameter("__build_type", build_type)
 
     yield
