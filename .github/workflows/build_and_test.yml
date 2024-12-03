@@ -606,11 +606,11 @@ jobs:
           # However, new PG versions should be build on newer images,
           # as that reduces the support burden of old and ancient distros.
           - pg: v14
-            debian: bullseye
+            debian: bookworm
           - pg: v15
-            debian: bullseye
+            debian: bookworm
           - pg: v16
-            debian: bullseye
+            debian: bookworm
           - pg: v17
             debian: bookworm
         arch: [ x64, arm64 ]
@@ -722,11 +722,11 @@ jobs:
         version:
           # see the comment for `compute-node-image-arch` job
           - pg: v14
-            debian: bullseye
+            debian: bookworm
           - pg: v15
-            debian: bullseye
+            debian: bookworm
           - pg: v16
-            debian: bullseye
+            debian: bookworm
           - pg: v17
             debian: bookworm
 
@@ -785,11 +785,11 @@ jobs:
         version:
           # see the comment for `compute-node-image-arch` job
           - pg: v14
-            debian: bullseye
+            debian: bookworm
           - pg: v15
-            debian: bullseye
+            debian: bookworm
           - pg: v16
-            debian: bullseye
+            debian: bookworm
           - pg: v17
             debian: bookworm
     env:
