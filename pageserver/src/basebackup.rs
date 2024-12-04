@@ -34,10 +34,8 @@ use postgres_ffi::pg_constants::{PGDATA_SPECIAL_FILES, PG_HBA};
 use postgres_ffi::relfile_utils::{INIT_FORKNUM, MAIN_FORKNUM};
 use postgres_ffi::XLogFileName;
 use postgres_ffi::PG_TLI;
-use postgres_ffi::{calculate_walrecord_end_lsn, dispatch_pgversion, CheckPoint};
-use postgres_ffi::{
-    BLCKSZ, RELSEG_SIZE, SIZEOF_CHECKPOINT, WAL_SEGMENT_SIZE, XLOG_SIZE_OF_XLOG_RECORD,
-};
+use postgres_ffi::{dispatch_pgversion, CheckPoint};
+use postgres_ffi::{BLCKSZ, RELSEG_SIZE, WAL_SEGMENT_SIZE};
 use utils::lsn::Lsn;
 
 #[derive(Debug, thiserror::Error)]
