@@ -1199,8 +1199,18 @@ impl WalIngest {
                 } else {
                     cp.oldestActiveXid = xlog_checkpoint.oldestActiveXid;
                 }
-                cp.redo = xlog_checkpoint.redo;
-
+                //
+                // There is no any field in CheckPoint which allows to distinguish online
+                // and shutdown checkpoint. And we need to know it to detect normal shutdown.
+                // Previously "redo" field was not set at all.
+                // So let's assign this field only for shutdown checkpoint and left it zero
+                // for online checkpoint.
+                //
+                cp.redo = if info == pg_constants::XLOG_CHECKPOINT_SHUTDOWN {
+                    xlog_checkpoint.redo
+                } else {
+                    0
+                };
                 // Write a new checkpoint key-value pair on every checkpoint record, even
                 // if nothing really changed. Not strictly required, but it seems nice to
                 // have some trace of the checkpoint records in the layer files at the same
