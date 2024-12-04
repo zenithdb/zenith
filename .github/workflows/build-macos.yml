@@ -1,0 +1,82 @@
+name: Check neon with MacOS builds
+
+on:
+  workflow_call:
+
+env:
+  RUST_BACKTRACE: 1
+  COPT: '-Werror'
+
+# TODO: move `check-*` and `files-changed` jobs to the "Caller" Workflow
+# We should care about that as Github has limitations:
+# - You can connect up to four levels of workflows
+# - You can call a maximum of 20 unique reusable workflows from a single workflow file.
+# https://docs.github.com/en/actions/sharing-automations/reusing-workflows#limitations
+jobs:
+  files-changed:
+    name: Detect what files changed
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    outputs:
+      postgres_changes: ${{ steps.postgres_changes.outputs.changes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@6ccd57f4c5d15bdc2fef309bd9fb6cc9db2ef1c6 # v4.1.7
+        with:
+          submodules: true
+
+      - name: Check for Postgres changes
+        uses: dorny/paths-filter@1441771bbfdd59dcd748680ee64ebd8faab1a242  #v3
+        id: postgres_changes
+        with:
+          token: ${{ github.token }}
+          filters: |
+            v14: ['vendor/postgres-v14/**', 'Makefile', 'pgxn/**']
+            v15: ['vendor/postgres-v15/**', 'Makefile', 'pgxn/**']
+            v16: ['vendor/postgres-v16/**', 'Makefile', 'pgxn/**']
+            v17: ['vendor/postgres-v17/**', 'Makefile', 'pgxn/**']
+          base: ${{ github.event_name != 'pull_request' && (github.event.merge_group.base_ref || github.ref_name) || '' }}
+          ref: ${{ github.event_name != 'pull_request' && (github.event.merge_group.head_ref || github.ref) || ''}}
+
+  check-macos-build:
+    needs: [ files-changed ]
+    if: |
+      needs.files-changed.outputs.postgres_changes != '[]' && (
+        contains(github.event.pull_request.labels.*.name, 'run-extra-build-macos')  ||
+        contains(github.event.pull_request.labels.*.name, 'run-extra-build-*') ||
+        github.ref_name == 'main'
+      )
+    timeout-minutes: 30
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        postgres-version: ${{ fromJSON(needs.files-changed.outputs.postgres_changes) }}
+    env:
+      # Use release build only, to have less debug info around
+      # Hence keeping target/ (and general cache size) smaller
+      BUILD_TYPE: release
+    steps:
+      - name: Checkout main repo
+        uses: actions/checkout@v4
+
+      - name: Checkout submodule vendor/postgres-${{ matrix.postgres-version }}
+        run: |
+          git submodule init vendor/postgres-${{ matrix.postgres-version }}
+          git submodule update --depth 1
+
+      - name: Install build dependencies
+        run: |
+          echo brew install flex bison openssl protobuf icu4c
+
+      - name: Build Postgres ${{ matrix.postgres-version }}
+        run: |
+          echo make postgres-${{ matrix.postgres-version }}
+
+      - name: Build Neon Pg Ext ${{ matrix.postgres-version }}
+        run: |
+          echo make "neon-pg-ext-${{ matrix.postgres-version }}"
+
+      - name: Build walproposer-lib (only for v17)
+        if: matrix.postgres-version == 'v17'
+        run:
+          echo make walproposer-lib

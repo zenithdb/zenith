@@ -6,7 +6,7 @@ on:
       - main
       - release
       - release-proxy
-  pull_request:
+  # pull_request:
 
 defaults:
   run:
