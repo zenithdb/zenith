@@ -1,14 +1,11 @@
 import pytest
-from fixtures.neon_fixtures import AuxFileStore, NeonEnv
+from fixtures.neon_fixtures import NeonEnv
 from fixtures.pg_version import PgVersion
 
 
 #
 # Test that pgstat statistic is preserved across sessions
 #
-@pytest.mark.parametrize(
-    "pageserver_aux_file_policy", [AuxFileStore.V1, AuxFileStore.V2, AuxFileStore.CrossValidation]
-)
 def test_pgstat(neon_simple_env: NeonEnv):
     env = neon_simple_env
     if env.pg_version == PgVersion.V14:
