@@ -499,27 +499,6 @@ pub fn encode_logical_message(prefix: &str, message: &str) -> Bytes {
         .encode(Lsn(0))
 }
 
-/// Given the start LSN of a WAL record and its length, calculate its end LSN.
-///
-/// In the simple cases, the end LSN is just `start_lsn + len`, but it's more complicated if 
-/// the record crosses a page boundary.
-///
-/// `len` is the length not including any WAL page headers. It should match the `xl_tot_len`
-/// field on the WAL record.
-pub fn calculate_walrecord_end_lsn(start_lsn: Lsn, len: usize) -> Lsn {
-    let aligned_len = ((len + 7) & !7) as u64;
-	let page_header_size = if (XLOG_BLCKSZ as u64) - start_lsn.0 % (XLOG_BLCKSZ as u64) < aligned_len {
-        if (start_lsn.0 & ((WAL_SEGMENT_SIZE - 1) as u64)) < (XLOG_BLCKSZ as u64) {
-            XLOG_SIZE_OF_XLOG_LONG_PHD
-        } else {
-            XLOG_SIZE_OF_XLOG_SHORT_PHD
-        }
-    } else {
-        0
-    } as u64;
-    start_lsn + aligned_len + page_header_size
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
