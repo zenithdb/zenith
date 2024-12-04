@@ -275,7 +275,7 @@ fn bench_wal_acceptor_throughput(c: &mut Criterion) {
 
                 // Send requests.
                 for req in reqgen {
-                    _ = reply_rx.try_recv(); // discard any replies, to avoid blocking
+                    while reply_rx.try_recv().is_ok() {} // discard replies, to avoid blocking
                     let msg = ProposerAcceptorMessage::AppendRequest(req);
                     msg_tx.send(msg).await.expect("send failed");
                 }

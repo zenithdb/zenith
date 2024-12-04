@@ -217,7 +217,8 @@ pub static WAL_RECEIVER_QUEUE_DEPTH: Lazy<Histogram> = Lazy::new(|| {
     let mut buckets = pow2_buckets(1, MSG_QUEUE_SIZE);
     buckets.insert(0, 0.0);
     buckets.insert(buckets.len() - 1, (MSG_QUEUE_SIZE - 1) as f64);
-    assert!(buckets.len() <= 12, "too many histogram buckets");
+    // TODO: tweak this.
+    assert!(buckets.len() <= 16, "too many histogram buckets");
 
     register_histogram!(
         "safekeeper_wal_receiver_queue_depth",

@@ -7,14 +7,15 @@ use crate::metrics::{
     WAL_RECEIVERS, WAL_RECEIVER_QUEUE_DEPTH, WAL_RECEIVER_QUEUE_DEPTH_TOTAL,
     WAL_RECEIVER_QUEUE_SIZE_TOTAL,
 };
-use crate::safekeeper::AcceptorProposerMessage;
-use crate::safekeeper::ProposerAcceptorMessage;
-use crate::safekeeper::ServerInfo;
+use crate::safekeeper::{
+    AcceptorProposerMessage, AppendRequest, AppendRequestHeader, ProposerAcceptorMessage,
+    ServerInfo,
+};
 use crate::timeline::WalResidentTimeline;
 use crate::wal_service::ConnectionId;
 use crate::GlobalTimelines;
 use anyhow::{anyhow, Context};
-use bytes::BytesMut;
+use bytes::{BufMut as _, Bytes, BytesMut};
 use parking_lot::MappedMutexGuard;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
@@ -206,7 +207,8 @@ impl Drop for WalReceiverGuard {
     }
 }
 
-pub const MSG_QUEUE_SIZE: usize = 256;
+// TODO: reconsider this.
+pub const MSG_QUEUE_SIZE: usize = 4096;
 pub const REPLY_QUEUE_SIZE: usize = 16;
 
 impl SafekeeperPostgresHandler {
@@ -497,6 +499,9 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 /// every 5 seconds, for 12 samples per poll. This will give a count of up to 12x active timelines.
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
 
+/// The AppendRequest buffer size.
+const APPEND_BUFFER_SIZE: usize = 1024 * 1024;
+
 /// Encapsulates a task which takes messages from msg_rx, processes and pushes
 /// replies to reply_tx.
 ///
@@ -547,6 +552,9 @@ impl WalAcceptor {
     async fn run(&mut self) -> anyhow::Result<()> {
         let walreceiver_guard = self.tli.get_walreceivers().register(self.conn_id);
 
+        // Buffer AppendRequests to submit them as a single large write.
+        let mut append_buf = BufferedAppendRequest::new(APPEND_BUFFER_SIZE);
+
         // Periodically flush the WAL and compute metrics.
         let mut flush_ticker = tokio::time::interval(FLUSH_INTERVAL);
         flush_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -563,7 +571,7 @@ impl WalAcceptor {
                 // Process inbound message.
                 msg = self.msg_rx.recv() => {
                     // If disconnected, break to flush WAL and return.
-                    let Some(mut msg) = msg else {
+                    let Some(msg) = msg else {
                         break;
                     };
 
@@ -583,11 +591,44 @@ impl WalAcceptor {
                     // Note that a flush can still happen on segment bounds, which will result
                     // in an AppendResponse.
                     if let ProposerAcceptorMessage::AppendRequest(append_request) = msg {
-                        msg = ProposerAcceptorMessage::NoFlushAppendRequest(append_request);
-                        dirty = true;
-                    }
+                        // Try to batch multiple messages into a single large write.
+                        if !append_buf.is_empty() || !self.msg_rx.is_empty() {
+                            if append_buf.add(&append_request) {
+                                continue; // message buffered, go get next message
+                            }
 
-                    self.tli.process_msg(&msg).await?
+                            // Full buffer, write it and buffer this message for next iteration.
+                            dirty = true;
+                            let buf_req = append_buf.take().expect("empty buffer");
+                            let buf_msg = ProposerAcceptorMessage::NoFlushAppendRequest(buf_req);
+                            let reply = self.tli.process_msg(&buf_msg).await?;
+                            drop(buf_msg); // allow reusing buffer for add
+                            assert!(append_buf.add(&append_request), "empty buffer rejected msg");
+                            reply
+                        } else {
+                            dirty = true;
+                            let msg = ProposerAcceptorMessage::NoFlushAppendRequest(append_request);
+                            self.tli.process_msg(&msg).await?
+                        }
+                    } else {
+                        self.tli.process_msg(&msg).await?
+                    }
+                }
+
+                // If there are no pending messages, write the append buffer.
+                //
+                // NB: we don't also flush the WAL here. Otherwise we can get into a regime where we
+                // quickly drain msg_rx and fsync before the sender is able to repopulate msg_rx.
+                // This happens consistently due to Tokio scheduling, leading to overeager fsyncing.
+                // Instead, we perform the write without fsyncing and give the sender a chance to
+                // get scheduled and populate msg_rx for the next iteration. If there are no further
+                // messages, the next iteration will flush the WAL.
+                _ = future::ready(()), if self.msg_rx.is_empty() && !append_buf.is_empty() => {
+                    dirty = true;
+                    let buf_req = append_buf.take().expect("empty buffer");
+                    self.tli
+                        .process_msg(&ProposerAcceptorMessage::NoFlushAppendRequest(buf_req))
+                        .await?
                 }
 
                 // While receiving AppendRequests, flush the WAL periodically and respond with an
@@ -599,11 +640,11 @@ impl WalAcceptor {
                         .await?
                 }
 
-                // If there are no pending messages, flush the WAL immediately.
+                // If there are no pending messages, flush the WAL and append buffer immediately.
                 //
                 // TODO: this should be done via flush_ticker.reset_immediately(), but that's always
                 // delayed by 1ms due to this bug: https://github.com/tokio-rs/tokio/issues/6866.
-                _ = future::ready(()), if dirty && self.msg_rx.is_empty() => {
+                _ = future::ready(()), if self.msg_rx.is_empty() && dirty => {
                     dirty = false;
                     flush_ticker.reset();
                     self.tli
@@ -649,5 +690,117 @@ impl Drop for WalAcceptor {
             WAL_RECEIVER_QUEUE_DEPTH_TOTAL.dec();
             WAL_RECEIVER_QUEUE_SIZE_TOTAL.sub(msg.size() as i64);
         }
+    }
+}
+
+/// Buffers WAL data for multiple AppendRequests, to submit them as a single write.
+struct BufferedAppendRequest {
+    /// The buffer capacity.
+    capacity: usize,
+    /// The buffered header and WAL data.
+    buf: Option<(AppendRequestHeader, BytesMut)>,
+    /// A previous buffer that can be reused when the returned message is dropped.
+    reuse_buf: Option<Bytes>,
+    /// If an AppendRequest is larger than the buffer capacity (when empty), just stash it here to
+    /// avoid growing the buffer and copying it. This will be returned as-is.
+    large: Option<AppendRequest>,
+}
+
+impl BufferedAppendRequest {
+    /// Creates a new append request buffer with the given capacity.
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            buf: None,
+            reuse_buf: None,
+            large: None,
+        }
+    }
+
+    /// Adds the given append request to the buffer, if possible. Returns `false` if the message
+    /// can't be buffered, leaving self unmodified. An empty buffer will always accept a message.
+    ///
+    /// If the buffer is not empty, the message must have the same term and proposer and contiguous
+    /// `begin_lsn` and `end_lsn`. The buffer must have available capacity for the entire
+    /// `wal_data`. If the message is greater than an empty buffer's capacity, it is accepted but
+    /// simply stashed away in `large` without growing the buffer.
+    pub fn add(&mut self, msg: &AppendRequest) -> bool {
+        // If there is a stashed large message, reject further messages.
+        if self.large.is_some() {
+            return false;
+        }
+
+        // If there is no existing buffer, initialize one with the message.
+        let Some((ref mut h, ref mut wal_data)) = self.buf else {
+            // If the message is larger than the buffer capacity, just stash it instead of growing.
+            if msg.wal_data.len() > self.capacity {
+                assert!(self.large.is_none());
+                self.large = Some(msg.clone()); // clone is cheap with Bytes
+                return true;
+            }
+
+            // Reuse a previous buffer, if any, or allocate a new one.
+            //
+            // TODO: try_into_mut() is essentially runtime borrow checking. If AppendRequest used a
+            // normal Vec<u8> we could do compile-time borrow checking instead and avoid panic.
+            let mut wal_data = match self.reuse_buf.take() {
+                Some(reuse_buf) => match reuse_buf.try_into_mut() {
+                    Ok(mut reuse_buf) => {
+                        assert_eq!(reuse_buf.capacity(), self.capacity);
+                        reuse_buf.clear();
+                        reuse_buf
+                    }
+                    Err(_) => panic!("couldn't reuse buffer, still in use"),
+                },
+                None => BytesMut::with_capacity(self.capacity),
+            };
+            // Copy the append request into the buffer.
+            wal_data.put_slice(&msg.wal_data);
+            self.buf = Some((msg.h, wal_data));
+            return true;
+        };
+
+        // The messages must have the same term and proposer.
+        if h.term != msg.h.term || h.proposer_uuid != msg.h.proposer_uuid {
+            return false;
+        }
+        // The messages must be contiguous.
+        if h.end_lsn != msg.h.begin_lsn {
+            return false;
+        }
+        // The message must fit in the buffer.
+        if wal_data.len() + msg.wal_data.len() > self.capacity {
+            return false;
+        }
+
+        // Add the message to the buffer, bumping the commit and truncate LSNs. We assume that later
+        // messages have later commit/truncate LSNs.
+        h.end_lsn = msg.h.end_lsn;
+        h.commit_lsn = msg.h.commit_lsn;
+        h.truncate_lsn = msg.h.truncate_lsn;
+        wal_data.put_slice(&msg.wal_data);
+        true
+    }
+
+    /// Returns true if there is no buffered message.
+    fn is_empty(&self) -> bool {
+        self.buf.is_none() && self.large.is_none()
+    }
+
+    /// Takes the buffered AppendRequest (if any), leaving a None in its place.
+    ///
+    /// NB: The returned `wal_data` Bytes must be dropped before the next call to `add()`, in order
+    /// to reuse the buffer. This is basically runtime borrow checking, because of Bytes.
+    fn take(&mut self) -> Option<AppendRequest> {
+        // If there is a stashed large message, return it.
+        if let Some(large) = self.large.take() {
+            assert!(self.buf.is_none(), "both buf and large are set");
+            return Some(large);
+        }
+
+        let (h, wal_data) = self.buf.take()?;
+        let wal_data = wal_data.freeze();
+        self.reuse_buf = Some(wal_data.clone()); // keep a reference to the buffer
+        Some(AppendRequest { h, wal_data })
     }
 }

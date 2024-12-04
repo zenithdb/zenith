@@ -296,12 +296,13 @@ pub struct ProposerElected {
 
 /// Request with WAL message sent from proposer to safekeeper. Along the way it
 /// communicates commit_lsn.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct AppendRequest {
     pub h: AppendRequestHeader,
     pub wal_data: Bytes,
 }
-#[derive(Debug, Clone, Deserialize)]
+
+#[derive(Debug, Clone, Copy, Deserialize)]
 pub struct AppendRequestHeader {
     // safekeeper's current term; if it is higher than proposer's, the compute is out of date.
     pub term: Term,
@@ -1169,7 +1170,7 @@ mod tests {
             proposer_uuid: [0; 16],
         };
         let mut append_request = AppendRequest {
-            h: ar_hdr.clone(),
+            h: ar_hdr,
             wal_data: Bytes::from_static(b"b"),
         };
 
@@ -1243,7 +1244,7 @@ mod tests {
             proposer_uuid: [0; 16],
         };
         let append_request = AppendRequest {
-            h: ar_hdr.clone(),
+            h: ar_hdr,
             wal_data: Bytes::from_static(b"b"),
         };
 
@@ -1251,7 +1252,7 @@ mod tests {
         sk.process_msg(&ProposerAcceptorMessage::AppendRequest(append_request))
             .await
             .unwrap();
-        let mut ar_hrd2 = ar_hdr.clone();
+        let mut ar_hrd2 = ar_hdr;
         ar_hrd2.begin_lsn = Lsn(4);
         ar_hrd2.end_lsn = Lsn(5);
         let append_request = AppendRequest {
