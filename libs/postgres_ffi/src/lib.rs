@@ -231,8 +231,7 @@ pub use v14::bindings::{TimeLineID, TimestampTz, XLogRecPtr, XLogSegNo};
 pub use v14::bindings::{MultiXactOffset, MultiXactStatus};
 pub use v14::bindings::{PageHeaderData, XLogRecord};
 pub use v14::xlog_utils::{
-    SIZEOF_CHECKPOINT, XLOG_SIZE_OF_XLOG_LONG_PHD, XLOG_SIZE_OF_XLOG_RECORD,
-    XLOG_SIZE_OF_XLOG_SHORT_PHD,
+    XLOG_SIZE_OF_XLOG_LONG_PHD, XLOG_SIZE_OF_XLOG_RECORD, XLOG_SIZE_OF_XLOG_SHORT_PHD,
 };
 
 pub use v14::bindings::{CheckPoint, ControlFileData};
@@ -279,7 +278,7 @@ pub fn generate_pg_control(
     checkpoint_bytes: &[u8],
     lsn: Lsn,
     pg_version: u32,
-) -> anyhow::Result<(Bytes, u64)> {
+) -> anyhow::Result<(Bytes, u64, bool)> {
     dispatch_pgversion!(
         pg_version,
         pgv::xlog_utils::generate_pg_control(pg_control_bytes, checkpoint_bytes, lsn),

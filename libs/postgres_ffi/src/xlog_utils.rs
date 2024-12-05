@@ -124,23 +124,64 @@ pub fn normalize_lsn(lsn: Lsn, seg_sz: usize) -> Lsn {
     }
 }
 
+/// Generate a pg_control file, for a basebackup for starting up Postgres at the given LSN
+///
+/// 'pg_control_bytes' and 'checkpoint_bytes' are the contents of those keys persisted in
+/// the pageserver. They use the same format as the PostgreSQL control file and the
+/// checkpoint record, but see walingest.rs for how exactly they are kept up to date.
+/// 'lsn' is the LSN at which we're starting up.
+///
+/// Returns:
+/// - pg_control file contents
+/// - system_identifier, extracted from the persisted information
+/// - true, if we're starting up from a "clean shutdown", i.e. if there was a shutdown
+///   checkpoint at the given LSN
 pub fn generate_pg_control(
     pg_control_bytes: &[u8],
     checkpoint_bytes: &[u8],
     lsn: Lsn,
-) -> anyhow::Result<(Bytes, u64)> {
+) -> anyhow::Result<(Bytes, u64, bool)> {
     let mut pg_control = ControlFileData::decode(pg_control_bytes)?;
     let mut checkpoint = CheckPoint::decode(checkpoint_bytes)?;
+    let was_shutdown;
 
     // Generate new pg_control needed for bootstrap
-    checkpoint.redo = normalize_lsn(lsn, WAL_SEGMENT_SIZE).0;
+    //
+    // NB: In the checkpoint struct that we persist in the pageserver, we have a different
+    // convention for the 'redo' field than in PostgreSQL: On a shutdown checkpoint,
+    // 'redo' points the *end* of the checkpoint WAL record. On PostgreSQL, it points to
+    // the beginning. Furthermore, on an online checkpoint, 'redo' is set to 0.
+    //
+    // We didn't always have this convention however, and old persisted records will have
+    // old REDO values that point to some old LSN.
+    //
+    // The upshot is that if 'redo' is equal to the "current" LSN, there was a shutdown
+    // checkpoint record at that point in WAL, with no new WAL records after it. That case
+    // can be treated as starting from a clean shutdown. All other cases are treated as
+    // non-clean shutdown. In Neon, we don't do WAL replay at startup in either case, so
+    // that distinction doesn't matter very much. As of this writing, it only affects
+    // whether the persisted pg_stats information can be used or not.
+    //
+    // In the Checkpoint struct in the returned pg_control file, the redo pointer is
+    // always set to the LSN we're starting at, to hint that no WAL replay is required.
+    // (There's some neon-specific code in Postgres startup to make that work, though.
+    // Just setting the redo pointer is not sufficient.)
+    if Lsn(checkpoint.redo) == lsn {
+        was_shutdown = true;
+    } else {
+        checkpoint.redo = normalize_lsn(lsn, WAL_SEGMENT_SIZE).0;
+        was_shutdown = false;
+    }
 
-    //save new values in pg_control
+    // We use DBState_DB_SHUTDOWNED even if it was not a clean shutdown.  The
+    // neon-specific code at postgres startup ignores the state stored in the control
+    // file, similar to archive recovery in standalone PostgreSQL. Similarly, the
+    // checkPoint pointer is ignored, so just set it to 0.
     pg_control.checkPoint = 0;
     pg_control.checkPointCopy = checkpoint;
     pg_control.state = DBState_DB_SHUTDOWNED;
 
-    Ok((pg_control.encode(), pg_control.system_identifier))
+    Ok((pg_control.encode(), pg_control.system_identifier, was_shutdown))
 }
 
 pub fn get_current_timestamp() -> TimestampTz {
