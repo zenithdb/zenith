@@ -282,6 +282,7 @@ impl WalIngest {
             let new_checkpoint_bytes = self.checkpoint.encode()?;
 
             modification.put_checkpoint(new_checkpoint_bytes)?;
+            enum_pgversion_dispatch!(&mut self.checkpoint, CheckPoint, cp, { cp.redo = 0 });
             self.checkpoint_modified = false;
         }
 
