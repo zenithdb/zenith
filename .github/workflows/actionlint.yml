@@ -17,7 +17,6 @@ concurrency:
 
 jobs:
   check-permissions:
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'run-no-ci') }}
     uses: ./.github/workflows/check-permissions.yml
     with:
       github-event-name: ${{ github.event_name}}
