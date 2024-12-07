@@ -36,6 +36,26 @@ typedef struct IOHistogramData
 
 typedef IOHistogramData *IOHistogram;
 
+static const uint64 qt_bucket_thresholds[] = {
+	     200,      300,      600,	   1000,  /* 100 us - 1 ms */
+	    2000,     3000,     6000,     10000,  /* 1 ms   - 10 ms */
+	   20000,    30000,    60000,    100000,  /* 10 ms  - 100 ms */
+	  200000,   300000,   600000,   1000000,  /* 100 ms - 1 s */
+	 2000000,  3000000,  6000000,  10000000,  /* 1 s - 10 s */
+	20000000, 30000000, 60000000, 100000000,  /* 10 s - 100 s */
+	UINT64_MAX,
+};
+#define NUM_QT_BUCKETS (lengthof(qt_bucket_thresholds))
+
+typedef struct QTHistogramData
+{
+	uint64		elapsed_us_count;
+	uint64		elapsed_us_sum;
+	uint64		elapsed_us_bucket[NUM_QT_BUCKETS];
+} QTHistogramData;
+
+typedef QTHistogramData *QTHistogram;
+
 typedef struct
 {
 	/*
@@ -115,6 +135,11 @@ typedef struct
 	/* LFC I/O time buckets */
 	IOHistogramData file_cache_read_hist;
 	IOHistogramData file_cache_write_hist;
+
+	/*
+	 * Histogram of query execution time.
+	 */
+	QTHistogramData query_time_hist;
 } neon_per_backend_counters;
 
 /* Pointer to the shared memory array of neon_per_backend_counters structs */
@@ -137,6 +162,7 @@ extern neon_per_backend_counters *neon_per_backend_counters_shared;
 extern void inc_getpage_wait(uint64 latency);
 extern void inc_page_cache_read_wait(uint64 latency);
 extern void inc_page_cache_write_wait(uint64 latency);
+extern void inc_query_time(uint64 elapsed);
 
 extern Size NeonPerfCountersShmemSize(void);
 extern void NeonPerfCountersShmemInit(void);

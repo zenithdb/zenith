@@ -71,6 +71,27 @@ inc_iohist(IOHistogram hist, uint64 latency_us)
 	hist->wait_us_count++;
 }
 
+static inline void
+inc_qthist(QTHistogram hist, uint64 elapsed_us)
+{
+	int			lo = 0;
+	int			hi = NUM_QT_BUCKETS - 1;
+
+	/* Find the right bucket with binary search */
+	while (lo < hi)
+	{
+		int			mid = (lo + hi) / 2;
+
+		if (elapsed_us < qt_bucket_thresholds[mid])
+			hi = mid;
+		else
+			lo = mid + 1;
+	}
+	hist->elapsed_us_bucket[lo]++;
+	hist->elapsed_us_sum += elapsed_us;
+	hist->elapsed_us_count++;
+}
+
 /*
  * Count a GetPage wait operation.
  */
@@ -98,6 +119,13 @@ inc_page_cache_write_wait(uint64 latency)
 	inc_iohist(&MyNeonCounters->file_cache_write_hist, latency);
 }
 
+
+void
+inc_query_time(uint64 elapsed)
+{
+	inc_qthist(&MyNeonCounters->query_time_hist, elapsed);
+}
+
 /*
  * Support functions for the views, neon_backend_perf_counters and
  * neon_perf_counters.
@@ -112,11 +140,11 @@ typedef struct
 } metric_t;
 
 static int
-histogram_to_metrics(IOHistogram histogram,
-					 metric_t *metrics,
-					 const char *count,
-					 const char *sum,
-					 const char *bucket)
+io_histogram_to_metrics(IOHistogram histogram,
+						metric_t *metrics,
+						const char *count,
+						const char *sum,
+						const char *bucket)
 {
 	int		i = 0;
 	uint64	bucket_accum = 0;
@@ -145,10 +173,44 @@ histogram_to_metrics(IOHistogram histogram,
 	return i;
 }
 
+static int
+qt_histogram_to_metrics(QTHistogram histogram,
+						metric_t *metrics,
+						const char *count,
+						const char *sum,
+						const char *bucket)
+{
+	int		i = 0;
+	uint64	bucket_accum = 0;
+
+	metrics[i].name = count;
+	metrics[i].is_bucket = false;
+	metrics[i].value = (double) histogram->elapsed_us_count;
+	i++;
+	metrics[i].name = sum;
+	metrics[i].is_bucket = false;
+	metrics[i].value = (double) histogram->elapsed_us_sum / 1000000.0;
+	i++;
+	for (int bucketno = 0; bucketno < NUM_QT_BUCKETS; bucketno++)
+	{
+		uint64		threshold = qt_bucket_thresholds[bucketno];
+
+		bucket_accum += histogram->elapsed_us_bucket[bucketno];
+
+		metrics[i].name = bucket;
+		metrics[i].is_bucket = true;
+		metrics[i].bucket_le = (threshold == UINT64_MAX) ? INFINITY : ((double) threshold) / 1000000.0;
+		metrics[i].value = (double) bucket_accum;
+		i++;
+	}
+
+	return i;
+}
+
 static metric_t *
 neon_perf_counters_to_metrics(neon_per_backend_counters *counters)
 {
-#define NUM_METRICS ((2 + NUM_IO_WAIT_BUCKETS) * 3 + 10)
+#define NUM_METRICS ((2 + NUM_IO_WAIT_BUCKETS) * 4 + 10)
 	metric_t   *metrics = palloc((NUM_METRICS + 1) * sizeof(metric_t));
 	int			i = 0;
 
@@ -159,10 +221,10 @@ neon_perf_counters_to_metrics(neon_per_backend_counters *counters)
 		i++; \
 	} while (false)
 
-	i += histogram_to_metrics(&counters->getpage_hist, &metrics[i],
-							  "getpage_wait_seconds_count",
-							  "getpage_wait_seconds_sum",
-							  "getpage_wait_seconds_bucket");
+	i += io_histogram_to_metrics(&counters->getpage_hist, &metrics[i],
+								 "getpage_wait_seconds_count",
+								 "getpage_wait_seconds_sum",
+								 "getpage_wait_seconds_bucket");
 
 	APPEND_METRIC(getpage_prefetch_requests_total);
 	APPEND_METRIC(getpage_sync_requests_total);
@@ -176,14 +238,19 @@ neon_perf_counters_to_metrics(neon_per_backend_counters *counters)
 
 	APPEND_METRIC(file_cache_hits_total);
 
-	i += histogram_to_metrics(&counters->file_cache_read_hist, &metrics[i],
-							  "file_cache_read_wait_seconds_count",
-							  "file_cache_read_wait_seconds_sum",
-							  "file_cache_read_wait_seconds_bucket");
-	i += histogram_to_metrics(&counters->file_cache_write_hist, &metrics[i],
-							  "file_cache_write_wait_seconds_count",
-							  "file_cache_write_wait_seconds_sum",
-							  "file_cache_write_wait_seconds_bucket");
+	i += io_histogram_to_metrics(&counters->file_cache_read_hist, &metrics[i],
+								 "file_cache_read_wait_seconds_count",
+								 "file_cache_read_wait_seconds_sum",
+								 "file_cache_read_wait_seconds_bucket");
+	i += io_histogram_to_metrics(&counters->file_cache_write_hist, &metrics[i],
+								 "file_cache_write_wait_seconds_count",
+								 "file_cache_write_wait_seconds_sum",
+								 "file_cache_write_wait_seconds_bucket");
+
+	i += qt_histogram_to_metrics(&counters->query_time_hist, &metrics[i],
+								 "query_time_seconds_count",
+								 "query_time_seconds_sum",
+								 "query_time_seconds_bucket");
 
 	Assert(i == NUM_METRICS);
 
@@ -255,12 +322,21 @@ neon_get_backend_perf_counters(PG_FUNCTION_ARGS)
 }
 
 static inline void
-histogram_merge_into(IOHistogram into, IOHistogram from)
+io_histogram_merge_into(IOHistogram into, IOHistogram from)
 {
 	into->wait_us_count += from->wait_us_count;
 	into->wait_us_sum += from->wait_us_sum;
 	for (int bucketno = 0; bucketno < NUM_IO_WAIT_BUCKETS; bucketno++)
 		into->wait_us_bucket[bucketno] += from->wait_us_bucket[bucketno];
+}
+
+static inline void
+qt_histogram_merge_into(QTHistogram into, QTHistogram from)
+{
+	into->elapsed_us_count += from->elapsed_us_count;
+	into->elapsed_us_sum += from->elapsed_us_sum;
+	for (int bucketno = 0; bucketno < NUM_QT_BUCKETS; bucketno++)
+		into->elapsed_us_bucket[bucketno] += from->elapsed_us_bucket[bucketno];
 }
 
 PG_FUNCTION_INFO_V1(neon_get_perf_counters);
@@ -281,7 +357,7 @@ neon_get_perf_counters(PG_FUNCTION_ARGS)
 	{
 		neon_per_backend_counters *counters = &neon_per_backend_counters_shared[procno];
 
-		histogram_merge_into(&totals.getpage_hist, &counters->getpage_hist);
+		io_histogram_merge_into(&totals.getpage_hist, &counters->getpage_hist);
 		totals.getpage_prefetch_requests_total += counters->getpage_prefetch_requests_total;
 		totals.getpage_sync_requests_total += counters->getpage_sync_requests_total;
 		totals.getpage_prefetch_misses_total += counters->getpage_prefetch_misses_total;
@@ -292,8 +368,9 @@ neon_get_perf_counters(PG_FUNCTION_ARGS)
 		totals.pageserver_open_requests += counters->pageserver_open_requests;
 		totals.getpage_prefetches_buffered += counters->getpage_prefetches_buffered;
 		totals.file_cache_hits_total += counters->file_cache_hits_total;
-		histogram_merge_into(&totals.file_cache_read_hist, &counters->file_cache_read_hist);
-		histogram_merge_into(&totals.file_cache_write_hist, &counters->file_cache_write_hist);
+		io_histogram_merge_into(&totals.file_cache_read_hist, &counters->file_cache_read_hist);
+		io_histogram_merge_into(&totals.file_cache_write_hist, &counters->file_cache_write_hist);
+		qt_histogram_merge_into(&totals.query_time_hist, &counters->query_time_hist);
 	}
 
 	metrics = neon_perf_counters_to_metrics(&totals);
