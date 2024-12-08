@@ -46,10 +46,10 @@ jobs:
       BUILD_TYPE: release
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: true
+          persist-credentials: false
 
       - name: Install macOS postgres dependencies
         run: brew install flex bison openssl protobuf icu4c
@@ -162,10 +162,10 @@ jobs:
       CARGO_INCREMENTAL: 0
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: true
+          persist-credentials: false
 
       # Some of our rust modules use FFI and need those to be checked
       - name: Get postgres headers

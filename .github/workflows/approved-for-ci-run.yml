@@ -71,6 +71,8 @@ jobs:
         with:
           ref: main
           token: ${{ secrets.CI_ACCESS_TOKEN }}
+          # We use creadentials to push to the repository
+          persist-credentials: true
 
       - name: Look for existing PR
         id: get-pr

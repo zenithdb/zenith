@@ -56,6 +56,8 @@ jobs:
         echo "connstr=${CONNSTR}" >> $GITHUB_OUTPUT
 
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4

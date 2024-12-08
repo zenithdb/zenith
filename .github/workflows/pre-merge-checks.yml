@@ -19,6 +19,9 @@ jobs:
       python-changed: ${{ steps.python-src.outputs.any_changed }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - uses: tj-actions/changed-files@4edd678ac3f81e2dc578756871e4d00c19191daf # v45.0.4
         id: python-src
         with:

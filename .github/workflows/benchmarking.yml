@@ -91,6 +91,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Configure AWS credentials # necessary on Azure runners
       uses: aws-actions/configure-aws-credentials@v4
@@ -190,6 +192,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -391,6 +395,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -549,6 +555,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     # until https://github.com/neondatabase/neon/issues/8275 is fixed we temporarily install postgresql-16
     # instead of using Neon artifacts containing pgbench
@@ -694,6 +702,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -804,6 +814,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -912,6 +924,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
