@@ -210,7 +210,7 @@ qt_histogram_to_metrics(QTHistogram histogram,
 static metric_t *
 neon_perf_counters_to_metrics(neon_per_backend_counters *counters)
 {
-#define NUM_METRICS ((2 + NUM_IO_WAIT_BUCKETS) * 3 + (2 + NUM_QT_WAIT_BUCKETS) + 10)
+#define NUM_METRICS ((2 + NUM_IO_WAIT_BUCKETS) * 3 + (2 + NUM_QT_BUCKETS) + 10)
 	metric_t   *metrics = palloc((NUM_METRICS + 1) * sizeof(metric_t));
 	int			i = 0;
 
