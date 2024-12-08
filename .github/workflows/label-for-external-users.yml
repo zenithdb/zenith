@@ -4,6 +4,8 @@ on:
   issues:
     types:
       - opened
+  # Need to trigger this workflow without manual intervention
+  # zizmor: ignore[dangerous-triggers]
   pull_request_target:
     types:
       - opened

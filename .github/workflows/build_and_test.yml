@@ -987,8 +987,11 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Set PR's status to pending and request a remote CI test
+        env:
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BUILD_TAG: ${{ needs.tag.outputs.build-tag }}
+          GH_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
         run: |
-          COMMIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}
           REMOTE_REPO="${{ github.repository_owner }}/build-custom-extensions"
 
           curl -f -X POST \
@@ -1005,22 +1008,23 @@ jobs:
           curl -f -X POST \
           https://api.github.com/repos/$REMOTE_REPO/actions/workflows/build_and_upload_extensions.yml/dispatches \
           -H "Accept: application/vnd.github.v3+json" \
-          --user "${{ secrets.CI_ACCESS_TOKEN }}" \
+          --user "${GH_TOKEN}" \
           --data \
             "{
               \"ref\": \"main\",
               \"inputs\": {
                 \"ci_job_name\": \"build-and-upload-extensions\",
-                \"commit_hash\": \"$COMMIT_SHA\",
-                \"remote_repo\": \"${{ github.repository }}\",
-                \"compute_image_tag\": \"${{ needs.tag.outputs.build-tag }}\",
-                \"remote_branch_name\": \"${{ github.ref_name }}\"
+                \"commit_hash\": \"${COMMIT_SHA}\",
+                \"remote_repo\": \"${GITHUB_REPOSITORY}\",
+                \"compute_image_tag\": \"${BUILD_TAG}\",
+                \"remote_branch_name\": \"${GITHUB_REF_NAME}\"
               }
             }"
 
       - name: Wait for extension build to finish
         env:
           GH_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           TIMEOUT=1800 # 30 minutes, usually it takes ~2-3 minutes, but if runners are busy, it might take longer
           INTERVAL=15 # try each N seconds
@@ -1034,7 +1038,7 @@ jobs:
             gh api \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
-              "/repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha || github.sha }}" > statuses.json
+              "/repos/${GITHUB_REPOSITORY}/statuses/${COMMIT_SHA}" > statuses.json
 
             # Get the latest status for the "build-and-upload-extensions" context
             last_status=$(jq --raw-output '[.[] | select(.context == "build-and-upload-extensions")] | sort_by(.created_at)[-1].state' statuses.json)
@@ -1069,9 +1073,10 @@ jobs:
       - name: Trigger deploy workflow
         env:
           GH_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
+          BUILD_TAG: ${{ needs.tag.outputs.build-tag }}
         run: |
           if [[ "$GITHUB_REF_NAME" == "main" ]]; then
-            gh workflow --repo neondatabase/infra run deploy-dev.yml --ref main -f branch=main -f dockerTag=${{needs.tag.outputs.build-tag}} -f deployPreprodRegion=false
+            gh workflow --repo neondatabase/infra run deploy-dev.yml --ref main -f branch=main -f dockerTag=${BUILD_TAG} -f deployPreprodRegion=false
           elif [[ "$GITHUB_REF_NAME" == "release" ]]; then
             gh workflow --repo neondatabase/infra run deploy-dev.yml --ref main \
               -f deployPgSniRouter=false \
@@ -1080,7 +1085,7 @@ jobs:
               -f deployStorageBroker=true \
               -f deployStorageController=true \
               -f branch=main \
-              -f dockerTag=${{needs.tag.outputs.build-tag}} \
+              -f dockerTag=${BUILD_TAG} \
               -f deployPreprodRegion=true
 
             gh workflow --repo neondatabase/infra run deploy-prod.yml --ref main \
@@ -1088,7 +1093,7 @@ jobs:
               -f deployStorageBroker=true \
               -f deployStorageController=true \
               -f branch=main \
-              -f dockerTag=${{needs.tag.outputs.build-tag}}
+              -f dockerTag=${BUILD_TAG}
           elif [[ "$GITHUB_REF_NAME" == "release-proxy" ]]; then
             gh workflow --repo neondatabase/infra run deploy-dev.yml --ref main \
               -f deployPgSniRouter=true \
@@ -1097,7 +1102,7 @@ jobs:
               -f deployStorageBroker=false \
               -f deployStorageController=false \
               -f branch=main \
-              -f dockerTag=${{needs.tag.outputs.build-tag}} \
+              -f dockerTag=${BUILD_TAG} \
               -f deployPreprodRegion=true
 
             gh workflow --repo neondatabase/infra run deploy-proxy-prod.yml --ref main \
@@ -1107,9 +1112,9 @@ jobs:
               -f deployProxyScram=true \
               -f deployProxyAuthBroker=true \
               -f branch=main \
-              -f dockerTag=${{needs.tag.outputs.build-tag}}
+              -f dockerTag=${BUILD_TAG}
           elif [[ "$GITHUB_REF_NAME" == "release-compute" ]]; then
-            gh workflow --repo neondatabase/infra run deploy-compute-dev.yml --ref main -f dockerTag=${{needs.tag.outputs.build-tag}}
+            gh workflow --repo neondatabase/infra run deploy-compute-dev.yml --ref main -f dockerTag=${BUILD_TAG}
           else
             echo "GITHUB_REF_NAME (value '$GITHUB_REF_NAME') is not set to either 'main', 'release', 'release-proxy' or 'release-compute'"
             exit 1
