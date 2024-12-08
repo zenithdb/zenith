@@ -45,7 +45,7 @@ jobs:
         run: |
           gh workflow --repo neondatabase/cloud \
             run cancel-previous-in-concurrency-group.yml \
-              --field concurrency_group="${{ env.E2E_CONCURRENCY_GROUP }}"
+              --field concurrency_group="${E2E_CONCURRENCY_GROUP}"
 
   tag:
     needs: [ check-permissions ]

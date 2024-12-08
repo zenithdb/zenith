@@ -81,7 +81,7 @@ jobs:
       # to avoid a race condition of multiple jobs trying to create the table at the same time,
       # we use an advisory lock
       run: |
-        ${PG_BINARIES}/psql "${{ env.BENCHMARK_CONNSTR }}" -c "
+        ${PG_BINARIES}/psql "${BENCHMARK_CONNSTR}" -c "
         SELECT pg_advisory_lock(4711);
         CREATE TABLE IF NOT EXISTS benchmark_restore_status (
         databasename text primary key,
@@ -97,8 +97,8 @@ jobs:
         DATABASE_NAME: ${{ matrix.database }}
       run: |
         skip=false
-        if ${PG_BINARIES}/psql "${{ env.BENCHMARK_CONNSTR }}" -tAc "SELECT 1 FROM benchmark_restore_status WHERE databasename='${{ env.DATABASE_NAME }}' AND restore_done=true;" | grep -q 1; then
-          echo "Restore already done for database ${{ env.DATABASE_NAME }} on platform ${{ env.PLATFORM }}. Skipping this database."
+        if ${PG_BINARIES}/psql "${BENCHMARK_CONNSTR}" -tAc "SELECT 1 FROM benchmark_restore_status WHERE databasename='${DATABASE_NAME}' AND restore_done=true;" | grep -q 1; then
+          echo "Restore already done for database ${DATABASE_NAME} on platform ${PLATFORM}. Skipping this database."
           skip=true
         fi
         echo "skip=${skip}" | tee -a $GITHUB_OUTPUT
@@ -109,12 +109,12 @@ jobs:
         BENCHMARK_CONNSTR: ${{ steps.set-up-prep-connstr.outputs.connstr }}
         DATABASE_NAME: ${{ matrix.database }}
       run: |
-        DB_EXISTS=$(${PG_BINARIES}/psql "${{ env.BENCHMARK_CONNSTR }}" -tAc "SELECT 1 FROM pg_database WHERE datname='${{ env.DATABASE_NAME }}'")
+        DB_EXISTS=$(${PG_BINARIES}/psql "${BENCHMARK_CONNSTR}" -tAc "SELECT 1 FROM pg_database WHERE datname='${DATABASE_NAME}'")
         if [ "$DB_EXISTS" != "1" ]; then
-          echo "Database ${{ env.DATABASE_NAME }} does not exist. Creating it..."
-          ${PG_BINARIES}/psql "${{ env.BENCHMARK_CONNSTR }}" -c "CREATE DATABASE \"${{ env.DATABASE_NAME }}\";"
+          echo "Database ${DATABASE_NAME} does not exist. Creating it..."
+          ${PG_BINARIES}/psql "${BENCHMARK_CONNSTR}" -c "CREATE DATABASE \"${DATABASE_NAME}\";"
         else
-          echo "Database ${{ env.DATABASE_NAME }} already exists."
+          echo "Database ${DATABASE_NAME} already exists."
         fi
 
     - name: Download dump from S3 to /tmp/dumps
@@ -164,7 +164,7 @@ jobs:
         BENCHMARK_CONNSTR: ${{ steps.set-up-prep-connstr.outputs.connstr }}
         DATABASE_NAME: ${{ matrix.database }}
       run: |
-        ${PG_BINARIES}/psql "${{ env.BENCHMARK_CONNSTR }}" -c "
-        INSERT INTO benchmark_restore_status (databasename, restore_done) VALUES ('${{ env.DATABASE_NAME }}', true)
+        ${PG_BINARIES}/psql "${BENCHMARK_CONNSTR}" -c "
+        INSERT INTO benchmark_restore_status (databasename, restore_done) VALUES ('${DATABASE_NAME}', true)
         ON CONFLICT (databasename) DO UPDATE SET restore_done = true;
         "

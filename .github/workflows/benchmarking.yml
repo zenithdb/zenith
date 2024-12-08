@@ -289,7 +289,7 @@ jobs:
     - name: Generate matrix for pgbench benchmark
       id: pgbench-compare-matrix
       run: |
-        region_id_default=${{ env.DEFAULT_REGION_ID }}
+        region_id_default=${DEFAULT_REGION_ID}
         runner_default='["self-hosted", "us-east-2", "x64"]'
         runner_azure='["self-hosted", "eastus2", "x64"]'
         image_default="neondatabase/build-tools:pinned-bookworm"
@@ -854,9 +854,9 @@ jobs:
 
     - name: Set up Connection String
       id: set-up-connstr
+      env:
+        CONNSTR: ${{ secrets[env.CONNSTR_SECRET_NAME] }}
       run: |
-        CONNSTR=${{ secrets[env.CONNSTR_SECRET_NAME] }}
-
         echo "connstr=${CONNSTR}" >> $GITHUB_OUTPUT
 
     - name: Run TPC-H benchmark
