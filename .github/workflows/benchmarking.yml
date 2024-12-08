@@ -424,6 +424,8 @@ jobs:
 
     - name: Set up Connection String
       id: set-up-connstr
+      env:
+        NEW_NEON_PROJECT_CONNSTR: ${{ steps.create-neon-project.outputs.dsn }}
       run: |
         case "${PLATFORM}" in
           neonvm-captest-reuse)
@@ -433,7 +435,7 @@ jobs:
             CONNSTR=${{ secrets.BENCHMARK_CAPTEST_SHARDING_CONNSTR }}
             ;;
           neonvm-captest-new | neonvm-captest-freetier | neonvm-azure-captest-new | neonvm-azure-captest-freetier)
-            CONNSTR=${{ steps.create-neon-project.outputs.dsn }}
+            CONNSTR=${NEW_NEON_PROJECT_CONNSTR}
             ;;
           rds-aurora)
             CONNSTR=${{ secrets.BENCHMARK_RDS_AURORA_CONNSTR }}

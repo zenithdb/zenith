@@ -392,18 +392,25 @@ jobs:
 
       - uses: actions/github-script@v7
         if: ${{ !cancelled() }}
+        env:
+          REPORT_URL: ${{ steps.create-allure-report.outputs.report-url }}
+          REPORT_JSON_URL: ${{ steps.create-allure-report.outputs.report-json-url }}
+          COVERAGE_URL: ${{ needs.coverage-report.outputs.coverage-html }}
+          SUMMARY_JSON_URL: ${{ needs.coverage-report.outputs.coverage-json }}
         with:
           # Retry script for 5XX server errors: https://github.com/actions/github-script#retries
           retries: 5
           script: |
+            const { REPORT_URL, REPORT_JSON_URL, COVERAGE_URL, SUMMARY_JSON_URL } = process.env
+
             const report = {
-              reportUrl:     "${{ steps.create-allure-report.outputs.report-url }}",
-              reportJsonUrl: "${{ steps.create-allure-report.outputs.report-json-url }}",
+              reportUrl:     `${REPORT_URL}`,
+              reportJsonUrl: `${REPORT_JSON_URL}`,
             }
 
             const coverage = {
-              coverageUrl: "${{ needs.coverage-report.outputs.coverage-html }}",
-              summaryJsonUrl: "${{ needs.coverage-report.outputs.coverage-json }}",
+              coverageUrl:    `${COVERAGE_URL}`,
+              summaryJsonUrl: `${SUMMARY_JSON_URL}`,
             }
 
             const script = require("./scripts/comment-test-report.js")
@@ -590,11 +597,13 @@ jobs:
           password: ${{ secrets.NEON_DOCKERHUB_PASSWORD }}
 
       - name: Create multi-arch image
+        env:
+          BUILD_TAG: ${{ needs.tag.outputs.build-tag }}
         run: |
-          docker buildx imagetools create -t neondatabase/neon:${{ needs.tag.outputs.build-tag }} \
-                                          -t neondatabase/neon:${{ needs.tag.outputs.build-tag }}-bookworm \
-                                             neondatabase/neon:${{ needs.tag.outputs.build-tag }}-bookworm-x64 \
-                                             neondatabase/neon:${{ needs.tag.outputs.build-tag }}-bookworm-arm64
+          docker buildx imagetools create -t neondatabase/neon:${BUILD_TAG} \
+                                          -t neondatabase/neon:${BUILD_TAG}-bookworm \
+                                             neondatabase/neon:${BUILD_TAG}-bookworm-x64 \
+                                             neondatabase/neon:${BUILD_TAG}-bookworm-arm64
 
       - uses: docker/login-action@v3
         with:
@@ -603,9 +612,11 @@ jobs:
           password: ${{ secrets.AWS_SECRET_KEY_DEV }}
 
       - name: Push multi-arch image to ECR
+        env:
+          BUILD_TAG: ${{ needs.tag.outputs.build-tag }}
         run: |
-          docker buildx imagetools create -t 369495373322.dkr.ecr.eu-central-1.amazonaws.com/neon:${{ needs.tag.outputs.build-tag }} \
-                                                                                neondatabase/neon:${{ needs.tag.outputs.build-tag }}
+          docker buildx imagetools create -t 369495373322.dkr.ecr.eu-central-1.amazonaws.com/neon:${BUILD_TAG} \
+                                                                                neondatabase/neon:${BUILD_TAG}
 
   compute-node-image-arch:
     needs: [ check-permissions, build-build-tools-image, tag ]
@@ -742,6 +753,9 @@ jobs:
           - pg: v17
             debian: bookworm
 
+    env:
+      BUILD_TAG: ${{ needs.tag.outputs.build-tag }}
+
     steps:
       - uses: docker/login-action@v3
         with:
@@ -750,26 +764,26 @@ jobs:
 
       - name: Create multi-arch compute-node image
         run: |
-          docker buildx imagetools create -t neondatabase/compute-node-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }} \
-                                          -t neondatabase/compute-node-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }}-${{ matrix.version.debian }} \
-                                             neondatabase/compute-node-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }}-${{ matrix.version.debian }}-x64 \
-                                             neondatabase/compute-node-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }}-${{ matrix.version.debian }}-arm64
+          docker buildx imagetools create -t neondatabase/compute-node-${{ matrix.version.pg }}:${BUILD_TAG} \
+                                          -t neondatabase/compute-node-${{ matrix.version.pg }}:${BUILD_TAG}-${{ matrix.version.debian }} \
+                                             neondatabase/compute-node-${{ matrix.version.pg }}:${BUILD_TAG}-${{ matrix.version.debian }}-x64 \
+                                             neondatabase/compute-node-${{ matrix.version.pg }}:${BUILD_TAG}-${{ matrix.version.debian }}-arm64
 
       - name: Create multi-arch neon-test-extensions image
         if: matrix.version.pg >= 'v16'
         run: |
-          docker buildx imagetools create -t neondatabase/neon-test-extensions-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }} \
-                                          -t neondatabase/neon-test-extensions-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }}-${{ matrix.version.debian }} \
-                                             neondatabase/neon-test-extensions-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }}-${{ matrix.version.debian }}-x64 \
-                                             neondatabase/neon-test-extensions-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }}-${{ matrix.version.debian }}-arm64
+          docker buildx imagetools create -t neondatabase/neon-test-extensions-${{ matrix.version.pg }}:${BUILD_TAG} \
+                                          -t neondatabase/neon-test-extensions-${{ matrix.version.pg }}:${BUILD_TAG}-${{ matrix.version.debian }} \
+                                             neondatabase/neon-test-extensions-${{ matrix.version.pg }}:${BUILD_TAG}-${{ matrix.version.debian }}-x64 \
+                                             neondatabase/neon-test-extensions-${{ matrix.version.pg }}:${BUILD_TAG}-${{ matrix.version.debian }}-arm64
 
       - name: Create multi-arch compute-tools image
         if: matrix.version.pg == 'v16'
         run: |
-          docker buildx imagetools create -t neondatabase/compute-tools:${{ needs.tag.outputs.build-tag }} \
-                                          -t neondatabase/compute-tools:${{ needs.tag.outputs.build-tag }}-${{ matrix.version.debian }} \
-                                             neondatabase/compute-tools:${{ needs.tag.outputs.build-tag }}-${{ matrix.version.debian }}-x64 \
-                                             neondatabase/compute-tools:${{ needs.tag.outputs.build-tag }}-${{ matrix.version.debian }}-arm64
+          docker buildx imagetools create -t neondatabase/compute-tools:${BUILD_TAG} \
+                                          -t neondatabase/compute-tools:${BUILD_TAG}-${{ matrix.version.debian }} \
+                                             neondatabase/compute-tools:${BUILD_TAG}-${{ matrix.version.debian }}-x64 \
+                                             neondatabase/compute-tools:${BUILD_TAG}-${{ matrix.version.debian }}-arm64
 
       - uses: docker/login-action@v3
         with:
@@ -779,14 +793,14 @@ jobs:
 
       - name: Push multi-arch compute-node-${{ matrix.version.pg }} image to ECR
         run: |
-          docker buildx imagetools create -t 369495373322.dkr.ecr.eu-central-1.amazonaws.com/compute-node-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }} \
-                                                                                neondatabase/compute-node-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }}
+          docker buildx imagetools create -t 369495373322.dkr.ecr.eu-central-1.amazonaws.com/compute-node-${{ matrix.version.pg }}:${BUILD_TAG} \
+                                                                                neondatabase/compute-node-${{ matrix.version.pg }}:${BUILD_TAG}
 
       - name: Push multi-arch compute-tools image to ECR
         if: matrix.version.pg == 'v16'
         run: |
-          docker buildx imagetools create -t 369495373322.dkr.ecr.eu-central-1.amazonaws.com/compute-tools:${{ needs.tag.outputs.build-tag }} \
-                                                                                neondatabase/compute-tools:${{ needs.tag.outputs.build-tag }}
+          docker buildx imagetools create -t 369495373322.dkr.ecr.eu-central-1.amazonaws.com/compute-tools:${BUILD_TAG} \
+                                                                                neondatabase/compute-tools:${BUILD_TAG}
 
   vm-compute-node-image:
     needs: [ check-permissions, tag, compute-node-image ]
@@ -826,20 +840,26 @@ jobs:
       # Note: we need a separate pull step here because otherwise vm-builder will try to pull, and
       # it won't have the proper authentication (written at v0.6.0)
       - name: Pulling compute-node image
+        env:
+          BUILD_TAG: ${{ needs.tag.outputs.build-tag }}
         run: |
-          docker pull neondatabase/compute-node-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }}
+          docker pull neondatabase/compute-node-${{ matrix.version.pg }}:${BUILD_TAG}
 
       - name: Build vm image
+        env:
+          BUILD_TAG: ${{ needs.tag.outputs.build-tag }}
         run: |
           ./vm-builder \
             -size=2G \
             -spec=compute/vm-image-spec-${{ matrix.version.debian }}.yaml \
-            -src=neondatabase/compute-node-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }} \
-            -dst=neondatabase/vm-compute-node-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }}
+            -src=neondatabase/compute-node-${{ matrix.version.pg }}:${BUILD_TAG} \
+            -dst=neondatabase/vm-compute-node-${{ matrix.version.pg }}:${BUILD_TAG}
 
       - name: Pushing vm-compute-node image
+        env:
+          BUILD_TAG: ${{ needs.tag.outputs.build-tag }}
         run: |
-          docker push neondatabase/vm-compute-node-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }}
+          docker push neondatabase/vm-compute-node-${{ matrix.version.pg }}:${BUILD_TAG}
 
   test-images:
     needs: [ check-permissions, tag, neon-image, compute-node-image ]
@@ -871,8 +891,10 @@ jobs:
       # Ensure that we don't have bad versions.
       - name: Verify image versions
         shell: bash # ensure no set -e for better error messages
+        env:
+          BUILD_TAG: ${{ needs.tag.outputs.build-tag }}
         run: |
-          pageserver_version=$(docker run --rm neondatabase/neon:${{ needs.tag.outputs.build-tag }} "/bin/sh" "-c" "/usr/local/bin/pageserver --version")
+          pageserver_version=$(docker run --rm neondatabase/neon:${BUILD_TAG} "/bin/sh" "-c" "/usr/local/bin/pageserver --version")
 
           echo "Pageserver version string: $pageserver_version"
 
@@ -925,30 +947,32 @@ jobs:
       - name: Copy vm-compute-node images to ECR
         run: |
           for version in ${VERSIONS}; do
-            docker buildx imagetools create -t 369495373322.dkr.ecr.eu-central-1.amazonaws.com/vm-compute-node-${version}:${{ needs.tag.outputs.build-tag }} \
-                                               neondatabase/vm-compute-node-${version}:${{ needs.tag.outputs.build-tag }}
+            docker buildx imagetools create -t 369495373322.dkr.ecr.eu-central-1.amazonaws.com/vm-compute-node-${version}:${BUILD_TAG} \
+                                               neondatabase/vm-compute-node-${version}:${BUILD_TAG}
           done
 
       - name: Add latest tag to images
         if: github.ref_name == 'main'
+        env:
+          BUILD_TAG: ${{ needs.tag.outputs.build-tag }}
         run: |
           for repo in neondatabase 369495373322.dkr.ecr.eu-central-1.amazonaws.com; do
             docker buildx imagetools create -t $repo/neon:latest \
-                                               $repo/neon:${{ needs.tag.outputs.build-tag }}
+                                               $repo/neon:${BUILD_TAG}
 
             docker buildx imagetools create -t $repo/compute-tools:latest \
-                                               $repo/compute-tools:${{ needs.tag.outputs.build-tag }}
+                                               $repo/compute-tools:${BUILD_TAG}
 
             for version in ${VERSIONS}; do
               docker buildx imagetools create -t $repo/compute-node-${version}:latest \
-                                                 $repo/compute-node-${version}:${{ needs.tag.outputs.build-tag }}
+                                                 $repo/compute-node-${version}:${BUILD_TAG}
 
               docker buildx imagetools create -t $repo/vm-compute-node-${version}:latest \
-                                                 $repo/vm-compute-node-${version}:${{ needs.tag.outputs.build-tag }}
+                                                 $repo/vm-compute-node-${version}:${BUILD_TAG}
             done
           done
           docker buildx imagetools create -t neondatabase/neon-test-extensions-v16:latest \
-                                              neondatabase/neon-test-extensions-v16:${{ needs.tag.outputs.build-tag }}
+                                              neondatabase/neon-test-extensions-v16:${BUILD_TAG}
 
       - name: Configure AWS-prod credentials
         if: github.ref_name == 'release'|| github.ref_name == 'release-proxy' || github.ref_name == 'release-compute'
@@ -966,10 +990,12 @@ jobs:
 
       - name: Copy all images to prod ECR
         if: github.ref_name == 'release' || github.ref_name == 'release-proxy' || github.ref_name == 'release-compute'
+        env:
+          BUILD_TAG: ${{ needs.tag.outputs.build-tag }}
         run: |
           for image in neon compute-tools {vm-,}compute-node-{v14,v15,v16,v17}; do
-            docker buildx imagetools create -t 093970136003.dkr.ecr.eu-central-1.amazonaws.com/${image}:${{ needs.tag.outputs.build-tag }} \
-                                               369495373322.dkr.ecr.eu-central-1.amazonaws.com/${image}:${{ needs.tag.outputs.build-tag }}
+            docker buildx imagetools create -t 093970136003.dkr.ecr.eu-central-1.amazonaws.com/${image}:${BUILD_TAG} \
+                                               369495373322.dkr.ecr.eu-central-1.amazonaws.com/${image}:${BUILD_TAG}
           done
 
   push-to-acr-dev:

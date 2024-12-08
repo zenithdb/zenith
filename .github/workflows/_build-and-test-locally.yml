@@ -206,39 +206,48 @@ jobs:
             done
           fi
 
-      - name: Run rust tests
-        env:
-          NEXTEST_RETRIES: 3
+      - name: Set PQ_LIB_DIR and LD_LIBRARY_PATH
         run: |
-          PQ_LIB_DIR=$(pwd)/pg_install/v16/lib
-          export PQ_LIB_DIR
-          LD_LIBRARY_PATH=$(pwd)/pg_install/v17/lib
-          export LD_LIBRARY_PATH
+          echo "PQ_LIB_DIR=$(pwd)/pg_install/v17/lib"      | tee -a ${GITHUB_ENV}
+          echo "LD_LIBRARY_PATH=$(pwd)/pg_install/v17/lib" | tee -a ${GITHUB_ENV}
 
+      - name: Run rust doctests
+        run: |
           #nextest does not yet support running doctests
           ${cov_prefix} cargo test --doc $CARGO_FLAGS $CARGO_FEATURES
 
-          # run all non-pageserver tests
+      - name: Run all non-pageserver rust tests
+        env:
+          NEXTEST_RETRIES: 3
+        run: |
           ${cov_prefix} cargo nextest run $CARGO_FLAGS $CARGO_FEATURES -E '!package(pageserver)'
 
-          # run pageserver tests with different settings
+      - name: Run pageserver rust tests with different settings
+        env:
+          NEXTEST_RETRIES: 3
+        run: |
           for io_engine in std-fs tokio-epoll-uring ; do
             NEON_PAGESERVER_UNIT_TEST_VIRTUAL_FILE_IOENGINE=$io_engine ${cov_prefix} cargo nextest run $CARGO_FLAGS $CARGO_FEATURES  -E 'package(pageserver)'
           done
 
-          # Run separate tests for real S3
-          export ENABLE_REAL_S3_REMOTE_STORAGE=nonempty
-          export REMOTE_STORAGE_S3_BUCKET=neon-github-ci-tests
-          export REMOTE_STORAGE_S3_REGION=eu-central-1
+      - name: Run rust tests for real S3
+        env:
+          NEXTEST_RETRIES: 3
+          ENABLE_REAL_S3_REMOTE_STORAGE: nonempty
+          REMOTE_STORAGE_S3_BUCKET: neon-github-ci-tests
+          REMOTE_STORAGE_S3_REGION: eu-central-1
+        run: |
           ${cov_prefix} cargo nextest run $CARGO_FLAGS $CARGO_FEATURES -E 'package(remote_storage)' -E 'test(test_real_s3)'
 
-          # Run separate tests for real Azure Blob Storage
-          # XXX: replace region with `eu-central-1`-like region
-          export ENABLE_REAL_AZURE_REMOTE_STORAGE=y
-          export AZURE_STORAGE_ACCOUNT="${{ secrets.AZURE_STORAGE_ACCOUNT_DEV }}"
-          export AZURE_STORAGE_ACCESS_KEY="${{ secrets.AZURE_STORAGE_ACCESS_KEY_DEV }}"
-          export REMOTE_STORAGE_AZURE_CONTAINER="${{ vars.REMOTE_STORAGE_AZURE_CONTAINER }}"
-          export REMOTE_STORAGE_AZURE_REGION="${{ vars.REMOTE_STORAGE_AZURE_REGION }}"
+      - name: Run rust tests for real Azure Blob Storage
+        env:
+          NEXTEST_RETRIES: 3
+          ENABLE_REAL_AZURE_REMOTE_STORAGE: y
+          AZURE_STORAGE_ACCOUNT: ${{ secrets.AZURE_STORAGE_ACCOUNT_DEV }}
+          AZURE_STORAGE_ACCESS_KEY: ${{ secrets.AZURE_STORAGE_ACCESS_KEY_DEV }}
+          REMOTE_STORAGE_AZURE_CONTAINER: ${{ vars.REMOTE_STORAGE_AZURE_CONTAINER }}
+          REMOTE_STORAGE_AZURE_REGION: ${{ vars.REMOTE_STORAGE_AZURE_REGION }}
+        run: |
           ${cov_prefix} cargo nextest run $CARGO_FLAGS $CARGO_FEATURES -E 'package(remote_storage)' -E 'test(test_real_azure)'
 
       - name: Install postgres binaries
