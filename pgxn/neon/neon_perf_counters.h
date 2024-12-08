@@ -37,6 +37,8 @@ typedef struct IOHistogramData
 typedef IOHistogramData *IOHistogram;
 
 static const uint64 qt_bucket_thresholds[] = {
+	       2,        3,        6,        10,  /* 0 us   - 10 us */
+	      20,       30,       60,       100,  /* 10 us  - 100 us */
 	     200,      300,      600,	   1000,  /* 100 us - 1 ms */
 	    2000,     3000,     6000,     10000,  /* 1 ms   - 10 ms */
 	   20000,    30000,    60000,    100000,  /* 10 ms  - 100 ms */
