@@ -41,6 +41,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+          persist-credentials: false
 
       - name: Patch the test
         env:

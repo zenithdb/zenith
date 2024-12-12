@@ -12,10 +12,6 @@ inputs:
     description: 'Arbitrary parameters to pytest. For example "-s" to prevent capturing stdout/stderr'
     required: false
     default: ''
-  needs_postgres_source:
-    description: 'Set to true if the test suite requires postgres source checked out'
-    required: false
-    default: 'false'
   run_in_parallel:
     description: 'Whether to run tests in parallel'
     required: false
@@ -81,12 +77,6 @@ runs:
         # The lack of compatibility snapshot (for example, for the new Postgres version)
         # shouldn't fail the whole job. Only relevant test should fail.
         skip-if-does-not-exist: true
-
-    - name: Checkout
-      if: inputs.needs_postgres_source == 'true'
-      uses: actions/checkout@v4
-      with:
-        submodules: true
 
     - name: Cache poetry deps
       uses: actions/cache@v4

@@ -87,6 +87,8 @@ jobs:
           - 8083:8083
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Download Neon artifact
         uses: ./.github/actions/download
@@ -152,6 +154,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Download Neon artifact
       uses: ./.github/actions/download

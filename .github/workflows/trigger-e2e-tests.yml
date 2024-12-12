@@ -26,7 +26,7 @@ jobs:
         run: |
           gh workflow --repo neondatabase/cloud \
             run cancel-previous-in-concurrency-group.yml \
-              --field concurrency_group="${{ env.E2E_CONCURRENCY_GROUP }}"
+              --field concurrency_group="${E2E_CONCURRENCY_GROUP}"
 
   tag:
     runs-on: ubuntu-22.04
@@ -38,6 +38,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Get build tag
         env:

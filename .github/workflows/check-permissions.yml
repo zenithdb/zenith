@@ -22,8 +22,10 @@ jobs:
       if: |
         inputs.github-event-name  == 'pull_request' &&
         github.event.pull_request.head.repo.full_name != github.repository
+      env:
+        ALLOWED: ${{ contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) }}
       run: |
-        if [ "${{ contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) }}" = "true" ]; then
+        if [ "${ALLOWED}" = "true" ]; then
           MESSAGE="Please create a PR from a branch of ${GITHUB_REPOSITORY} instead of a fork"
         else
           MESSAGE="The PR should be reviewed and labelled with 'approved-for-ci-run' to trigger a CI run"

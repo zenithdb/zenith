@@ -91,6 +91,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Configure AWS credentials # necessary on Azure runners
       uses: aws-actions/configure-aws-credentials@v4
@@ -190,6 +192,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -285,7 +289,7 @@ jobs:
     - name: Generate matrix for pgbench benchmark
       id: pgbench-compare-matrix
       run: |
-        region_id_default=${{ env.DEFAULT_REGION_ID }}
+        region_id_default=${DEFAULT_REGION_ID}
         runner_default='["self-hosted", "us-east-2", "x64"]'
         runner_azure='["self-hosted", "eastus2", "x64"]'
         image_default="neondatabase/build-tools:pinned-bookworm"
@@ -391,6 +395,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -418,6 +424,8 @@ jobs:
 
     - name: Set up Connection String
       id: set-up-connstr
+      env:
+        NEW_NEON_PROJECT_CONNSTR: ${{ steps.create-neon-project.outputs.dsn }}
       run: |
         case "${PLATFORM}" in
           neonvm-captest-reuse)
@@ -427,7 +435,7 @@ jobs:
             CONNSTR=${{ secrets.BENCHMARK_CAPTEST_SHARDING_CONNSTR }}
             ;;
           neonvm-captest-new | neonvm-captest-freetier | neonvm-azure-captest-new | neonvm-azure-captest-freetier)
-            CONNSTR=${{ steps.create-neon-project.outputs.dsn }}
+            CONNSTR=${NEW_NEON_PROJECT_CONNSTR}
             ;;
           rds-aurora)
             CONNSTR=${{ secrets.BENCHMARK_RDS_AURORA_CONNSTR }}
@@ -549,6 +557,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     # until https://github.com/neondatabase/neon/issues/8275 is fixed we temporarily install postgresql-16
     # instead of using Neon artifacts containing pgbench
@@ -694,6 +704,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -804,6 +816,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -842,9 +856,9 @@ jobs:
 
     - name: Set up Connection String
       id: set-up-connstr
+      env:
+        CONNSTR: ${{ secrets[env.CONNSTR_SECRET_NAME] }}
       run: |
-        CONNSTR=${{ secrets[env.CONNSTR_SECRET_NAME] }}
-
         echo "connstr=${CONNSTR}" >> $GITHUB_OUTPUT
 
     - name: Run TPC-H benchmark
@@ -912,6 +926,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4

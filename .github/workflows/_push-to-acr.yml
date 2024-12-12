@@ -43,14 +43,19 @@ jobs:
           tenant-id: ${{ inputs.tenant_id }}
 
       - name: Login to ACR
+        env:
+          REGISTRY_NAME: ${{ inputs.registry_name }}
         run: |
-          az acr login --name=${{ inputs.registry_name }}
+          az acr login --name=${REGISTRY_NAME}
 
       - name: Copy docker images to ACR ${{ inputs.registry_name }}
+        env:
+          IMAGES: ${{ inputs.images }}
+          REGISTRY_NAME: ${{ inputs.registry_name }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
-          images='${{ inputs.images }}'
-          for image in ${images}; do
+          for image in ${IMAGES}; do
             docker buildx imagetools create \
-              -t ${{ inputs.registry_name }}.azurecr.io/neondatabase/${image}:${{ inputs.image_tag }} \
-                                                        neondatabase/${image}:${{ inputs.image_tag }}
+              -t ${REGISTRY_NAME}.azurecr.io/neondatabase/${image}:${IMAGE_TAG} \
+                                             neondatabase/${image}:${IMAGE_TAG}
           done

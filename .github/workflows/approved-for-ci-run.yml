@@ -2,6 +2,8 @@ name: Handle `approved-for-ci-run` label
 # This workflow helps to run CI pipeline for PRs made by external contributors (from forks).
 
 on:
+  # Need to trigger this workflow if PR is PR is changed to remove the label
+  # zizmor: ignore[dangerous-triggers]
   pull_request_target:
     branches:
       - main
@@ -69,7 +71,9 @@ jobs:
         with:
           ref: main
           token: ${{ secrets.CI_ACCESS_TOKEN }}
-      
+          # We use creadentials to push to the repository
+          persist-credentials: true
+
       - name: Look for existing PR
         id: get-pr
         env:
@@ -77,7 +81,7 @@ jobs:
         run: |
           ALREADY_CREATED="$(gh pr --repo ${GITHUB_REPOSITORY} list --head ${BRANCH} --base main --json number --jq '.[].number')"
           echo "ALREADY_CREATED=${ALREADY_CREATED}" >> ${GITHUB_OUTPUT}
-      
+
       - name: Get changed labels
         id: get-labels
         if: steps.get-pr.outputs.ALREADY_CREATED != ''
@@ -103,7 +107,7 @@ jobs:
 
       - name: Create a Pull Request for CI run (if required)
         if: steps.get-pr.outputs.ALREADY_CREATED == ''
-        env: 
+        env:
           GH_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
         run: |
           cat << EOF > body.md
@@ -140,7 +144,7 @@ jobs:
 
       - run: git push --force origin "${BRANCH}"
         if: steps.get-pr.outputs.ALREADY_CREATED != ''
-             
+
   cleanup:
     # Close PRs and delete branchs if the original PR is closed.
 
