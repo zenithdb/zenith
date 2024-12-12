@@ -166,12 +166,8 @@ pub fn generate_pg_control(
     // always set to the LSN we're starting at, to hint that no WAL replay is required.
     // (There's some neon-specific code in Postgres startup to make that work, though.
     // Just setting the redo pointer is not sufficient.)
-    if Lsn(checkpoint.redo) == lsn {
-        was_shutdown = true;
-    } else {
-        checkpoint.redo = normalize_lsn(lsn, WAL_SEGMENT_SIZE).0;
-        was_shutdown = false;
-    }
+    was_shutdow = Lsn(checkpoint.redo) == lsn
+    checkpoint.redo = normalize_lsn(lsn, WAL_SEGMENT_SIZE).0;
 
     // We use DBState_DB_SHUTDOWNED even if it was not a clean shutdown.  The
     // neon-specific code at postgres startup ignores the state stored in the control
