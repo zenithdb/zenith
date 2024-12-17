@@ -143,7 +143,6 @@ pub fn generate_pg_control(
 ) -> anyhow::Result<(Bytes, u64, bool)> {
     let mut pg_control = ControlFileData::decode(pg_control_bytes)?;
     let mut checkpoint = CheckPoint::decode(checkpoint_bytes)?;
-    let was_shutdown;
 
     // Generate new pg_control needed for bootstrap
     //
@@ -166,7 +165,7 @@ pub fn generate_pg_control(
     // always set to the LSN we're starting at, to hint that no WAL replay is required.
     // (There's some neon-specific code in Postgres startup to make that work, though.
     // Just setting the redo pointer is not sufficient.)
-    was_shutdown = Lsn(checkpoint.redo) == lsn;
+    let was_shutdown = Lsn(checkpoint.redo) == lsn;
     checkpoint.redo = normalize_lsn(lsn, WAL_SEGMENT_SIZE).0;
 
     // We use DBState_DB_SHUTDOWNED even if it was not a clean shutdown.  The
