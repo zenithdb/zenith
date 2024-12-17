@@ -418,6 +418,21 @@ impl PageServerNode {
                 .map(serde_json::from_str)
                 .transpose()
                 .context("parse `wal_receiver_protocol_override` from json")?,
+            gc_compaction_enabled: settings
+                .remove("gc_compaction_enabled")
+                .map(|x| x.parse::<bool>())
+                .transpose()
+                .context("Failed to parse 'gc_compaction_enabled' as bool")?,
+            gc_compaction_initial_threshold_mb: settings
+                .remove("gc_compaction_initial_threshold_mb")
+                .map(|x| x.parse::<u64>())
+                .transpose()
+                .context("Failed to parse 'gc_compaction_initial_threshold_mb' as integer")?,
+            gc_compaction_ratio_percent: settings
+                .remove("gc_compaction_ratio_percent")
+                .map(|x| x.parse::<u64>())
+                .transpose()
+                .context("Failed to parse 'gc_compaction_ratio_percent' as integer")?,
         };
         if !settings.is_empty() {
             bail!("Unrecognized tenant settings: {settings:?}")
