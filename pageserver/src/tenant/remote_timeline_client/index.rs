@@ -994,7 +994,7 @@ mod tests {
                     }
                 }
             },
-            "l2_lsn": "0/1686070",
+            "l2_lsn": "0/1686070"
         }"#;
 
         let expected = IndexPart {
@@ -1034,7 +1034,7 @@ mod tests {
                 finished_at: parse_naive_datetime("2024-11-13T09:42:23.123000000"),
                 idempotency_key: import_pgdata::index_part_format::IdempotencyKey::new("specified-by-client-218a5213-5044-4562-a28d-d024c5f057f5".to_string()),
             }))),
-            l2_lsn: Some("0/16860E8".parse::<Lsn>().unwrap()),
+            l2_lsn: Some("0/1686070".parse::<Lsn>().unwrap()),
         };
 
         let part = IndexPart::from_json_bytes(example.as_bytes()).unwrap();
