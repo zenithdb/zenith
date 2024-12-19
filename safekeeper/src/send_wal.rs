@@ -5,7 +5,9 @@ use crate::handler::SafekeeperPostgresHandler;
 use crate::metrics::RECEIVED_PS_FEEDBACKS;
 use crate::receive_wal::WalReceivers;
 use crate::safekeeper::TermLsn;
-use crate::send_interpreted_wal::{Batch, InterpretedWalReader, InterpretedWalSender};
+use crate::send_interpreted_wal::{
+    Batch, InterpretedWalReader, InterpretedWalReaderHandle, InterpretedWalSender,
+};
 use crate::timeline::WalResidentTimeline;
 use crate::wal_reader_stream::StreamingWalReader;
 use crate::wal_storage::WalReader;
@@ -74,6 +76,48 @@ impl WalSenders {
             id: pos,
             walsenders: self.clone(),
         }
+    }
+
+    fn create_or_update_interpreted_reader<
+        FFilter: Fn(&Arc<InterpretedWalReaderHandle>) -> bool,
+        FUp: FnOnce(&Arc<InterpretedWalReaderHandle>),
+        FNew: FnOnce() -> InterpretedWalReaderHandle,
+    >(
+        self: &Arc<WalSenders>,
+        id: WalSenderId,
+        filter: FFilter,
+        update: FUp,
+        create: FNew,
+    ) {
+        let state = &mut self.mutex.lock();
+
+        let mut selected_interpreted_reader = None;
+        for slot in state.slots.iter().flatten() {
+            if let WalSenderState::Interpreted(slot_state) = slot {
+                if let Some(ref interpreted_reader) = slot_state.interpreted_wal_reader {
+                    if filter(interpreted_reader) {
+                        selected_interpreted_reader = Some(interpreted_reader.clone());
+                        break;
+                    }
+                }
+            }
+        }
+
+        let slot = state.get_slot_mut(id);
+        let slot_state = match slot {
+            WalSenderState::Interpreted(s) => s,
+            WalSenderState::Vanilla(_) => unreachable!(),
+        };
+
+        let selected_or_new = match selected_interpreted_reader {
+            Some(selected) => {
+                update(&selected);
+                selected
+            }
+            None => Arc::new(create()),
+        };
+
+        slot_state.interpreted_wal_reader = Some(selected_or_new);
     }
 
     /// Get state of all walsenders.
@@ -213,6 +257,7 @@ type VanillaWalSenderInternalState = safekeeper_api::models::VanillaWalSenderSta
 #[derive(Debug, Clone)]
 pub(crate) struct InterpretedWalSenderInternalState {
     public_state: safekeeper_api::models::InterpretedWalSenderState,
+    interpreted_wal_reader: Option<Arc<InterpretedWalReaderHandle>>,
 }
 
 impl WalSenderState {
@@ -411,6 +456,7 @@ impl SafekeeperPostgresHandler {
                         appname: self.appname.clone(),
                         feedback: ReplicationFeedback::Pageserver(PageserverFeedback::empty()),
                     },
+                    interpreted_wal_reader: None,
                 }),
             )),
         };
@@ -477,40 +523,105 @@ impl SafekeeperPostgresHandler {
             } => {
                 let pg_version = tli.tli.get_state().await.1.server.pg_version / 10000;
                 let end_watch_view = end_watch.view();
-                let wal_stream = StreamingWalReader::new(
-                    tli.wal_residence_guard().await?,
-                    term,
-                    start_pos,
-                    end_pos,
-                    end_watch,
-                    MAX_SEND_SIZE);
-
+                let wal_residence_guard = tli.wal_residence_guard().await?;
                 let (tx, rx) = tokio::sync::mpsc::channel::<Batch>(2);
+                let shard = self.shard.unwrap();
 
-                let reader = InterpretedWalReader {
-                    wal_stream,
-                    tx,
-                    shard: self.shard.unwrap(),
-                    pg_version,
-                };
+                if self.conf.wal_reader_fanout {
+                    let ws_id = ws_guard.id();
+                    ws_guard.walsenders().create_or_update_interpreted_reader(
+                        ws_id,
+                        |reader| {
+                            match reader.current_position() {
+                                Some(pos) => {
+                                    let delta = if pos.0 >= start_pos.0 {
+                                        pos.0 - start_pos.0
+                                    } else {
+                                        start_pos.0 - pos.0
+                                    };
 
-                let sender = InterpretedWalSender {
-                    format,
-                    compression,
-                    appname,
-                    start_lsn: start_pos,
-                    pgb,
-                    end_watch_view,
-                    rx,
-                };
+                                    delta <= self.conf.max_delta_for_fanout
+                                }
+                                // Reader is not active
+                                None => false,
+                            }
+                        },
+                        {
+                            let tx = tx.clone();
+                            |reader| {
+                                tracing::info!(
+                                    "Fanning out interpreted wal reader at {}",
+                                    start_pos
+                                );
+                                reader.fanout(shard, tx, start_pos).unwrap();
+                            }
+                        },
+                        || {
+                            tracing::info!("Spawning interpreted wal reader at {}", start_pos);
 
-                Either::Right(async {
-                    let (reader_res, sender_res) = tokio::join!(reader.run(start_pos), sender.run());
-                    if let Err(err) = reader_res {
-                        tracing::error!("Interpreted WAL reader encountered error: {err}");
-                    }
-                    sender_res
-                })
+                            let wal_stream = StreamingWalReader::new(
+                                wal_residence_guard,
+                                term,
+                                start_pos,
+                                end_pos,
+                                end_watch,
+                                MAX_SEND_SIZE,
+                            );
+
+                            InterpretedWalReader::spawn(
+                                wal_stream, start_pos, tx, shard, pg_version,
+                            )
+                        },
+                    );
+
+                    let sender = InterpretedWalSender {
+                        format,
+                        compression,
+                        appname,
+                        tli: tli.wal_residence_guard().await?,
+                        start_lsn: start_pos,
+                        pgb,
+                        end_watch_view,
+                        wal_sender_guard: ws_guard.clone(),
+                        rx,
+                    };
+
+                    Either::Right(Either::Left(sender.run()))
+                } else {
+                    let wal_reader = StreamingWalReader::new(
+                        wal_residence_guard,
+                        term,
+                        start_pos,
+                        end_pos,
+                        end_watch,
+                        MAX_SEND_SIZE,
+                    );
+
+                    let reader =
+                        InterpretedWalReader::new(wal_reader, start_pos, tx, shard, pg_version);
+
+                    let sender = InterpretedWalSender {
+                        format,
+                        compression,
+                        appname,
+                        tli: tli.wal_residence_guard().await?,
+                        start_lsn: start_pos,
+                        pgb,
+                        end_watch_view,
+                        wal_sender_guard: ws_guard.clone(),
+                        rx,
+                    };
+
+                    Either::Right(Either::Right(async move {
+                        let (reader_res, sender_res) =
+                            tokio::join!(reader.run(start_pos), sender.run());
+                        if let Err(err) = reader_res {
+                            tracing::error!("Interpreted wal reader encountered error: {err}");
+                        }
+
+                        sender_res
+                    }))
+                }
             }
         };
 
@@ -522,6 +633,7 @@ impl SafekeeperPostgresHandler {
             tli,
         };
 
+        // TODO: cancel things nicely
         let res = tokio::select! {
             // todo: add read|write .context to these errors
             r = send_fut => r,
