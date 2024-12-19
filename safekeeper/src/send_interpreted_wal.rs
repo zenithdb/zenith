@@ -157,8 +157,8 @@ impl InterpretedWalReader {
         tx: tokio::sync::mpsc::Sender<Batch>,
         shard: ShardIdentity,
         pg_version: u32,
+        cancel: CancellationToken,
     ) -> InterpretedWalReader {
-        let cancel = CancellationToken::new();
         let state = Arc::new(std::sync::RwLock::new(InterpretedWalReaderState::Running {
             current_position: start_pos,
         }));
@@ -175,7 +175,7 @@ impl InterpretedWalReader {
             shard_notification_rx: None,
             state: state.clone(),
             pg_version,
-            cancel: cancel.clone(),
+            cancel,
         }
     }
 

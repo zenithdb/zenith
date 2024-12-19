@@ -26,6 +26,7 @@ use safekeeper_api::models::{
 };
 use safekeeper_api::Term;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_util::sync::CancellationToken;
 use utils::failpoint_support;
 use utils::pageserver_feedback::PageserverFeedback;
 use utils::postgres_client::PostgresClientProtocol;
@@ -597,8 +598,15 @@ impl SafekeeperPostgresHandler {
                         MAX_SEND_SIZE,
                     );
 
-                    let reader =
-                        InterpretedWalReader::new(wal_reader, start_pos, tx, shard, pg_version);
+                    let reader_cancel = CancellationToken::new();
+                    let reader = InterpretedWalReader::new(
+                        wal_reader,
+                        start_pos,
+                        tx,
+                        shard,
+                        pg_version,
+                        reader_cancel.clone(),
+                    );
 
                     let sender = InterpretedWalSender {
                         format,
@@ -613,8 +621,14 @@ impl SafekeeperPostgresHandler {
                     };
 
                     Either::Right(Either::Right(async move {
+                        let send_and_cancel = async move {
+                            let res = sender.run().await;
+                            reader_cancel.cancel();
+                            res
+                        };
+
                         let (reader_res, sender_res) =
-                            tokio::join!(reader.run(start_pos), sender.run());
+                            tokio::join!(reader.run(start_pos), send_and_cancel);
                         if let Err(err) = reader_res {
                             tracing::error!("Interpreted wal reader encountered error: {err}");
                         }
