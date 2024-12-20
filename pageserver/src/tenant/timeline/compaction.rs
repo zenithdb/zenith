@@ -4,7 +4,7 @@
 //!
 //! The old legacy algorithm is implemented directly in `timeline.rs`.
 
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::ops::{Deref, Range};
 use std::sync::Arc;
 
@@ -16,10 +16,12 @@ use super::{
 
 use anyhow::{anyhow, bail, Context};
 use bytes::Bytes;
+use enumset::EnumSet;
 use fail::fail_point;
 use itertools::Itertools;
 use pageserver_api::key::KEY_SIZE;
 use pageserver_api::keyspace::ShardedRange;
+use pageserver_api::models::CompactInfoResponse;
 use pageserver_api::shard::{ShardCount, ShardIdentity, TenantShardId};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
@@ -30,6 +32,7 @@ use crate::context::{AccessStatsBehavior, RequestContext, RequestContextBuilder}
 use crate::page_cache;
 use crate::statvfs::Statvfs;
 use crate::tenant::checks::check_valid_layermap;
+use crate::tenant::gc_block::GcBlock;
 use crate::tenant::remote_timeline_client::WaitCompletionError;
 use crate::tenant::storage_layer::batch_split_writer::{
     BatchWriterResult, SplitDeltaLayerWriter, SplitImageLayerWriter,
@@ -63,16 +66,259 @@ use super::CompactionError;
 /// Maximum number of deltas before generating an image layer in bottom-most compaction.
 const COMPACTION_DELTA_THRESHOLD: usize = 5;
 
-/// A scheduled compaction task.
-pub(crate) struct ScheduledCompactionTask {
-    /// It's unfortunate that we need to store a compact options struct here because the only outer
-    /// API we can call here is `compact_with_options` which does a few setup calls before starting the
-    /// actual compaction job... We should refactor this to store `GcCompactionJob` in the future.
-    pub options: CompactOptions,
-    /// The channel to send the compaction result. If this is a subcompaction, the last compaction job holds the sender.
-    pub result_tx: Option<tokio::sync::oneshot::Sender<()>>,
-    /// Hold the GC block. If this is a subcompaction, the last compaction job holds the gc block guard.
-    pub gc_block: Option<gc_block::Guard>,
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct GcCompactionJobId(pub usize);
+
+#[derive(Debug, Clone)]
+pub enum GcCompactionQueueItem {
+    Manual(CompactOptions),
+    SubCompactionJob(CompactOptions),
+    #[allow(dead_code)]
+    UpdateL2Lsn(Lsn),
+    Notify(GcCompactionJobId),
+}
+
+impl GcCompactionQueueItem {
+    pub fn into_compact_info_resp(
+        self,
+        id: GcCompactionJobId,
+        running: bool,
+    ) -> Option<CompactInfoResponse> {
+        match self {
+            GcCompactionQueueItem::Manual(options) => Some(CompactInfoResponse {
+                compact_key_range: options.compact_key_range,
+                compact_lsn_range: options.compact_lsn_range,
+                sub_compaction: options.sub_compaction,
+                running,
+                job_id: id.0,
+            }),
+            GcCompactionQueueItem::SubCompactionJob(options) => Some(CompactInfoResponse {
+                compact_key_range: options.compact_key_range,
+                compact_lsn_range: options.compact_lsn_range,
+                sub_compaction: options.sub_compaction,
+                running,
+                job_id: id.0,
+            }),
+            GcCompactionQueueItem::UpdateL2Lsn(_) => None,
+            GcCompactionQueueItem::Notify(_) => None,
+        }
+    }
+}
+
+struct GcCompactionQueueInner {
+    running: Option<(GcCompactionJobId, GcCompactionQueueItem)>,
+    queued: VecDeque<(GcCompactionJobId, GcCompactionQueueItem)>,
+    notify: HashMap<GcCompactionJobId, tokio::sync::oneshot::Sender<()>>,
+    gc_guards: HashMap<GcCompactionJobId, gc_block::Guard>,
+    last_id: GcCompactionJobId,
+}
+
+impl GcCompactionQueueInner {
+    fn next_id(&mut self) -> GcCompactionJobId {
+        let id = self.last_id;
+        self.last_id = GcCompactionJobId(id.0 + 1);
+        id
+    }
+}
+
+/// A structure to store gc_compaction jobs.
+pub struct GcCompactionQueue {
+    /// All items in the queue, and the currently-running job.
+    inner: std::sync::Mutex<GcCompactionQueueInner>,
+    /// Ensure only one thread is consuming the queue.
+    queue_lock: tokio::sync::Mutex<()>,
+}
+
+impl GcCompactionQueue {
+    pub fn new() -> Self {
+        GcCompactionQueue {
+            inner: std::sync::Mutex::new(GcCompactionQueueInner {
+                running: None,
+                queued: VecDeque::new(),
+                notify: HashMap::new(),
+                gc_guards: HashMap::new(),
+                last_id: GcCompactionJobId(0),
+            }),
+            queue_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    pub fn cancel_scheduled(&self) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.queued.clear();
+        guard.notify.clear();
+        guard.gc_guards.clear();
+    }
+
+    /// Schedule a manual compaction job.
+    pub fn schedule_manual_compaction(
+        &self,
+        options: CompactOptions,
+        notify: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> GcCompactionJobId {
+        let mut guard = self.inner.lock().unwrap();
+        let id = guard.next_id();
+        guard
+            .queued
+            .push_back((id, GcCompactionQueueItem::Manual(options)));
+        if let Some(notify) = notify {
+            guard.notify.insert(id, notify);
+        }
+        id
+    }
+
+    /// Trigger an auto compaction.
+    #[allow(dead_code)]
+    pub fn trigger_auto_compaction(&self, _: &Arc<Timeline>) {}
+
+    /// Notify the caller the job has finished and unblock GC.
+    fn notify_and_unblock(&self, id: GcCompactionJobId) {
+        let mut guard = self.inner.lock().unwrap();
+        if let Some(blocking) = guard.gc_guards.remove(&id) {
+            drop(blocking)
+        }
+        if let Some(tx) = guard.notify.remove(&id) {
+            let _ = tx.send(());
+        }
+    }
+
+    /// Take a job from the queue and process it. Returns if there are still pending tasks.
+    pub async fn iteration(
+        &self,
+        cancel: &CancellationToken,
+        ctx: &RequestContext,
+        gc_block: &GcBlock,
+        timeline: &Arc<Timeline>,
+    ) -> Result<bool, CompactionError> {
+        let _one_op_at_a_time_guard = self.queue_lock.lock().await;
+        let has_pending_tasks;
+        let (id, item) = {
+            let mut guard = self.inner.lock().unwrap();
+            let Some((id, item)) = guard.queued.pop_front() else {
+                return Ok(false);
+            };
+            guard.running = Some((id, item.clone()));
+            has_pending_tasks = !guard.queued.is_empty();
+            (id, item)
+        };
+
+        match item {
+            GcCompactionQueueItem::Manual(options) => {
+                if !options
+                    .flags
+                    .contains(CompactFlags::EnhancedGcBottomMostCompaction)
+                {
+                    warn!("ignoring scheduled compaction task: scheduled task must be gc compaction: {:?}", options);
+                } else if options.sub_compaction {
+                    info!("running scheduled enhanced gc bottom-most compaction with sub-compaction, splitting compaction jobs");
+                    let jobs: Vec<GcCompactJob> = timeline
+                        .gc_compaction_split_jobs(
+                            GcCompactJob::from_compact_options(options.clone()),
+                            options.sub_compaction_max_job_size_mb,
+                        )
+                        .await
+                        .map_err(CompactionError::Other)?;
+                    if jobs.is_empty() {
+                        info!("no jobs to run, skipping scheduled compaction task");
+                        self.notify_and_unblock(id);
+                    } else {
+                        let gc_guard = match gc_block.start().await {
+                            Ok(guard) => guard,
+                            Err(e) => {
+                                return Err(CompactionError::Other(anyhow!(
+                                    "cannot run gc-compaction because gc is blocked: {}",
+                                    e
+                                )));
+                            }
+                        };
+
+                        let jobs_len = jobs.len();
+                        let mut pending_tasks = Vec::new();
+                        for job in jobs {
+                            // Unfortunately we need to convert the `GcCompactJob` back to `CompactionOptions`
+                            // until we do further refactors to allow directly call `compact_with_gc`.
+                            let mut flags: EnumSet<CompactFlags> = EnumSet::default();
+                            flags |= CompactFlags::EnhancedGcBottomMostCompaction;
+                            if job.dry_run {
+                                flags |= CompactFlags::DryRun;
+                            }
+                            let options = CompactOptions {
+                                flags,
+                                sub_compaction: false,
+                                compact_key_range: Some(job.compact_key_range.into()),
+                                compact_lsn_range: Some(job.compact_lsn_range.into()),
+                                sub_compaction_max_job_size_mb: None,
+                            };
+                            pending_tasks.push(GcCompactionQueueItem::SubCompactionJob(options));
+                        }
+                        pending_tasks.push(GcCompactionQueueItem::Notify(id));
+                        {
+                            let mut guard = self.inner.lock().unwrap();
+                            guard.gc_guards.insert(id, gc_guard);
+                            for task in pending_tasks {
+                                let id = guard.next_id();
+                                guard.queued.push_back((id, task));
+                            }
+                        }
+                        info!("scheduled enhanced gc bottom-most compaction with sub-compaction, split into {} jobs", jobs_len);
+                    }
+                } else {
+                    let gc_guard = match gc_block.start().await {
+                        Ok(guard) => guard,
+                        Err(e) => {
+                            return Err(CompactionError::Other(anyhow!(
+                                "cannot run gc-compaction because gc is blocked: {}",
+                                e
+                            )));
+                        }
+                    };
+                    {
+                        let mut guard = self.inner.lock().unwrap();
+                        guard.gc_guards.insert(id, gc_guard);
+                    }
+                    let _ = timeline
+                        .compact_with_options(cancel, options, ctx)
+                        .instrument(info_span!("scheduled_compact_timeline", %timeline.timeline_id))
+                        .await?;
+                    self.notify_and_unblock(id);
+                }
+            }
+            GcCompactionQueueItem::SubCompactionJob(options) => {
+                let _ = timeline
+                    .compact_with_options(cancel, options, ctx)
+                    .instrument(info_span!("scheduled_compact_timeline", %timeline.timeline_id))
+                    .await?;
+            }
+            GcCompactionQueueItem::Notify(id) => {
+                self.notify_and_unblock(id);
+            }
+            GcCompactionQueueItem::UpdateL2Lsn(_) => {
+                unreachable!()
+            }
+        }
+        {
+            let mut guard = self.inner.lock().unwrap();
+            guard.running = None;
+        }
+        Ok(has_pending_tasks)
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn remaining_jobs(
+        &self,
+    ) -> (
+        Option<(GcCompactionJobId, GcCompactionQueueItem)>,
+        VecDeque<(GcCompactionJobId, GcCompactionQueueItem)>,
+    ) {
+        let guard = self.inner.lock().unwrap();
+        (guard.running.clone(), guard.queued.clone())
+    }
+
+    #[allow(dead_code)]
+    pub fn remaining_jobs_num(&self) -> usize {
+        let guard = self.inner.lock().unwrap();
+        guard.queued.len() + if guard.running.is_some() { 1 } else { 0 }
+    }
 }
 
 /// A job description for the gc-compaction job. This structure describes the rectangle range that the job will

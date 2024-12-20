@@ -272,6 +272,8 @@ pub struct CompactInfoResponse {
     pub compact_key_range: Option<CompactKeyRange>,
     pub compact_lsn_range: Option<CompactLsnRange>,
     pub sub_compaction: bool,
+    pub running: bool,
+    pub job_id: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
