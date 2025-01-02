@@ -203,7 +203,7 @@ use utils::backoff::{
 use utils::pausable_failpoint;
 use utils::shard::ShardNumber;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -227,7 +227,7 @@ use crate::task_mgr::shutdown_token;
 use crate::tenant::debug_assert_current_span_has_tenant_and_timeline_id;
 use crate::tenant::remote_timeline_client::download::download_retry;
 use crate::tenant::storage_layer::AsLayerDesc;
-use crate::tenant::upload_queue::{Delete, OpType, UploadQueueStoppedDeletable};
+use crate::tenant::upload_queue::{Delete, UploadQueueStoppedDeletable};
 use crate::tenant::TIMELINES_SEGMENT_NAME;
 use crate::{
     config::PageServerConf,
@@ -473,37 +473,21 @@ impl RemoteTimelineClient {
 
     /// Notify this client of a change to its parent tenant's config, as this may cause us to
     /// take action (unblocking deletions when transitioning from AttachedMulti to AttachedSingle)
-    pub(super) fn update_config(&self, location_conf: &AttachedLocationConfig) {
+    pub(super) fn update_config(self: &Arc<Self>, location_conf: &AttachedLocationConfig) {
         let new_conf = RemoteTimelineClientConfig::from(location_conf);
-        let unblocked = !new_conf.block_deletions;
 
-        // Update config before draining deletions, so that we don't race with more being
-        // inserted.  This can result in deletions happening our of order, but that does not
-        // violate any invariants: deletions only need to be ordered relative to upload of the index
-        // that dereferences the deleted objects, and we are not changing that order.
+        let mut block_deletions_below = Generation::None;
+        if new_conf.block_deletions {
+            block_deletions_below = self.generation;
+        }
+
         *self.config.write().unwrap() = new_conf;
 
-        if unblocked {
-            // If we may now delete layers, drain any that were blocked in our old
-            // configuration state
-            let mut queue_locked = self.upload_queue.lock().unwrap();
-
-            if let Ok(queue) = queue_locked.initialized_mut() {
-                let blocked_deletions = std::mem::take(&mut queue.blocked_deletions);
-                for d in blocked_deletions {
-                    if let Err(e) = self.deletion_queue_client.push_layers_sync(
-                        self.tenant_shard_id,
-                        self.timeline_id,
-                        self.generation,
-                        d.layers,
-                    ) {
-                        // This could happen if the pageserver is shut down while a tenant
-                        // is transitioning from a deletion-blocked state: we will leak some
-                        // S3 objects in this case.
-                        warn!("Failed to drain blocked deletions: {}", e);
-                        break;
-                    }
-                }
+        // If the conf change may unblock any deletions, try to launch them.
+        if let Ok(queue) = self.upload_queue.lock().unwrap().initialized_mut() {
+            if block_deletions_below != queue.block_deletions_below {
+                queue.block_deletions_below = block_deletions_below;
+                self.launch_queued_tasks(queue);
             }
         }
     }
@@ -1104,7 +1088,7 @@ impl RemoteTimelineClient {
             "scheduled layer file upload {layer}",
         );
 
-        let op = UploadOp::UploadLayer(layer, metadata, None);
+        let op = UploadOp::UploadLayer(layer, metadata);
         self.metric_begin(&op);
         upload_queue.queued_operations.push_back(op);
     }
@@ -1810,31 +1794,16 @@ impl RemoteTimelineClient {
         while let Some(mut next_op) = upload_queue.next_ready() {
             debug!("starting op: {next_op}");
 
-            // Prepare upload.
+            // Handle barriers and shutdowns.
             match &mut next_op {
-                UploadOp::UploadLayer(layer, meta, mode) => {
-                    if upload_queue
-                        .recently_deleted
-                        .remove(&(layer.layer_desc().layer_name().clone(), meta.generation))
-                    {
-                        *mode = Some(OpType::FlushDeletion);
-                    } else {
-                        *mode = Some(OpType::MayReorder)
-                    }
-                }
-                UploadOp::UploadMetadata { .. } => {}
-                UploadOp::Delete(Delete { layers }) => {
-                    for (name, meta) in layers {
-                        upload_queue
-                            .recently_deleted
-                            .insert((name.clone(), meta.generation));
-                    }
-                }
                 UploadOp::Barrier(sender) => {
                     sender.send_replace(());
                     continue;
                 }
                 UploadOp::Shutdown => unreachable!("shutdown is intentionally never popped off"),
+                UploadOp::UploadLayer(..) => {}
+                UploadOp::UploadMetadata { .. } => {}
+                UploadOp::Delete(Delete { .. }) => {}
             };
 
             // Assign unique ID to this task
@@ -1905,7 +1874,7 @@ impl RemoteTimelineClient {
             // Assert that we don't modify a layer that's referenced by the current index.
             if cfg!(debug_assertions) {
                 let modified = match &task.op {
-                    UploadOp::UploadLayer(layer, layer_metadata, _) => {
+                    UploadOp::UploadLayer(layer, layer_metadata) => {
                         vec![(layer.layer_desc().layer_name(), layer_metadata.clone())]
                     }
                     UploadOp::Delete(delete) => delete.layers.clone(),
@@ -1925,68 +1894,7 @@ impl RemoteTimelineClient {
             }
 
             let upload_result: anyhow::Result<()> = match &task.op {
-                UploadOp::UploadLayer(ref layer, ref layer_metadata, mode) => {
-                    // TODO: check if this mechanism can be removed now that can_bypass() performs
-                    // conflict checks during scheduling.
-                    if let Some(OpType::FlushDeletion) = mode {
-                        if self.config.read().unwrap().block_deletions {
-                            // Of course, this is not efficient... but usually the queue should be empty.
-                            let mut queue_locked = self.upload_queue.lock().unwrap();
-                            let mut detected = false;
-                            if let Ok(queue) = queue_locked.initialized_mut() {
-                                for list in queue.blocked_deletions.iter_mut() {
-                                    list.layers.retain(|(name, meta)| {
-                                        if name == &layer.layer_desc().layer_name()
-                                            && meta.generation == layer_metadata.generation
-                                        {
-                                            detected = true;
-                                            // remove the layer from deletion queue
-                                            false
-                                        } else {
-                                            // keep the layer
-                                            true
-                                        }
-                                    });
-                                }
-                            }
-                            if detected {
-                                info!(
-                                    "cancelled blocked deletion of layer {} at gen {:?}",
-                                    layer.layer_desc().layer_name(),
-                                    layer_metadata.generation
-                                );
-                            }
-                        } else {
-                            // TODO: we did not guarantee that upload task starts after deletion task, so there could be possibly race conditions
-                            // that we still get the layer deleted. But this only happens if someone creates a layer immediately after it's deleted,
-                            // which is not possible in the current system.
-                            info!(
-                                "waiting for deletion queue flush to complete before uploading layer {} at gen {:?}",
-                                layer.layer_desc().layer_name(),
-                                layer_metadata.generation
-                            );
-                            {
-                                // We are going to flush, we can clean up the recently deleted list.
-                                let mut queue_locked = self.upload_queue.lock().unwrap();
-                                if let Ok(queue) = queue_locked.initialized_mut() {
-                                    queue.recently_deleted.clear();
-                                }
-                            }
-                            if let Err(e) = self.deletion_queue_client.flush_execute().await {
-                                warn!(
-                                    "failed to flush the deletion queue before uploading layer {} at gen {:?}, still proceeding to upload: {e:#} ",
-                                    layer.layer_desc().layer_name(),
-                                    layer_metadata.generation
-                                );
-                            } else {
-                                info!(
-                                    "done flushing deletion queue before uploading layer {} at gen {:?}",
-                                    layer.layer_desc().layer_name(),
-                                    layer_metadata.generation
-                                );
-                            }
-                        }
-                    }
+                UploadOp::UploadLayer(ref layer, ref layer_metadata) => {
                     let local_path = layer.local_path();
 
                     // We should only be uploading layers created by this `Tenant`'s lifetime, so
@@ -2051,24 +1959,18 @@ impl RemoteTimelineClient {
                     res
                 }
                 UploadOp::Delete(delete) => {
-                    if self.config.read().unwrap().block_deletions {
-                        let mut queue_locked = self.upload_queue.lock().unwrap();
-                        if let Ok(queue) = queue_locked.initialized_mut() {
-                            queue.blocked_deletions.push(delete.clone());
-                        }
-                        Ok(())
-                    } else {
-                        pausable_failpoint!("before-delete-layer-pausable");
-                        self.deletion_queue_client
-                            .push_layers(
-                                self.tenant_shard_id,
-                                self.timeline_id,
-                                self.generation,
-                                delete.layers.clone(),
-                            )
-                            .await
-                            .map_err(|e| anyhow::anyhow!(e))
-                    }
+                    pausable_failpoint!("before-delete-layer-pausable");
+                    // TODO: these can't go through the deletion queue, since it's asynchronous and
+                    // may clobber a later write to this later.
+                    self.deletion_queue_client
+                        .push_layers(
+                            self.tenant_shard_id,
+                            self.timeline_id,
+                            self.generation,
+                            delete.layers.clone(),
+                        )
+                        .await
+                        .map_err(|e| anyhow::anyhow!(e))
                 }
                 unexpected @ UploadOp::Barrier(_) | unexpected @ UploadOp::Shutdown => {
                     // unreachable. Barrier operations are handled synchronously in
@@ -2150,7 +2052,7 @@ impl RemoteTimelineClient {
             upload_queue.inprogress_tasks.remove(&task.task_id);
 
             let lsn_update = match task.op {
-                UploadOp::UploadLayer(_, _, _) => None,
+                UploadOp::UploadLayer(_, _) => None,
                 UploadOp::UploadMetadata { ref uploaded } => {
                     // the task id is reused as a monotonicity check for storing the "clean"
                     // IndexPart.
@@ -2222,7 +2124,7 @@ impl RemoteTimelineClient {
     )> {
         use RemoteTimelineClientMetricsCallTrackSize::DontTrackSize;
         let res = match op {
-            UploadOp::UploadLayer(_, m, _) => (
+            UploadOp::UploadLayer(_, m) => (
                 RemoteOpFileKind::Layer,
                 RemoteOpKind::Upload,
                 RemoteTimelineClientMetricsCallTrackSize::Bytes(m.file_size),
@@ -2311,12 +2213,11 @@ impl RemoteTimelineClient {
                             .clone(),
                         inprogress_tasks: HashMap::default(),
                         queued_operations: VecDeque::default(),
+                        block_deletions_below: Generation::None,
                         #[cfg(feature = "testing")]
                         dangling_files: HashMap::default(),
-                        blocked_deletions: Vec::new(),
                         shutting_down: false,
                         shutdown_ready: Arc::new(tokio::sync::Semaphore::new(0)),
-                        recently_deleted: HashSet::new(),
                     };
 
                     let upload_queue = std::mem::replace(
