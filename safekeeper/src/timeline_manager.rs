@@ -317,15 +317,13 @@ pub async fn main_task(
                         mgr.set_status(Status::EvictTimeline);
                         if !mgr.evict_timeline().await {
                             // eviction failed, try again later
-                            mgr.evict_not_before =
-                                Instant::now() + rand_duration(&mgr.conf.eviction_min_resident);
+                            mgr.update_evict_not_before();
                             update_next_event(&mut next_event, mgr.evict_not_before);
                         }
                     }
                     None => {
                         // we can't evict timeline now, will try again later
-                        mgr.evict_not_before =
-                            Instant::now() + rand_duration(&mgr.conf.eviction_min_resident);
+                        mgr.update_evict_not_before();
                         update_next_event(&mut next_event, mgr.evict_not_before);
                     }
                 }
@@ -439,7 +437,9 @@ impl Manager {
             tli,
             global_rate_limiter,
             // to smooth out evictions spike after restart
-            evict_not_before: Instant::now() + rand_duration(&conf.eviction_min_resident),
+            evict_not_before: Instant::now()
+                + conf.eviction_min_resident
+                + rand_duration(&conf.eviction_min_resident),
             conf,
         }
     }
@@ -761,6 +761,14 @@ impl Manager {
                 unreachable!();
             }
         }
+    }
+
+    pub fn update_evict_not_before(&mut self) {
+        // Wait at least eviction_min_resident and add randomized value of it to
+        // add jitter.
+        self.evict_not_before = Instant::now()
+            + self.conf.eviction_min_resident
+            + rand_duration(&self.conf.eviction_min_resident)
     }
 }
 
