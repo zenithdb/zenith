@@ -8,6 +8,8 @@ use crate::checks::{
 };
 use crate::metadata_stream::{stream_tenant_timelines, stream_tenants};
 use crate::{init_remote, BucketConfig, NodeKind, RootTarget, TenantShardTimelineId, MAX_RETRIES};
+use async_stream::try_stream;
+use futures::future::Either;
 use futures_util::{StreamExt, TryStreamExt};
 use pageserver::tenant::remote_timeline_client::index::LayerFileMetadata;
 use pageserver::tenant::remote_timeline_client::manifest::OffloadedTimelineManifest;
@@ -576,7 +578,7 @@ async fn gc_timeline(
     target: &RootTarget,
     mode: GcMode,
     ttid: TenantShardTimelineId,
-    accumulator: &Arc<std::sync::Mutex<TenantRefAccumulator>>,
+    accumulator: &std::sync::Mutex<TenantRefAccumulator>,
     tenant_manifest_info: Arc<Option<RemoteTenantManifestInfo>>,
 ) -> anyhow::Result<GcSummary> {
     let mut summary = GcSummary::default();
@@ -717,9 +719,9 @@ pub async fn pageserver_physical_gc(
 
     let remote_client = Arc::new(remote_client);
     let tenants = if tenant_shard_ids.is_empty() {
-        futures::future::Either::Left(stream_tenants(&remote_client, &target))
+        Either::Left(stream_tenants(&remote_client, &target))
     } else {
-        futures::future::Either::Right(futures::stream::iter(tenant_shard_ids.into_iter().map(Ok)))
+        Either::Right(futures::stream::iter(tenant_shard_ids.into_iter().map(Ok)))
     };
 
     // How many tenants to process in parallel.  We need to be mindful of pageservers
@@ -727,16 +729,16 @@ pub async fn pageserver_physical_gc(
     const CONCURRENCY: usize = 32;
 
     // Accumulate information about each tenant for cross-shard GC step we'll do at the end
-    let accumulator = Arc::new(std::sync::Mutex::new(TenantRefAccumulator::default()));
+    let accumulator = std::sync::Mutex::new(TenantRefAccumulator::default());
+
+    // Accumulate information about how many manifests we have GCd
+    let manifest_gc_summary = std::sync::Mutex::new(GcSummary::default());
 
     // Generate a stream of TenantTimelineId
-    enum GcSummaryOrContent<T> {
-        Content(T),
-        GcSummary(GcSummary),
-    }
     let timelines = tenants.map_ok(|tenant_shard_id| {
         let target_ref = &target;
         let remote_client_ref = &remote_client;
+        let manifest_gc_summary_ref = &manifest_gc_summary;
         async move {
             let gc_manifest_result = gc_tenant_manifests(
                 remote_client_ref,
@@ -753,55 +755,48 @@ pub async fn pageserver_physical_gc(
                     (GcSummary::default(), None)
                 }
             };
+            manifest_gc_summary_ref
+                .lock()
+                .unwrap()
+                .merge(summary_from_manifest);
             let tenant_manifest_arc = Arc::new(tenant_manifest_opt);
-            let summary_from_manifest = Ok(GcSummaryOrContent::<(_, _)>::GcSummary(
-                summary_from_manifest,
-            ));
-            stream_tenant_timelines(remote_client_ref, target_ref, tenant_shard_id)
-                .await
-                .map(|stream| {
-                    stream
-                        .zip(futures::stream::iter(std::iter::repeat(
-                            tenant_manifest_arc,
-                        )))
-                        .map(|(ttid_res, tenant_manifest_arc)| {
-                            ttid_res.map(move |ttid| {
-                                GcSummaryOrContent::Content((ttid, tenant_manifest_arc))
-                            })
-                        })
-                        .chain(futures::stream::iter([summary_from_manifest].into_iter()))
-                })
+            let mut timelines = Box::pin(
+                stream_tenant_timelines(remote_client_ref, target_ref, tenant_shard_id).await?,
+            );
+            Ok(try_stream! {
+                while let Some(ttid_res) = timelines.next().await {
+                    let ttid = ttid_res?;
+                    yield (ttid, tenant_manifest_arc.clone());
+                }
+            })
         }
     });
-    let timelines = std::pin::pin!(timelines.try_buffered(CONCURRENCY));
-    let timelines = timelines.try_flatten();
 
     let mut summary = GcSummary::default();
-
-    // Drain futures for per-shard GC, populating accumulator as a side effect
     {
-        let timelines = timelines.map_ok(|summary_or_ttid| match summary_or_ttid {
-            GcSummaryOrContent::Content((ttid, tenant_manifest_arc)) => {
-                futures::future::Either::Left(gc_timeline(
-                    &remote_client,
-                    &min_age,
-                    &target,
-                    mode,
-                    ttid,
-                    &accumulator,
-                    tenant_manifest_arc,
-                ))
-            }
-            GcSummaryOrContent::GcSummary(gc_summary) => {
-                futures::future::Either::Right(futures::future::ok(gc_summary))
-            }
+        let timelines = std::pin::pin!(timelines.try_buffered(CONCURRENCY));
+        let timelines = timelines.try_flatten();
+
+        let timelines = timelines.map_ok(|(ttid, tenant_manifest_arc)| {
+            gc_timeline(
+                &remote_client,
+                &min_age,
+                &target,
+                mode,
+                ttid,
+                &accumulator,
+                tenant_manifest_arc,
+            )
         });
         let mut timelines = std::pin::pin!(timelines.try_buffered(CONCURRENCY));
 
+        // Drain futures for per-shard GC, populating accumulator as a side effect
         while let Some(i) = timelines.next().await {
             summary.merge(i?);
         }
     }
+    // Streams are lazily evaluated, so only now do we have access to the inner object
+    summary.merge(manifest_gc_summary.into_inner().unwrap());
 
     // Execute cross-shard GC, using the accumulator's full view of all the shards built in the per-shard GC
     let Some(client) = controller_client else {
@@ -809,8 +804,7 @@ pub async fn pageserver_physical_gc(
         return Ok(summary);
     };
 
-    let (ancestor_shards, ancestor_refs) = Arc::into_inner(accumulator)
-        .unwrap()
+    let (ancestor_shards, ancestor_refs) = accumulator
         .into_inner()
         .unwrap()
         .into_gc_ancestors(client, &mut summary)
