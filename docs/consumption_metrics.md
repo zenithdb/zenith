@@ -13,7 +13,7 @@ For design details see [the RFC](./rfcs/021-metering.md) and [the discussion on 
 batch format is
 ```json
 
-{ "events" : [metric1, metric2, ...]]}
+{ "events" : [metric1, metric2, ...] }
 
 ```
 See metric format examples below.
@@ -49,11 +49,13 @@ Size of the remote storage (S3) directory.
 This is an absolute, per-tenant metric.
 
 - `timeline_logical_size`
-Logical size of the data in the timeline
+
+Logical size of the data in the timeline.
 This is an absolute, per-timeline metric.
 
 - `synthetic_storage_size`
-Size of all tenant's branches including WAL
+
+Size of all tenant's branches including WAL.
 This is the same metric that `tenant/{tenant_id}/size` endpoint returns.
 This is an absolute, per-tenant metric.
 
@@ -106,7 +108,7 @@ This is an incremental, per-endpoint metric.
 ```
 
 The metric is incremental, so the value is the difference between the current and the previous value.
-If there is no previous value, the value, the value is the current value and the `start_time` equals `stop_time`.
+If there is no previous value, the value is the current value and the `start_time` equals `stop_time`.
 
 ### TODO
 
