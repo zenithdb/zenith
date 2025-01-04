@@ -1800,7 +1800,7 @@ impl RemoteTimelineClient {
     /// This can launch an unbounded number of queued tasks. `UploadQueue::next_ready()` also has
     /// worst-case quadratic cost in the number of tasks, and may struggle beyond 10,000 tasks.
     fn launch_queued_tasks(self: &Arc<Self>, upload_queue: &mut UploadQueueInitialized) {
-        while let Some(mut next_op) = upload_queue.next_ready() {
+        while let Some((mut next_op, coalesced_ops)) = upload_queue.next_ready() {
             debug!("starting op: {next_op}");
 
             // Prepare upload.
@@ -1838,6 +1838,7 @@ impl RemoteTimelineClient {
             let task = Arc::new(UploadTask {
                 task_id: upload_task_id,
                 op: next_op,
+                coalesced_ops,
                 retries: AtomicU32::new(0),
             });
             upload_queue
@@ -2205,6 +2206,9 @@ impl RemoteTimelineClient {
         }
 
         self.metric_end(&task.op);
+        for coalesced_op in &task.coalesced_ops {
+            self.metric_end(coalesced_op);
+        }
     }
 
     fn metric_impl(

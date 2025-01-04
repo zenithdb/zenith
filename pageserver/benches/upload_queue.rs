@@ -67,6 +67,7 @@ fn bench_upload_queue_next_ready(c: &mut Criterion) {
                     task_id,
                     retries: AtomicU32::new(0),
                     op: delete.clone(),
+                    coalesced_ops: Vec::new(),
                 }),
             );
         }
