@@ -28,8 +28,8 @@ use utils::pid_file;
 use metrics::set_build_info_metric;
 use safekeeper::defaults::{
     DEFAULT_CONTROL_FILE_SAVE_INTERVAL, DEFAULT_EVICTION_MIN_RESIDENT, DEFAULT_HEARTBEAT_TIMEOUT,
-    DEFAULT_HTTP_LISTEN_ADDR, DEFAULT_MAX_DELTA_FOR_FANOUT_BYTES, DEFAULT_MAX_OFFLOADER_LAG_BYTES,
-    DEFAULT_PARTIAL_BACKUP_CONCURRENCY, DEFAULT_PARTIAL_BACKUP_TIMEOUT, DEFAULT_PG_LISTEN_ADDR,
+    DEFAULT_HTTP_LISTEN_ADDR, DEFAULT_MAX_OFFLOADER_LAG_BYTES, DEFAULT_PARTIAL_BACKUP_CONCURRENCY,
+    DEFAULT_PARTIAL_BACKUP_TIMEOUT, DEFAULT_PG_LISTEN_ADDR,
 };
 use safekeeper::http;
 use safekeeper::wal_service;
@@ -212,8 +212,8 @@ struct Args {
     wal_reader_fanout: bool,
     /// Only fan out the WAL reader if the absoulte delta between the new requested position
     /// and the current position of the reader is smaller than this value.
-    #[arg(long, default_value_t = DEFAULT_MAX_DELTA_FOR_FANOUT_BYTES)]
-    max_delta_for_fanout: u64,
+    #[arg(long)]
+    max_delta_for_fanout: Option<u64>,
 }
 
 // Like PathBufValueParser, but allows empty string.

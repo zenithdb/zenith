@@ -174,7 +174,7 @@ pub fn run_server(os: NodeOs, disk: Arc<SafekeeperDisk>) -> Result<()> {
         partial_backup_concurrency: 1,
         eviction_min_resident: Duration::ZERO,
         wal_reader_fanout: false,
-        max_delta_for_fanout: 1,
+        max_delta_for_fanout: None,
     };
 
     let mut global = GlobalMap::new(disk, conf.clone())?;

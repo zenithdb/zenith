@@ -533,18 +533,21 @@ impl SafekeeperPostgresHandler {
                     ws_guard.walsenders().create_or_update_interpreted_reader(
                         ws_id,
                         |reader| {
-                            match reader.current_position() {
-                                Some(pos) => {
+                            match (reader.current_position(), self.conf.max_delta_for_fanout) {
+                                (Some(pos), Some(max_delta)) => {
                                     let delta = if pos.0 >= start_pos.0 {
                                         pos.0 - start_pos.0
                                     } else {
                                         start_pos.0 - pos.0
                                     };
 
-                                    delta <= self.conf.max_delta_for_fanout
+                                    delta <= max_delta
                                 }
                                 // Reader is not active
-                                None => false,
+                                (None, _) => false,
+                                // Gating fanout by max delta is disabled.
+                                // Attach to any active reader.
+                                (_, None) => true,
                             }
                         },
                         {

@@ -68,8 +68,6 @@ pub mod defaults {
     // before uploading a partial segment, so that in normal operation the eviction can happen
     // as soon as we have done the partial segment upload.
     pub const DEFAULT_EVICTION_MIN_RESIDENT: &str = DEFAULT_PARTIAL_BACKUP_TIMEOUT;
-
-    pub const DEFAULT_MAX_DELTA_FOR_FANOUT_BYTES: u64 = 50 * 1024 * 1024;
 }
 
 #[derive(Debug, Clone)]
@@ -111,7 +109,7 @@ pub struct SafeKeeperConf {
     pub partial_backup_concurrency: usize,
     pub eviction_min_resident: Duration,
     pub wal_reader_fanout: bool,
-    pub max_delta_for_fanout: u64,
+    pub max_delta_for_fanout: Option<u64>,
 }
 
 impl SafeKeeperConf {
@@ -155,7 +153,7 @@ impl SafeKeeperConf {
             partial_backup_concurrency: 1,
             eviction_min_resident: Duration::ZERO,
             wal_reader_fanout: false,
-            max_delta_for_fanout: defaults::DEFAULT_MAX_DELTA_FOR_FANOUT_BYTES,
+            max_delta_for_fanout: None,
         }
     }
 }
