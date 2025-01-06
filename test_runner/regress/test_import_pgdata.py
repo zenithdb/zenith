@@ -7,13 +7,15 @@ import psycopg2
 import psycopg2.errors
 import pytest
 from fixtures.common_types import Lsn, TenantId, TenantShardId, TimelineId
+from fixtures.fast_import import FastImport
 from fixtures.log_helper import log
-from fixtures.neon_fixtures import NeonEnvBuilder, VanillaPostgres
+from fixtures.neon_fixtures import NeonEnvBuilder, PgBin, PgProtocol, VanillaPostgres
 from fixtures.pageserver.http import (
     ImportPgdataIdemptencyKey,
     PageserverApiException,
 )
 from fixtures.pg_version import PgVersion
+from fixtures.port_distributor import PortDistributor
 from fixtures.remote_storage import RemoteStorageKind
 from fixtures.utils import run_only_on_postgres
 from pytest_httpserver import HTTPServer
@@ -313,3 +315,40 @@ def test_pgdata_import_smoke(
     validate_vanilla_equivalence(br_initdb_endpoint)
     with pytest.raises(psycopg2.errors.UndefinedTable):
         br_initdb_endpoint.safe_psql("select * from othertable")
+
+
+@run_only_on_postgres(
+    [PgVersion.V14, PgVersion.V15, PgVersion.V16],
+    "newer control file catalog version and struct format isn't supported",
+)
+def test_fast_import_binary(
+    test_output_dir,
+    vanilla_pg: VanillaPostgres,
+    port_distributor: PortDistributor,
+    fast_import: FastImport,
+):
+    vanilla_pg.start()
+    vanilla_pg.safe_psql("CREATE TABLE foo (a int); INSERT INTO foo SELECT generate_series(1, 10);")
+
+    pg_port = port_distributor.get_port()
+    fast_import.run(pg_port, vanilla_pg.connstr())
+    vanilla_pg.stop()
+
+    pgbin = PgBin(test_output_dir, fast_import.pg_distrib_dir, fast_import.pg_version)
+    new_pgdata_vanilla_pg = VanillaPostgres(fast_import.workdir / "pgdata", pgbin, pg_port, False)
+    new_pgdata_vanilla_pg.start()
+
+    # database name and user are hardcoded in fast_import binary, and they are different from normal vanilla postgres
+    conn = PgProtocol(dsn=f"postgresql://cloud_admin@localhost:{pg_port}/neondb")
+    res = conn.safe_psql("SELECT count(*) FROM foo;")
+    log.info(f"Result: {res}")
+    assert res[0][0] == 10
+    new_pgdata_vanilla_pg.stop()
+
+
+# TODO: Maybe test with pageserver?
+# 1. run whole neon env
+# 2. create timeline with some s3 path???
+# 3. run fast_import with s3 prefix
+# 4. ??? mock http where pageserver will report progress
+# 5. run compute on this timeline and check if data is there

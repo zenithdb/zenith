@@ -55,6 +55,8 @@ struct Args {
     pg_bin_dir: Utf8PathBuf,
     #[clap(long)]
     pg_lib_dir: Utf8PathBuf,
+    #[clap(long)]
+    pg_port: Option<u16>, // port to run postgres on, 5432 is default
 }
 
 #[serde_with::serde_as]
@@ -70,6 +72,13 @@ enum EncryptionSecret {
     #[allow(clippy::upper_case_acronyms)]
     KMS { key_id: String },
 }
+
+// copied from pageserver_api::config::defaults::DEFAULT_LOCALE to avoid dependency just for a constant
+const DEFAULT_LOCALE: &str = if cfg!(target_os = "macos") {
+    "C"
+} else {
+    "C.UTF-8"
+};
 
 #[tokio::main]
 pub(crate) async fn main() -> anyhow::Result<()> {
@@ -91,6 +100,12 @@ pub(crate) async fn main() -> anyhow::Result<()> {
     let working_directory = args.working_directory;
     let pg_bin_dir = args.pg_bin_dir;
     let pg_lib_dir = args.pg_lib_dir;
+    let pg_port = if args.pg_port.is_some() {
+        args.pg_port.unwrap()
+    } else {
+        info!("pg_port not specified, using default 5432");
+        5432
+    };
 
     // Initialize AWS clients only if s3_prefix is specified
     let (aws_config, kms_client) = if args.s3_prefix.is_some() {
@@ -174,7 +189,7 @@ pub(crate) async fn main() -> anyhow::Result<()> {
     let superuser = "cloud_admin"; // XXX: this shouldn't be hard-coded
     postgres_initdb::do_run_initdb(postgres_initdb::RunInitdbArgs {
         superuser,
-        locale: "en_US.UTF-8", // XXX: this shouldn't be hard-coded,
+        locale: DEFAULT_LOCALE, // XXX: this shouldn't be hard-coded,
         pg_version,
         initdb_bin: pg_bin_dir.join("initdb").as_ref(),
         library_search_path: &pg_lib_dir, // TODO: is this right? Prob works in compute image, not sure about neon_local.
@@ -191,6 +206,7 @@ pub(crate) async fn main() -> anyhow::Result<()> {
     let mut postgres_proc = tokio::process::Command::new(pgbin)
         .arg("-D")
         .arg(&pgdata_dir)
+        .args(["-p", &format!("{pg_port}")])
         .args(["-c", "wal_level=minimal"])
         .args(["-c", "shared_buffers=10GB"])
         .args(["-c", "max_wal_senders=0"])
@@ -210,6 +226,7 @@ pub(crate) async fn main() -> anyhow::Result<()> {
             ),
         ])
         .env_clear()
+        .env("LD_LIBRARY_PATH", &pg_lib_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -226,7 +243,7 @@ pub(crate) async fn main() -> anyhow::Result<()> {
 
     // Create neondb database in the running postgres
     let restore_pg_connstring =
-        format!("host=localhost port=5432 user={superuser} dbname=postgres");
+        format!("host=localhost port={pg_port} user={superuser} dbname=postgres");
     loop {
         match tokio_postgres::connect(&restore_pg_connstring, tokio_postgres::NoTls).await {
             Ok((client, connection)) => {
@@ -286,6 +303,7 @@ pub(crate) async fn main() -> anyhow::Result<()> {
             .arg(&source_connection_string)
             // how we run it
             .env_clear()
+            .env("LD_LIBRARY_PATH", &pg_lib_dir)
             .kill_on_drop(true)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -319,6 +337,7 @@ pub(crate) async fn main() -> anyhow::Result<()> {
             .arg(&dumpdir)
             // how we run it
             .env_clear()
+            .env("LD_LIBRARY_PATH", &pg_lib_dir)
             .kill_on_drop(true)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
