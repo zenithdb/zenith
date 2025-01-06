@@ -114,6 +114,9 @@ impl Env {
         Ok(timeline)
     }
 
+    // This will be dead code when building a non-benchmark target with the
+    // benchmarking feature enabled.
+    #[allow(dead_code)]
     pub(crate) async fn write_wal(
         tli: Arc<Timeline>,
         start_lsn: Lsn,
