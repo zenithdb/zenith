@@ -12,9 +12,9 @@ use metrics::{
     pow2_buckets,
     proto::MetricFamily,
     register_histogram, register_histogram_vec, register_int_counter, register_int_counter_pair,
-    register_int_counter_pair_vec, register_int_counter_vec, register_int_gauge, Gauge, GaugeVec,
-    Histogram, HistogramVec, IntCounter, IntCounterPair, IntCounterPairVec, IntCounterVec,
-    IntGauge, IntGaugeVec, DISK_FSYNC_SECONDS_BUCKETS,
+    register_int_counter_pair_vec, register_int_counter_vec, register_int_gauge,
+    register_int_gauge_vec, Gauge, GaugeVec, Histogram, HistogramVec, IntCounter, IntCounterPair,
+    IntCounterPairVec, IntCounterVec, IntGauge, IntGaugeVec, DISK_FSYNC_SECONDS_BUCKETS,
 };
 use once_cell::sync::Lazy;
 use postgres_ffi::XLogSegNo;
@@ -208,6 +208,14 @@ pub static WAL_RECEIVERS: Lazy<IntGauge> = Lazy::new(|| {
     register_int_gauge!(
         "safekeeper_wal_receivers",
         "Number of currently connected WAL receivers (i.e. connected computes)"
+    )
+    .expect("Failed to register safekeeper_wal_receivers")
+});
+pub static WAL_READERS: Lazy<IntGaugeVec> = Lazy::new(|| {
+    register_int_gauge_vec!(
+        "safekeeper_wal_readers",
+        "Number of active WAL readers (may serve pageservers or other safekeepers",
+        &["kind", "target"]
     )
     .expect("Failed to register safekeeper_wal_receivers")
 });

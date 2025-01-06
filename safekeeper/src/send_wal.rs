@@ -2,7 +2,7 @@
 //! with the "START_REPLICATION" message, and registry of walsenders.
 
 use crate::handler::SafekeeperPostgresHandler;
-use crate::metrics::RECEIVED_PS_FEEDBACKS;
+use crate::metrics::{RECEIVED_PS_FEEDBACKS, WAL_READERS};
 use crate::receive_wal::WalReceivers;
 use crate::safekeeper::TermLsn;
 use crate::send_interpreted_wal::{
@@ -506,7 +506,7 @@ impl SafekeeperPostgresHandler {
                     pgb,
                     // should succeed since we're already holding another guard
                     tli: tli.wal_residence_guard().await?,
-                    appname,
+                    appname: appname.clone(),
                     start_pos,
                     end_pos,
                     term,
@@ -573,7 +573,7 @@ impl SafekeeperPostgresHandler {
                             );
 
                             InterpretedWalReader::spawn(
-                                wal_stream, start_pos, tx, shard, pg_version,
+                                wal_stream, start_pos, tx, shard, pg_version, &appname,
                             )
                         },
                     );
@@ -614,7 +614,7 @@ impl SafekeeperPostgresHandler {
                     let sender = InterpretedWalSender {
                         format,
                         compression,
-                        appname,
+                        appname: appname.clone(),
                         tli: tli.wal_residence_guard().await?,
                         start_lsn: start_pos,
                         pgb,
@@ -631,7 +631,7 @@ impl SafekeeperPostgresHandler {
                         };
 
                         let (reader_res, sender_res) =
-                            tokio::join!(reader.run(start_pos), send_and_cancel);
+                            tokio::join!(reader.run(start_pos, &appname), send_and_cancel);
                         if let Err(err) = reader_res {
                             tracing::error!("Interpreted wal reader encountered error: {err}");
                         }
@@ -777,6 +777,18 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> WalSender<'_, IO> {
     /// Err(CopyStreamHandlerEnd) is always returned; Result is used only for ?
     /// convenience.
     async fn run(mut self) -> Result<(), CopyStreamHandlerEnd> {
+        let metric = WAL_READERS
+            .get_metric_with_label_values(&[
+                "future",
+                self.appname.as_deref().unwrap_or("safekeeper"),
+            ])
+            .unwrap();
+
+        metric.inc();
+        scopeguard::defer! {
+            metric.dec();
+        }
+
         loop {
             // Wait for the next portion if it is not there yet, or just
             // update our end of WAL available for sending value, we

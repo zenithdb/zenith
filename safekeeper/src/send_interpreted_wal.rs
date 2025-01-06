@@ -22,6 +22,7 @@ use utils::postgres_client::InterpretedFormat;
 use wal_decoder::models::{InterpretedWalRecord, InterpretedWalRecords};
 use wal_decoder::wire_format::ToWireFormat;
 
+use crate::metrics::WAL_READERS;
 use crate::send_wal::{EndWatchView, WalSenderGuard};
 use crate::timeline::WalResidentTimeline;
 use crate::wal_reader_stream::{StreamingWalReader, WalBytes};
@@ -106,6 +107,7 @@ impl InterpretedWalReader {
         tx: tokio::sync::mpsc::Sender<Batch>,
         shard: ShardIdentity,
         pg_version: u32,
+        appname: &Option<String>,
     ) -> InterpretedWalReaderHandle {
         let cancel = CancellationToken::new();
 
@@ -130,9 +132,18 @@ impl InterpretedWalReader {
             cancel: cancel.clone(),
         };
 
+        let metric = WAL_READERS
+            .get_metric_with_label_values(&["task", appname.as_deref().unwrap_or("safekeeper")])
+            .unwrap();
+
         let join_handle = tokio::task::spawn(
             async move {
-                let res = reader.run(start_pos).await;
+                metric.inc();
+                scopeguard::defer! {
+                    metric.dec();
+                }
+
+                let res = reader.run_impl(start_pos).await;
                 if let Err(ref err) = res {
                     tracing::error!("Task finished with error: {err}");
                 }
@@ -179,10 +190,28 @@ impl InterpretedWalReader {
         }
     }
 
+    /// Entry point for future (polling) based wal reader.
+    pub(crate) async fn run(
+        self,
+        start_pos: Lsn,
+        appname: &Option<String>,
+    ) -> Result<(), InterpretedWalReaderError> {
+        let metric = WAL_READERS
+            .get_metric_with_label_values(&["future", appname.as_deref().unwrap_or("safekeeper")])
+            .unwrap();
+
+        metric.inc();
+        scopeguard::defer! {
+            metric.dec();
+        }
+
+        self.run_impl(start_pos).await
+    }
+
     /// Send interpreted WAL to one or more [`InterpretedWalSender`]s
     /// Stops when an error is encountered or when [`InterpretedWalReaderHandle::cancel`]
     /// is called.
-    pub(crate) async fn run(mut self, start_pos: Lsn) -> Result<(), InterpretedWalReaderError> {
+    async fn run_impl(mut self, start_pos: Lsn) -> Result<(), InterpretedWalReaderError> {
         let defer_state = self.state.clone();
         scopeguard::defer! {
             *defer_state.write().unwrap() = InterpretedWalReaderState::Done;
@@ -524,6 +553,7 @@ mod tests {
             shard_0_tx,
             shard_0,
             PG_VERSION,
+            &Some("pageserver".to_string()),
         );
 
         tracing::info!("Reading all WAL with only shard 0 attached ...");
