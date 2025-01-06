@@ -528,7 +528,7 @@ impl SafekeeperPostgresHandler {
                 let (tx, rx) = tokio::sync::mpsc::channel::<Batch>(2);
                 let shard = self.shard.unwrap();
 
-                if self.conf.wal_reader_fanout {
+                if self.conf.wal_reader_fanout && !shard.is_unsharded() {
                     let ws_id = ws_guard.id();
                     ws_guard.walsenders().create_or_update_interpreted_reader(
                         ws_id,
