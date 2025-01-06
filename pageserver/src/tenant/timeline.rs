@@ -306,6 +306,9 @@ pub struct Timeline {
     ancestor_timeline: Option<Arc<Timeline>>,
     ancestor_lsn: Lsn,
 
+    // The LSN of gc-compaction that was last applied to this timeline.
+    l2_lsn: AtomicLsn,
+
     pub(super) metrics: TimelineMetrics,
 
     // `Timeline` doesn't write these metrics itself, but it manages the lifetime.  Code
@@ -2175,6 +2178,31 @@ impl Timeline {
             )
     }
 
+    fn get_gc_compaction_settings(&self) -> (bool, u64, u64) {
+        let tenant_conf = &self.tenant_conf.load();
+        let gc_compaction_enabled = tenant_conf
+            .tenant_conf
+            .gc_compaction_enabled
+            .unwrap_or(self.conf.default_tenant_conf.gc_compaction_enabled);
+        let gc_compaction_initial_threshold_mb = tenant_conf
+            .tenant_conf
+            .gc_compaction_initial_threshold_mb
+            .unwrap_or(
+                self.conf
+                    .default_tenant_conf
+                    .gc_compaction_initial_threshold_mb,
+            );
+        let gc_compaction_ratio_percent = tenant_conf
+            .tenant_conf
+            .gc_compaction_ratio_percent
+            .unwrap_or(self.conf.default_tenant_conf.gc_compaction_ratio_percent);
+        (
+            gc_compaction_enabled,
+            gc_compaction_initial_threshold_mb,
+            gc_compaction_ratio_percent,
+        )
+    }
+
     /// Resolve the effective WAL receiver protocol to use for this tenant.
     ///
     /// Priority order is:
@@ -2240,6 +2268,7 @@ impl Timeline {
         state: TimelineState,
         attach_wal_lag_cooldown: Arc<OnceLock<WalLagCooldown>>,
         create_idempotency: crate::tenant::CreateTimelineIdempotency,
+        l2_lsn: Option<Lsn>,
         cancel: CancellationToken,
     ) -> Arc<Self> {
         let disk_consistent_lsn = metadata.disk_consistent_lsn();
@@ -2296,6 +2325,8 @@ impl Timeline {
                     prev: metadata.prev_record_lsn().unwrap_or(Lsn(0)),
                 }),
                 disk_consistent_lsn: AtomicLsn::new(disk_consistent_lsn.0),
+
+                l2_lsn: AtomicLsn::new(l2_lsn.unwrap_or(Lsn(0)).0),
 
                 last_freeze_at: AtomicLsn::new(disk_consistent_lsn.0),
                 last_freeze_ts: RwLock::new(Instant::now()),
@@ -2444,6 +2475,16 @@ impl Timeline {
             }
             .instrument(info_span!(parent: None, "layer flush task", tenant_id = %self.tenant_shard_id.tenant_id, shard_id = %self.tenant_shard_id.shard_slug(), timeline_id = %self.timeline_id))
         );
+    }
+
+    pub(crate) fn update_l2_lsn(&self, l2_lsn: Lsn) -> anyhow::Result<()> {
+        self.l2_lsn.store(l2_lsn);
+        self.remote_client
+            .schedule_index_upload_for_l2_lsn_update(l2_lsn)
+    }
+
+    pub(crate) fn get_l2_lsn(&self) -> Lsn {
+        self.l2_lsn.load()
     }
 
     /// Creates and starts the wal receiver.

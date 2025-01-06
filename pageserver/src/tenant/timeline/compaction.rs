@@ -77,11 +77,9 @@ impl std::fmt::Display for GcCompactionJobId {
 
 #[derive(Debug, Clone)]
 pub enum GcCompactionQueueItem {
-    Manual(CompactOptions),
+    MetaJob(CompactOptions, bool),
     SubCompactionJob(CompactOptions),
-    #[allow(dead_code)]
-    UpdateL2Lsn(Lsn),
-    Notify(GcCompactionJobId),
+    Notify(GcCompactionJobId, Option<Lsn>),
 }
 
 impl GcCompactionQueueItem {
@@ -91,7 +89,7 @@ impl GcCompactionQueueItem {
         running: bool,
     ) -> Option<CompactInfoResponse> {
         match self {
-            GcCompactionQueueItem::Manual(options) => Some(CompactInfoResponse {
+            GcCompactionQueueItem::MetaJob(options, _) => Some(CompactInfoResponse {
                 compact_key_range: options.compact_key_range,
                 compact_lsn_range: options.compact_lsn_range,
                 sub_compaction: options.sub_compaction,
@@ -105,8 +103,7 @@ impl GcCompactionQueueItem {
                 running,
                 job_id: id.0,
             }),
-            GcCompactionQueueItem::UpdateL2Lsn(_) => None,
-            GcCompactionQueueItem::Notify(_) => None,
+            GcCompactionQueueItem::Notify(_, _) => None,
         }
     }
 }
@@ -166,7 +163,7 @@ impl GcCompactionQueue {
         let id = guard.next_id();
         guard
             .queued
-            .push_back((id, GcCompactionQueueItem::Manual(options)));
+            .push_back((id, GcCompactionQueueItem::MetaJob(options, false)));
         if let Some(notify) = notify {
             guard.notify.insert(id, notify);
         }
@@ -174,9 +171,93 @@ impl GcCompactionQueue {
         id
     }
 
+    /// Schedule an auto compaction job.
+    fn schedule_auto_compaction(&self, options: CompactOptions) -> GcCompactionJobId {
+        let mut guard = self.inner.lock().unwrap();
+        let id = guard.next_id();
+        guard
+            .queued
+            .push_back((id, GcCompactionQueueItem::MetaJob(options, true)));
+        id
+    }
+
+    /// Schedule an auto compaction job.
+    fn schedule_auto_compaction(&self, options: CompactOptions) -> GcCompactionJobId {
+        let mut guard = self.inner.lock().unwrap();
+        let id = guard.next_id();
+        guard
+            .queued
+            .push_back((id, GcCompactionQueueItem::MetaJob(options, true)));
+        id
+    }
+
     /// Trigger an auto compaction.
-    #[allow(dead_code)]
-    pub fn trigger_auto_compaction(&self, _: &Arc<Timeline>) {}
+    pub async fn trigger_auto_compaction(&self, timeline: &Arc<Timeline>) {
+        let (
+            gc_compaction_enabled,
+            gc_compaction_initial_threshold_mb,
+            gc_compaction_ratio_percent,
+        ) = timeline.get_gc_compaction_settings();
+        if !gc_compaction_enabled {
+            return;
+        }
+        if self.remaining_jobs_num() > 0 {
+            // Only schedule auto compaction when the queue is empty
+            return;
+        }
+        let l2_lsn = timeline.get_l2_lsn();
+
+        let layers = {
+            let guard = timeline.layers.read().await;
+            let layer_map = guard.layer_map().unwrap();
+            layer_map.iter_historic_layers().collect_vec()
+        };
+        let mut l2_size = 0;
+        let mut l1_size = 0;
+        for layer in layers {
+            if layer.lsn_range.start >= l2_lsn {
+                l2_size += layer.file_size();
+            } else {
+                l1_size += layer.file_size();
+            }
+        }
+
+        fn trigger_compaction(
+            l1_size: u64,
+            l2_size: u64,
+            gc_compaction_initial_threshold_mb: u64,
+            gc_compaction_ratio_percent: u64,
+        ) -> bool {
+            // initial trigger
+            if l2_size == 0 && l1_size >= gc_compaction_initial_threshold_mb * 1024 * 1024 {
+                return true;
+            }
+            // size ratio trigger
+            if l1_size as f64 / l2_size as f64 >= (gc_compaction_ratio_percent as f64 / 100.0) {
+                return true;
+            }
+            false
+        }
+
+        if trigger_compaction(
+            l1_size,
+            l2_size,
+            gc_compaction_initial_threshold_mb,
+            gc_compaction_ratio_percent,
+        ) {
+            self.schedule_auto_compaction(CompactOptions {
+                flags: {
+                    let mut flags = EnumSet::new();
+                    flags |= CompactFlags::EnhancedGcBottomMostCompaction;
+                    flags
+                },
+                sub_compaction: true,
+                compact_key_range: None,
+                compact_lsn_range: None,
+                sub_compaction_max_job_size_mb: None,
+            });
+        }
+    }
 
     /// Notify the caller the job has finished and unblock GC.
     fn notify_and_unblock(&self, id: GcCompactionJobId) {
@@ -288,6 +369,8 @@ impl GcCompactionQueue {
                     self.handle_sub_compaction(id, options, timeline, gc_block)
                         .await?;
                 } else {
+                    // Auto compaction always enables sub-compaction so we don't need to handle update_l2_lsn
+                    // in this branch.
                     let gc_guard = match gc_block.start().await {
                         Ok(guard) => guard,
                         Err(e) => {
@@ -309,22 +392,32 @@ impl GcCompactionQueue {
                 }
             }
             GcCompactionQueueItem::SubCompactionJob(options) => {
+                // TODO: error handling, clear the queue if any task fails?
                 let _ = timeline
                     .compact_with_options(cancel, options, ctx)
                     .instrument(info_span!("scheduled_compact_timeline", %timeline.timeline_id))
                     .await?;
             }
-            GcCompactionQueueItem::Notify(id) => {
+            GcCompactionQueueItem::Notify(id, l2_lsn) => {
                 self.notify_and_unblock(id);
-            }
-            GcCompactionQueueItem::UpdateL2Lsn(_) => {
-                unreachable!()
+                if let Some(l2_lsn) = l2_lsn {
+                    timeline
+                        .update_l2_lsn(l2_lsn)
+                        .map_err(CompactionError::Other)?;
+                }
             }
         }
         {
             let mut guard = self.inner.lock().unwrap();
             guard.running = None;
         }
+
+        if !has_pending_tasks {
+            self.trigger_auto_compaction(timeline).await;
+            // We add the compaction tasks to the queue but do not immediately schedule auto compaction.
+            // We wait until the next compaction iteration to avoid running the compaction too frequently.
+        }
+
         Ok(has_pending_tasks)
     }
 
@@ -339,7 +432,6 @@ impl GcCompactionQueue {
         (guard.running.clone(), guard.queued.clone())
     }
 
-    #[allow(dead_code)]
     pub fn remaining_jobs_num(&self) -> usize {
         let guard = self.inner.lock().unwrap();
         guard.queued.len() + if guard.running.is_some() { 1 } else { 0 }
@@ -2096,7 +2188,7 @@ impl Timeline {
         self: &Arc<Self>,
         job: GcCompactJob,
         sub_compaction_max_job_size_mb: Option<u64>,
-    ) -> anyhow::Result<Vec<GcCompactJob>> {
+    ) -> anyhow::Result<(Vec<GcCompactJob>, Lsn)> {
         let compact_below_lsn = if job.compact_lsn_range.end != Lsn::MAX {
             job.compact_lsn_range.end
         } else {
@@ -2153,6 +2245,7 @@ impl Timeline {
             split_key_ranges.push((start, end));
         }
         split_key_ranges.sort();
+        // TODO: avoid holding the guard for too long time
         let guard = self.layers.read().await;
         let layer_map = guard.layer_map()?;
         let mut current_start = None;
@@ -2195,7 +2288,7 @@ impl Timeline {
             }
         }
         drop(guard);
-        Ok(compact_jobs)
+        Ok((compact_jobs, compact_below_lsn))
     }
 
     /// An experimental compaction building block that combines compaction with garbage collection.
@@ -2219,12 +2312,12 @@ impl Timeline {
         cancel: &CancellationToken,
         options: CompactOptions,
         ctx: &RequestContext,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Lsn> {
         let sub_compaction = options.sub_compaction;
         let job = GcCompactJob::from_compact_options(options.clone());
         if sub_compaction {
             info!("running enhanced gc bottom-most compaction with sub-compaction, splitting compaction jobs");
-            let jobs = self
+            let (jobs, l2_lsn) = self
                 .gc_compaction_split_jobs(job, options.sub_compaction_max_job_size_mb)
                 .await?;
             let jobs_len = jobs.len();
@@ -2239,7 +2332,7 @@ impl Timeline {
             if jobs_len == 0 {
                 info!("no jobs to run, skipping gc bottom-most compaction");
             }
-            return Ok(());
+            return Ok(l2_lsn);
         }
         self.compact_with_gc_inner(cancel, job, ctx).await
     }
@@ -2249,7 +2342,7 @@ impl Timeline {
         cancel: &CancellationToken,
         job: GcCompactJob,
         ctx: &RequestContext,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Lsn> {
         // Block other compaction/GC tasks from running for now. GC-compaction could run along
         // with legacy compaction tasks in the future. Always ensure the lock order is compaction -> gc.
         // Note that we already acquired the compaction lock when the outer `compact` function gets called.
@@ -2330,7 +2423,7 @@ impl Timeline {
                 .max()
             else {
                 info!("no layers to compact with gc: no historic layers below gc_cutoff, gc_cutoff={}", gc_cutoff);
-                return Ok(());
+                return Ok(gc_cutoff);
             };
             // Next, if the user specifies compact_lsn_range.start, we need to filter some layers out. All the layers (strictly) below
             // the min_layer_lsn computed as below will be filtered out and the data will be accessed using the normal read path, as if
@@ -2348,7 +2441,7 @@ impl Timeline {
                 .min()
             else {
                 info!("no layers to compact with gc: no historic layers above compact_above_lsn, compact_above_lsn={}", compact_lsn_range.end);
-                return Ok(());
+                return Ok(compact_lsn_range.end);
             };
             // Then, pick all the layers that are below the max_layer_lsn. This is to ensure we can pick all single-key
             // layers to compact.
@@ -2371,7 +2464,7 @@ impl Timeline {
             }
             if selected_layers.is_empty() {
                 info!("no layers to compact with gc: no layers within the key range, gc_cutoff={}, key_range={}..{}", gc_cutoff, compact_key_range.start, compact_key_range.end);
-                return Ok(());
+                return Ok(gc_cutoff);
             }
             retain_lsns_below_horizon.sort();
             GcCompactionJobDescription {
@@ -2824,7 +2917,7 @@ impl Timeline {
         );
 
         if dry_run {
-            return Ok(());
+            return Ok(job_desc.max_layer_lsn);
         }
 
         info!(
@@ -2882,7 +2975,7 @@ impl Timeline {
 
         drop(gc_lock);
 
-        Ok(())
+        Ok(job_desc.max_layer_lsn)
     }
 }
 

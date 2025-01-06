@@ -176,6 +176,9 @@ def test_fully_custom_config(positive_env: NeonEnv):
             "type": "interpreted",
             "args": {"format": "bincode", "compression": {"zstd": {"level": 1}}},
         },
+        "gc_compaction_enabled": False,
+        "gc_compaction_initial_threshold_mb": 10240,
+        "gc_compaction_ratio_percent": 100,
     }
 
     vps_http = env.storage_controller.pageserver_api()
