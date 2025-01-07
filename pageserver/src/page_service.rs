@@ -61,7 +61,7 @@ use crate::task_mgr::{self, COMPUTE_REQUEST_RUNTIME};
 use crate::tenant::mgr::ShardSelector;
 use crate::tenant::mgr::TenantManager;
 use crate::tenant::mgr::{GetActiveTenantError, GetTenantError, ShardResolveResult};
-use crate::tenant::timeline::{self, WaitLsnError};
+use crate::tenant::timeline::{self, PageTraceEvent, WaitLsnError};
 use crate::tenant::GetTimelineError;
 use crate::tenant::PageReconstructError;
 use crate::tenant::Timeline;
@@ -1660,6 +1660,18 @@ impl PageServerHandler {
         timeline
             .query_metrics
             .observe_getpage_batch_start(requests.len());
+
+        if let Some(page_trace) = timeline.page_trace.load().as_ref() {
+            let time = SystemTime::now();
+            for (rel_tag, blknum, _timer) in &requests {
+                let key = rel_block_to_key(*rel_tag, *blknum).to_compact();
+                page_trace.send(PageTraceEvent {
+                    key,
+                    effective_lsn,
+                    time,
+                })
+            }
+        }
 
         let results = timeline
             .get_rel_page_at_lsn_batched(
