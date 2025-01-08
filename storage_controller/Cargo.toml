@@ -45,12 +45,11 @@ strum_macros.workspace = true
 
 diesel = { version = "2.2.6", features = [
     "serde_json",
-    "postgres",
-    "r2d2",
     "chrono",
 ] }
+diesel-async = { version = "0.5.2", features = ["postgres", "bb8", "async-connection-wrapper"] }
 diesel_migrations = { version = "2.2.0" }
-r2d2 = { version = "0.8.10" }
+scoped-futures = "0.1.4"
 
 utils = { path = "../libs/utils/" }
 metrics = { path = "../libs/metrics/" }
