@@ -89,7 +89,6 @@ impl StreamingWalReader {
                 changed_res = change_rx.changed() => {
                     assert!(changed_res.is_ok());
                     let new_start_pos = change_rx.borrow_and_update();
-                    tracing::info!("Wal stream received reset at {}", *new_start_pos);
                     WalOrReset::Reset(*new_start_pos)
                 }
             };

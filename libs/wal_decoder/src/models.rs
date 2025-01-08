@@ -64,7 +64,7 @@ pub struct InterpretedWalRecords {
 }
 
 /// An interpreted Postgres WAL record, ready to be handled by the pageserver
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct InterpretedWalRecord {
     /// Optional metadata record - may cause writes to metadata keys
     /// in the storage engine

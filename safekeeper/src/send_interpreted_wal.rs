@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,6 +28,47 @@ use crate::send_wal::{EndWatchView, WalSenderGuard};
 use crate::timeline::WalResidentTimeline;
 use crate::wal_reader_stream::{StreamingWalReader, WalBytes};
 
+/// Identifier used to differentiate between senders of the same
+/// shard.
+///
+/// In the steady state there's only one, but two pageservers may
+/// temporarily have the same shard attached and attempt to ingest
+/// WAL for it. See also [`ShardSenderId`].
+#[derive(Hash, Eq, PartialEq, Copy, Clone)]
+struct SenderId(u8);
+
+impl SenderId {
+    fn first() -> Self {
+        SenderId(0)
+    }
+
+    fn next(&self) -> Self {
+        SenderId(self.0.checked_add(1).expect("few senders"))
+    }
+}
+
+#[derive(Hash, Eq, PartialEq)]
+struct ShardSenderId {
+    shard: ShardIdentity,
+    sender_id: SenderId,
+}
+
+impl Display for ShardSenderId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", self.sender_id.0, self.shard.shard_slug())
+    }
+}
+
+impl ShardSenderId {
+    fn new(shard: ShardIdentity, sender_id: SenderId) -> Self {
+        ShardSenderId { shard, sender_id }
+    }
+
+    fn shard(&self) -> ShardIdentity {
+        self.shard
+    }
+}
+
 /// Shard-aware fan-out interpreted record reader.
 /// Reads WAL from disk, decodes it, intepretets it, and sends
 /// it to any [`InterpretedWalSender`] connected to it.
@@ -34,7 +76,7 @@ use crate::wal_reader_stream::{StreamingWalReader, WalBytes};
 /// and gets interpreted records concerning that shard only.
 pub(crate) struct InterpretedWalReader {
     wal_stream: StreamingWalReader,
-    shards: HashMap<ShardIdentity, ShardState>,
+    shard_senders: HashMap<ShardIdentity, smallvec::SmallVec<[ShardSenderState; 1]>>,
     shard_notification_rx: Option<tokio::sync::mpsc::UnboundedReceiver<AttachShardNotification>>,
     state: Arc<std::sync::RwLock<InterpretedWalReaderState>>,
     pg_version: u32,
@@ -53,7 +95,8 @@ pub(crate) struct InterpretedWalReaderHandle {
     cancel: CancellationToken,
 }
 
-struct ShardState {
+struct ShardSenderState {
+    sender_id: SenderId,
     tx: tokio::sync::mpsc::Sender<Batch>,
     next_record_lsn: Lsn,
 }
@@ -119,12 +162,13 @@ impl InterpretedWalReader {
 
         let reader = InterpretedWalReader {
             wal_stream,
-            shards: HashMap::from([(
+            shard_senders: HashMap::from([(
                 shard,
-                ShardState {
+                smallvec::smallvec![ShardSenderState {
+                    sender_id: SenderId::first(),
                     tx,
                     next_record_lsn: start_pos,
-                },
+                }],
             )]),
             shard_notification_rx: Some(shard_notification_rx),
             state: state.clone(),
@@ -176,12 +220,13 @@ impl InterpretedWalReader {
 
         InterpretedWalReader {
             wal_stream,
-            shards: HashMap::from([(
+            shard_senders: HashMap::from([(
                 shard,
-                ShardState {
+                smallvec::smallvec![ShardSenderState {
+                    sender_id: SenderId::first(),
                     tx,
                     next_record_lsn: start_pos,
-                },
+                }],
             )]),
             shard_notification_rx: None,
             state: state.clone(),
@@ -215,6 +260,7 @@ impl InterpretedWalReader {
         let defer_state = self.state.clone();
         scopeguard::defer! {
             *defer_state.write().unwrap() = InterpretedWalReaderState::Done;
+            tracing::info!("Interpreted wal reader exiting");
         }
 
         let mut wal_decoder = WalStreamDecoder::new(start_pos, self.pg_version);
@@ -241,8 +287,8 @@ impl InterpretedWalReader {
 
                     // Deserialize and interpret WAL records from this batch of WAL.
                     // Interpreted records for each shard are collected separately.
-                    let shard_ids = self.shards.keys().cloned().collect::<Vec<_>>();
-                    let mut records_by_shard: HashMap<ShardIdentity, Vec<InterpretedWalRecord>> = HashMap::new();
+                    let shard_ids = self.shard_senders.keys().copied().collect::<Vec<_>>();
+                    let mut records_by_sender: HashMap<ShardSenderId, Vec<InterpretedWalRecord>> = HashMap::new();
                     let mut max_next_record_lsn = None;
                     while let Some((next_record_lsn, recdata)) = wal_decoder.poll_decode()?
                     {
@@ -258,9 +304,27 @@ impl InterpretedWalReader {
                         .with_context(|| "Failed to interpret WAL")?;
 
                         for (shard, record) in interpreted {
-                            if !record.is_empty()
-                                && record.next_record_lsn > self.shards.get(&shard).unwrap().next_record_lsn {
-                                records_by_shard.entry(shard).or_default().push(record);
+                            if record.is_empty() {
+                                continue;
+                            }
+
+                            let mut states_iter = self.shard_senders
+                                .get(&shard)
+                                .expect("keys collected above")
+                                .iter()
+                                .filter(|state| record.next_record_lsn > state.next_record_lsn)
+                                .peekable();
+                            while let Some(state) = states_iter.next() {
+                                let shard_sender_id = ShardSenderId::new(shard, state.sender_id);
+
+                                // The most commont case is one sender per shard. Peek and break to avoid the
+                                // clone in that situation.
+                                if states_iter.peek().is_none() {
+                                    records_by_sender.entry(shard_sender_id).or_default().push(record);
+                                    break;
+                                } else {
+                                    records_by_sender.entry(shard_sender_id).or_default().push(record.clone());
+                                }
                             }
                         }
                     }
@@ -283,36 +347,55 @@ impl InterpretedWalReader {
 
                     // Send interpreted records downstream. Anything that has already been seen
                     // by a shard is filtered out.
-                    let mut shards_to_remove = Vec::new();
-                    for (shard, state) in &mut self.shards {
-                        let records = records_by_shard.remove(shard).unwrap_or_default();
+                    let mut shard_senders_to_remove = Vec::new();
+                    for (shard, states) in &mut self.shard_senders {
+                        for state in states {
+                            if max_next_record_lsn <= state.next_record_lsn {
+                                continue;
+                            }
 
-                        if max_next_record_lsn <= state.next_record_lsn {
-                            continue;
-                        }
+                            let shard_sender_id = ShardSenderId::new(*shard, state.sender_id);
+                            let records = records_by_sender.remove(&shard_sender_id).unwrap_or_default();
 
-                        let batch = InterpretedWalRecords {
-                            records,
-                            next_record_lsn: Some(max_next_record_lsn),
-                        };
+                            let batch = InterpretedWalRecords {
+                                records,
+                                next_record_lsn: Some(max_next_record_lsn),
+                            };
 
-                        let res = state.tx.send(Batch {
-                            wal_end_lsn,
-                            available_wal_end_lsn,
-                            records: batch,
-                        }).await;
+                            let res = state.tx.send(Batch {
+                                wal_end_lsn,
+                                available_wal_end_lsn,
+                                records: batch,
+                            }).await;
 
-                        if res.is_err() {
-                            shards_to_remove.push(*shard);
-                        } else {
-                            state.next_record_lsn = max_next_record_lsn;
+                            if res.is_err() {
+                                shard_senders_to_remove.push(shard_sender_id);
+                            } else {
+                                state.next_record_lsn = max_next_record_lsn;
+                            }
                         }
                     }
 
-                    // Clean up any shards that have dropped out.
-                    for shard in shards_to_remove {
-                        let removed = self.shards.remove(&shard);
-                        assert!(removed.is_some());
+                    // Clean up any shard senders that have dropped out.
+                    // This is inefficient, but such events are rare (connection to PS termination)
+                    // and the number of subscriptions on the same shards very small (only one
+                    // for the steady state).
+                    for to_remove in shard_senders_to_remove {
+                        let shard_senders = self.shard_senders.get_mut(&to_remove.shard()).expect("saw it above");
+
+                        let mut remove_at = None;
+                        for (idx, shard_sender) in shard_senders.iter().enumerate() {
+                            let crnt_shard_sender_id = ShardSenderId::new(to_remove.shard(), shard_sender.sender_id);
+                            if crnt_shard_sender_id == to_remove {
+                                remove_at = Some(idx);
+                                break;
+                            }
+                        }
+
+                        if let Some(idx) = remove_at {
+                            shard_senders.remove(idx);
+                            tracing::info!("Removed shard sender {}", to_remove);
+                        }
                     }
                 },
                 // Listen for new shards that want to attach to this reader.
@@ -327,12 +410,23 @@ impl InterpretedWalReader {
 
                         // Update internal and external state, then reset the WAL stream
                         // if required.
-                        self.shards.insert(shard_id, ShardState { tx: sender, next_record_lsn: start_pos});
+                        let senders = self.shard_senders.entry(shard_id).or_default();
+                        let new_sender_id = match senders.last() {
+                            Some(sender) => sender.sender_id.next(),
+                            None => SenderId::first()
+                        };
+
+                        senders.push(ShardSenderState { sender_id: new_sender_id, tx: sender, next_record_lsn: start_pos});
                         let current_pos = self.state.read().unwrap().current_position().unwrap();
                         if start_pos < current_pos {
                             self.wal_stream.reset(start_pos);
                             wal_decoder = WalStreamDecoder::new(start_pos, self.pg_version);
                         }
+
+                        tracing::info!(
+                            "Added shard sender {} with start_pos={} current_pos={}",
+                            ShardSenderId::new(shard_id, new_sender_id), start_pos, current_pos
+                        );
                     }
                 }
                 _ = self.cancel.cancelled() => {
@@ -372,6 +466,7 @@ impl InterpretedWalReaderHandle {
 
 impl Drop for InterpretedWalReaderHandle {
     fn drop(&mut self) {
+        tracing::info!("Aborting interpreted wal reader");
         self.abort()
     }
 }
@@ -610,6 +705,93 @@ mod tests {
             .map(|recs| recs.next_record_lsn)
             .collect::<Vec<_>>();
         assert_eq!(shard_0_next_lsns, shard_1_next_lsns);
+
+        handle.abort();
+        let mut done = false;
+        for _ in 0..5 {
+            if handle.current_position().is_none() {
+                done = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        assert!(done);
+    }
+
+    #[tokio::test]
+    async fn test_interpreted_wal_reader_same_shard_fanout() {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        const SIZE: usize = 8 * 1024;
+        const MSG_COUNT: usize = 200;
+        const PG_VERSION: u32 = 17;
+        const SHARD_COUNT: u8 = 2;
+        const ATTACHED_SHARDS: u8 = 4;
+
+        let start_lsn = Lsn::from_str("0/149FD18").unwrap();
+        let env = Env::new(true).unwrap();
+        let tli = env
+            .make_timeline(NodeId(1), TenantTimelineId::generate(), start_lsn)
+            .await
+            .unwrap();
+
+        let resident_tli = tli.wal_residence_guard().await.unwrap();
+        let end_watch = Env::write_wal(tli, start_lsn, SIZE, MSG_COUNT)
+            .await
+            .unwrap();
+        let end_pos = end_watch.get();
+
+        let streaming_wal_reader = StreamingWalReader::new(
+            resident_tli,
+            None,
+            start_lsn,
+            end_pos,
+            end_watch,
+            MAX_SEND_SIZE,
+        );
+
+        let shard_0 = ShardIdentity::new(
+            ShardNumber(0),
+            ShardCount(SHARD_COUNT),
+            ShardStripeSize::default(),
+        )
+        .unwrap();
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Batch>(MSG_COUNT * 2);
+        let mut batch_receivers = vec![rx];
+
+        let handle = InterpretedWalReader::spawn(
+            streaming_wal_reader,
+            start_lsn,
+            tx,
+            shard_0,
+            PG_VERSION,
+            &Some("pageserver".to_string()),
+        );
+
+        for _ in 0..(ATTACHED_SHARDS - 1) {
+            let (tx, rx) = tokio::sync::mpsc::channel::<Batch>(MSG_COUNT * 2);
+            handle.fanout(shard_0, tx, start_lsn).unwrap();
+            batch_receivers.push(rx);
+        }
+
+        loop {
+            let batch = batch_receivers.first_mut().unwrap().recv().await.unwrap();
+            for rx in batch_receivers.iter_mut().skip(1) {
+                let other_batch = rx.recv().await.unwrap();
+
+                assert_eq!(batch.wal_end_lsn, other_batch.wal_end_lsn);
+                assert_eq!(
+                    batch.available_wal_end_lsn,
+                    other_batch.available_wal_end_lsn
+                );
+            }
+
+            if batch.wal_end_lsn == batch.available_wal_end_lsn {
+                break;
+            }
+        }
 
         handle.abort();
         let mut done = false;
