@@ -491,7 +491,11 @@ impl Timeline {
             // fetch directory listing
             let key = rel_tag_sparse_key(tag.spcnode, tag.dbnode, tag.relnode, tag.forknum);
             let buf = version.get(self, key, ctx).await;
-            Ok(buf.is_ok()) // TODO: sparse keyspace needs a different get function
+            if let Ok(buf) = buf {
+                Ok(!buf.is_empty())
+            } else {
+                Ok(false)
+            } // TODO: sparse keyspace needs a different get function
         } else {
             // fetch directory listing
             let key = rel_dir_to_key(tag.spcnode, tag.dbnode);
@@ -524,7 +528,10 @@ impl Timeline {
                 .get_vectored(KeySpace::single(key_range), version.get_lsn(), ctx)
                 .await?;
             let mut rels = HashSet::new();
-            for (key, _) in results {
+            for (key, val) in results {
+                if val?.is_empty() {
+                    continue;
+                }
                 assert_eq!(key.field6, 1);
                 assert_eq!(key.field2, spcnode);
                 assert_eq!(key.field3, dbnode);
@@ -1768,8 +1775,10 @@ impl DatadirModification<'_> {
             }
             let rel_dir_key = rel_tag_sparse_key(rel.spcnode, rel.dbnode, rel.relnode, rel.forknum);
             // check if the rel_dir_key exists
-            if self.get(rel_dir_key, ctx).await.is_ok() {
-                return Err(RelationError::AlreadyExists);
+            if let Ok(buf) = self.get(rel_dir_key, ctx).await {
+                if !buf.is_empty() {
+                    return Err(RelationError::AlreadyExists);
+                }
             }
             self.put(rel_dir_key, Value::Image(Bytes::from_static(b"1")));
             // TODO: update directory_entries_count, it seems to be a metrics
@@ -1893,7 +1902,7 @@ impl DatadirModification<'_> {
                         rel_tag_sparse_key(spc_node, db_node, rel_tag.relnode, rel_tag.forknum);
                     if self.get(key, ctx).await.is_ok() {
                         // remove the relation key
-                        self.delete(key..key.next());
+                        self.put(key, Value::Image(Bytes::from_static(b""))); // put tombstone
 
                         // update logical size
                         let size_key = rel_size_to_key(rel_tag);
