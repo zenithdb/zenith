@@ -588,11 +588,16 @@ impl RemoteStorage for S3Bucket {
                         }
                     };
 
+                    let etag = object.e_tag.clone()
+                        .ok_or(DownloadError::Other(anyhow::anyhow!("Missing etag header")))?
+                        .into();
+
                     let size = object.size.unwrap_or(0) as u64;
 
                     result.keys.push(ListingObject{
                         key,
                         last_modified,
+                        etag,
                         size,
                     });
                     if let Some(mut mk) = max_keys {
@@ -690,11 +695,16 @@ impl RemoteStorage for S3Bucket {
                 "head_object doesn't contain last_modified or content_length"
             )))?;
         };
+        let etag = data
+            .e_tag
+            .ok_or(DownloadError::Other(anyhow::anyhow!("Missing etag header")))?
+            .into();
         Ok(ListingObject {
             key: key.to_owned(),
             last_modified: SystemTime::try_from(last_modified).map_err(|e| {
                 DownloadError::Other(anyhow!("can't convert time '{last_modified}': {e}"))
             })?,
+            etag: etag,
             size: size as u64,
         })
     }

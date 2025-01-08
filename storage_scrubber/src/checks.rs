@@ -548,6 +548,16 @@ pub(crate) struct RemoteTenantManifestInfo {
     pub(crate) listing_object: ListingObject,
 }
 
+impl RemoteTenantManifestInfo {
+    /// Whether the two objects point to the same remote storage object or not
+    ///
+    /// This compares last modified time and etag, which only match if the content is the same.
+    /// It is cheaper than doing an equality check over the content.
+    pub(crate) fn eq_fast(&self, rhs: &Self) -> bool {
+        self.generation == rhs.generation && self.listing_object == rhs.listing_object
+    }
+}
+
 pub(crate) enum ListTenantManifestResult {
     WithErrors {
         errors: Vec<(String, String)>,

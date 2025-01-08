@@ -166,6 +166,7 @@ pub enum ListingMode {
 pub struct ListingObject {
     pub key: RemotePath,
     pub last_modified: SystemTime,
+    pub etag: Etag,
     pub size: u64,
 }
 

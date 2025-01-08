@@ -372,6 +372,7 @@ impl RemoteStorage for LocalFs {
                 objects.push(ListingObject {
                     key: key.clone(),
                     last_modified: metadata.modified()?,
+                    etag: mock_etag(&metadata),
                     size: metadata.len(),
                 });
             }
@@ -414,6 +415,7 @@ impl RemoteStorage for LocalFs {
                         result.keys.push(ListingObject {
                             key: RemotePath::from_string(&relative_key).unwrap(),
                             last_modified: object.last_modified,
+                            etag: object.etag,
                             size: object.size,
                         });
                     }
@@ -457,6 +459,7 @@ impl RemoteStorage for LocalFs {
         Ok(ListingObject {
             key: key.clone(),
             last_modified: metadata.modified()?,
+            etag: mock_etag(&metadata),
             size: metadata.len(),
         })
     }
