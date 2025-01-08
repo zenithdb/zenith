@@ -47,6 +47,12 @@ pub const AUX_KEY_PREFIX: u8 = 0x62;
 /// The key prefix of ReplOrigin keys.
 pub const REPL_ORIGIN_KEY_PREFIX: u8 = 0x63;
 
+/// The key prefix of db directory keys.
+pub const DB_DIR_KEY_PREFIX: u8 = 0x64;
+
+/// The key prefix of rel direcotry keys.
+pub const REL_DIR_KEY_PREFIX: u8 = 0x65;
+
 /// Check if the key falls in the range of metadata keys.
 pub const fn is_metadata_key_slice(key: &[u8]) -> bool {
     key[0] >= METADATA_KEY_BEGIN_PREFIX && key[0] < METADATA_KEY_END_PREFIX
@@ -100,6 +106,24 @@ impl Key {
             field6: 0,
         }..Key {
             field1: AUX_KEY_PREFIX + 1,
+            field2: 0,
+            field3: 0,
+            field4: 0,
+            field5: 0,
+            field6: 0,
+        }
+    }
+
+    pub fn rel_dir_sparse_key_range() -> Range<Self> {
+        Key {
+            field1: REL_DIR_KEY_PREFIX,
+            field2: 0,
+            field3: 0,
+            field4: 0,
+            field5: 0,
+            field6: 0,
+        }..Key {
+            field1: REL_DIR_KEY_PREFIX + 1,
             field2: 0,
             field3: 0,
             field4: 0,
@@ -436,6 +460,36 @@ pub fn rel_dir_to_key(spcnode: Oid, dbnode: Oid) -> Key {
         field5: 0,
         field6: 1,
     }
+}
+
+#[inline(always)]
+pub fn rel_tag_sparse_key(spcnode: Oid, dbnode: Oid, relnode: Oid, forknum: u8) -> Key {
+    Key {
+        field1: REL_DIR_KEY_PREFIX,
+        field2: spcnode,
+        field3: dbnode,
+        field4: relnode,
+        field5: forknum,
+        field6: 1,
+    }
+}
+
+pub fn rel_tag_sparse_key_range(spcnode: Oid, dbnode: Oid) -> Range<Key> {
+    Key {
+        field1: REL_DIR_KEY_PREFIX,
+        field2: spcnode,
+        field3: dbnode,
+        field4: 0,
+        field5: 0,
+        field6: 0,
+    }..Key {
+        field1: REL_DIR_KEY_PREFIX,
+        field2: spcnode,
+        field3: dbnode,
+        field4: u32::MAX,
+        field5: u8::MAX,
+        field6: u32::MAX,
+    } // it's fine to exclude the last key b/c we only use field6 == 1
 }
 
 #[inline(always)]
