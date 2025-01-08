@@ -22,13 +22,14 @@ use anyhow::{ensure, Context};
 use bytes::{Buf, Bytes, BytesMut};
 use enum_map::Enum;
 use itertools::Itertools;
-use pageserver_api::key::Key;
 use pageserver_api::key::{
     dbdir_key_range, rel_block_to_key, rel_dir_to_key, rel_key_range, rel_size_to_key,
-    relmap_file_key, repl_origin_key, repl_origin_key_range, slru_block_to_key, slru_dir_to_key,
-    slru_segment_key_range, slru_segment_size_to_key, twophase_file_key, twophase_key_range,
-    CompactKey, AUX_FILES_KEY, CHECKPOINT_KEY, CONTROLFILE_KEY, DBDIR_KEY, TWOPHASEDIR_KEY,
+    rel_tag_sparse_key_range, relmap_file_key, repl_origin_key, repl_origin_key_range,
+    slru_block_to_key, slru_dir_to_key, slru_segment_key_range, slru_segment_size_to_key,
+    twophase_file_key, twophase_key_range, CompactKey, AUX_FILES_KEY, CHECKPOINT_KEY,
+    CONTROLFILE_KEY, DBDIR_KEY, TWOPHASEDIR_KEY,
 };
+use pageserver_api::key::{rel_tag_sparse_key, Key};
 use pageserver_api::keyspace::SparseKeySpace;
 use pageserver_api::record::NeonWalRecord;
 use pageserver_api::reltag::{BlockNumber, RelTag, SlruKind};
@@ -54,6 +55,8 @@ pub const MAX_AUX_FILE_DELTAS: usize = 1024;
 
 /// Max number of aux-file-related delta layers. The compaction will create a new image layer once this threshold is reached.
 pub const MAX_AUX_FILE_V2_DELTAS: usize = 16;
+
+pub const REL_STORE_V2: bool = true;
 
 #[derive(Debug)]
 pub enum LsnForTimestamp {
@@ -483,12 +486,24 @@ impl Timeline {
         if !dbdirs.contains_key(&(tag.spcnode, tag.dbnode)) {
             return Ok(false);
         }
-        // fetch directory listing
-        let key = rel_dir_to_key(tag.spcnode, tag.dbnode);
-        let buf = version.get(self, key, ctx).await?;
 
-        let dir = RelDirectory::des(&buf)?;
-        Ok(dir.rels.contains(&(tag.relnode, tag.forknum)))
+        if REL_STORE_V2 {
+            // fetch directory listing
+            let key = rel_tag_sparse_key(tag.spcnode, tag.dbnode, tag.relnode, tag.forknum);
+            let buf = version.get(self, key, ctx).await;
+            if let Ok(buf) = buf {
+                Ok(!buf.is_empty())
+            } else {
+                Ok(false)
+            } // TODO: sparse keyspace needs a different get function
+        } else {
+            // fetch directory listing
+            let key = rel_dir_to_key(tag.spcnode, tag.dbnode);
+            let buf = version.get(self, key, ctx).await?;
+
+            let dir = RelDirectory::des(&buf)?;
+            Ok(dir.rels.contains(&(tag.relnode, tag.forknum)))
+        }
     }
 
     /// Get a list of all existing relations in given tablespace and database.
@@ -506,20 +521,44 @@ impl Timeline {
         version: Version<'_>,
         ctx: &RequestContext,
     ) -> Result<HashSet<RelTag>, PageReconstructError> {
-        // fetch directory listing
-        let key = rel_dir_to_key(spcnode, dbnode);
-        let buf = version.get(self, key, ctx).await?;
+        if REL_STORE_V2 {
+            // scan directory listing
+            let key_range = rel_tag_sparse_key_range(spcnode, dbnode);
+            let results = self
+                .get_vectored(KeySpace::single(key_range), version.get_lsn(), ctx)
+                .await?;
+            let mut rels = HashSet::new();
+            for (key, val) in results {
+                if val?.is_empty() {
+                    continue;
+                }
+                assert_eq!(key.field6, 1);
+                assert_eq!(key.field2, spcnode);
+                assert_eq!(key.field3, dbnode);
+                rels.insert(RelTag {
+                    spcnode,
+                    dbnode,
+                    relnode: key.field4,
+                    forknum: key.field5,
+                });
+            }
+            Ok(rels)
+        } else {
+            // fetch directory listing
+            let key = rel_dir_to_key(spcnode, dbnode);
+            let buf = version.get(self, key, ctx).await?;
 
-        let dir = RelDirectory::des(&buf)?;
-        let rels: HashSet<RelTag> =
-            HashSet::from_iter(dir.rels.iter().map(|(relnode, forknum)| RelTag {
-                spcnode,
-                dbnode,
-                relnode: *relnode,
-                forknum: *forknum,
-            }));
+            let dir = RelDirectory::des(&buf)?;
+            let rels: HashSet<RelTag> =
+                HashSet::from_iter(dir.rels.iter().map(|(relnode, forknum)| RelTag {
+                    spcnode,
+                    dbnode,
+                    relnode: *relnode,
+                    forknum: *forknum,
+                }));
 
-        Ok(rels)
+            Ok(rels)
+        }
     }
 
     /// Get the whole SLRU segment
@@ -1106,7 +1145,11 @@ impl Timeline {
 
         let dense_keyspace = result.to_keyspace();
         let sparse_keyspace = SparseKeySpace(KeySpace {
-            ranges: vec![Key::metadata_aux_key_range(), repl_origin_key_range()],
+            ranges: vec![
+                Key::metadata_aux_key_range(),
+                repl_origin_key_range(),
+                Key::rel_dir_sparse_key_range(),
+            ],
         });
 
         if cfg!(debug_assertions) {
@@ -1598,7 +1641,7 @@ impl DatadirModification<'_> {
             let buf = DbDirectory::ser(&dbdir)?;
             self.put(DBDIR_KEY, Value::Image(buf.into()));
         }
-        if r.is_none() {
+        if REL_STORE_V2 && r.is_none() {
             // Create RelDirectory
             let buf = RelDirectory::ser(&RelDirectory {
                 rels: HashSet::new(),
@@ -1720,8 +1763,8 @@ impl DatadirModification<'_> {
         // tablespace.  Create the reldir entry for it if so.
         let mut dbdir = DbDirectory::des(&self.get(DBDIR_KEY, ctx).await.context("read db")?)
             .context("deserialize db")?;
-        let rel_dir_key = rel_dir_to_key(rel.spcnode, rel.dbnode);
-        let mut rel_dir =
+
+        if REL_STORE_V2 {
             if let hash_map::Entry::Vacant(e) = dbdir.dbdirs.entry((rel.spcnode, rel.dbnode)) {
                 // Didn't exist. Update dbdir
                 e.insert(false);
@@ -1729,29 +1772,50 @@ impl DatadirModification<'_> {
                 self.pending_directory_entries
                     .push((DirectoryKind::Db, dbdir.dbdirs.len()));
                 self.put(DBDIR_KEY, Value::Image(buf.into()));
+            }
+            let rel_dir_key = rel_tag_sparse_key(rel.spcnode, rel.dbnode, rel.relnode, rel.forknum);
+            // check if the rel_dir_key exists
+            if let Ok(buf) = self.get(rel_dir_key, ctx).await {
+                if !buf.is_empty() {
+                    return Err(RelationError::AlreadyExists);
+                }
+            }
+            self.put(rel_dir_key, Value::Image(Bytes::from_static(b"1")));
+            // TODO: update directory_entries_count, it seems to be a metrics
+        } else {
+            let rel_dir_key = rel_dir_to_key(rel.spcnode, rel.dbnode);
+            let mut rel_dir =
+                if let hash_map::Entry::Vacant(e) = dbdir.dbdirs.entry((rel.spcnode, rel.dbnode)) {
+                    // Didn't exist. Update dbdir
+                    e.insert(false);
+                    let buf = DbDirectory::ser(&dbdir).context("serialize db")?;
+                    self.pending_directory_entries
+                        .push((DirectoryKind::Db, dbdir.dbdirs.len()));
+                    self.put(DBDIR_KEY, Value::Image(buf.into()));
 
-                // and create the RelDirectory
-                RelDirectory::default()
-            } else {
-                // reldir already exists, fetch it
-                RelDirectory::des(&self.get(rel_dir_key, ctx).await.context("read db")?)
-                    .context("deserialize db")?
-            };
+                    // and create the RelDirectory
+                    RelDirectory::default()
+                } else {
+                    // reldir already exists, fetch it
+                    RelDirectory::des(&self.get(rel_dir_key, ctx).await.context("read db")?)
+                        .context("deserialize db")?
+                };
 
-        // Add the new relation to the rel directory entry, and write it back
-        if !rel_dir.rels.insert((rel.relnode, rel.forknum)) {
-            return Err(RelationError::AlreadyExists);
+            // Add the new relation to the rel directory entry, and write it back
+            if !rel_dir.rels.insert((rel.relnode, rel.forknum)) {
+                return Err(RelationError::AlreadyExists);
+            }
+
+            self.pending_directory_entries
+                .push((DirectoryKind::Rel, rel_dir.rels.len()));
+
+            self.put(
+                rel_dir_key,
+                Value::Image(Bytes::from(
+                    RelDirectory::ser(&rel_dir).context("serialize")?,
+                )),
+            );
         }
-
-        self.pending_directory_entries
-            .push((DirectoryKind::Rel, rel_dir.rels.len()));
-
-        self.put(
-            rel_dir_key,
-            Value::Image(Bytes::from(
-                RelDirectory::ser(&rel_dir).context("serialize")?,
-            )),
-        );
 
         // Put size
         let size_key = rel_size_to_key(rel);
@@ -1831,33 +1895,57 @@ impl DatadirModification<'_> {
         drop_relations: HashMap<(u32, u32), Vec<RelTag>>,
         ctx: &RequestContext,
     ) -> anyhow::Result<()> {
-        for ((spc_node, db_node), rel_tags) in drop_relations {
-            let dir_key = rel_dir_to_key(spc_node, db_node);
-            let buf = self.get(dir_key, ctx).await?;
-            let mut dir = RelDirectory::des(&buf)?;
+        if REL_STORE_V2 {
+            for ((spc_node, db_node), rel_tags) in drop_relations {
+                for rel_tag in rel_tags {
+                    let key =
+                        rel_tag_sparse_key(spc_node, db_node, rel_tag.relnode, rel_tag.forknum);
+                    if self.get(key, ctx).await.is_ok() {
+                        // remove the relation key
+                        self.put(key, Value::Image(Bytes::from_static(b""))); // put tombstone
 
-            let mut dirty = false;
-            for rel_tag in rel_tags {
-                if dir.rels.remove(&(rel_tag.relnode, rel_tag.forknum)) {
-                    dirty = true;
+                        // update logical size
+                        let size_key = rel_size_to_key(rel_tag);
+                        let old_size = self.get(size_key, ctx).await?.get_u32_le();
+                        self.pending_nblocks -= old_size as i64;
 
-                    // update logical size
-                    let size_key = rel_size_to_key(rel_tag);
-                    let old_size = self.get(size_key, ctx).await?.get_u32_le();
-                    self.pending_nblocks -= old_size as i64;
+                        // Remove entry from relation size cache
+                        self.tline.remove_cached_rel_size(&rel_tag);
 
-                    // Remove entry from relation size cache
-                    self.tline.remove_cached_rel_size(&rel_tag);
-
-                    // Delete size entry, as well as all blocks
-                    self.delete(rel_key_range(rel_tag));
+                        // Delete size entry, as well as all blocks
+                        self.delete(rel_key_range(rel_tag));
+                    }
                 }
             }
+        } else {
+            for ((spc_node, db_node), rel_tags) in drop_relations {
+                let dir_key = rel_dir_to_key(spc_node, db_node);
+                let buf = self.get(dir_key, ctx).await?;
+                let mut dir = RelDirectory::des(&buf)?;
 
-            if dirty {
-                self.put(dir_key, Value::Image(Bytes::from(RelDirectory::ser(&dir)?)));
-                self.pending_directory_entries
-                    .push((DirectoryKind::Rel, dir.rels.len()));
+                let mut dirty = false;
+                for rel_tag in rel_tags {
+                    if dir.rels.remove(&(rel_tag.relnode, rel_tag.forknum)) {
+                        dirty = true;
+
+                        // update logical size
+                        let size_key = rel_size_to_key(rel_tag);
+                        let old_size = self.get(size_key, ctx).await?.get_u32_le();
+                        self.pending_nblocks -= old_size as i64;
+
+                        // Remove entry from relation size cache
+                        self.tline.remove_cached_rel_size(&rel_tag);
+
+                        // Delete size entry, as well as all blocks
+                        self.delete(rel_key_range(rel_tag));
+                    }
+                }
+
+                if dirty {
+                    self.put(dir_key, Value::Image(Bytes::from(RelDirectory::ser(&dir)?)));
+                    self.pending_directory_entries
+                        .push((DirectoryKind::Rel, dir.rels.len()));
+                }
             }
         }
 
