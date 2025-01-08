@@ -730,7 +730,7 @@ impl Timeline {
         debug_dump::Memory {
             is_cancelled: self.is_cancelled(),
             peers_info_len: state.peers_info.0.len(),
-            walsenders: self.walsenders.get_all(),
+            walsenders: self.walsenders.get_all_public(),
             wal_backup_active: self.wal_backup_active.load(Ordering::Relaxed),
             active: self.broker_active.load(Ordering::Relaxed),
             num_computes: self.walreceivers.get_num() as u32,

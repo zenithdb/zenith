@@ -1,5 +1,6 @@
 //! Types used in safekeeper http API. Many of them are also reused internally.
 
+use pageserver_api::shard::ShardIdentity;
 use postgres_ffi::TimestampTz;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -143,8 +144,25 @@ pub type ConnectionId = u32;
 
 /// Serialize is used only for json'ing in API response. Also used internally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalSenderState {
+pub enum WalSenderState {
+    Vanilla(VanillaWalSenderState),
+    Interpreted(InterpretedWalSenderState),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VanillaWalSenderState {
     pub ttid: TenantTimelineId,
+    pub addr: SocketAddr,
+    pub conn_id: ConnectionId,
+    // postgres application_name
+    pub appname: Option<String>,
+    pub feedback: ReplicationFeedback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterpretedWalSenderState {
+    pub ttid: TenantTimelineId,
+    pub shard: ShardIdentity,
     pub addr: SocketAddr,
     pub conn_id: ConnectionId,
     // postgres application_name

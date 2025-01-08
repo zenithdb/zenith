@@ -192,7 +192,7 @@ async fn timeline_status_handler(request: Request<Body>) -> Result<Response<Body
         peer_horizon_lsn: inmem.peer_horizon_lsn,
         remote_consistent_lsn: inmem.remote_consistent_lsn,
         peers: tli.get_peers(conf).await,
-        walsenders: tli.get_walsenders().get_all(),
+        walsenders: tli.get_walsenders().get_all_public(),
         walreceivers: tli.get_walreceivers().get_all(),
     };
     json_response(StatusCode::OK, status)

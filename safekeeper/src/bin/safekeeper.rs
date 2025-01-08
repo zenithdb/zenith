@@ -207,6 +207,13 @@ struct Args {
     /// Also defines interval for eviction retries.
     #[arg(long, value_parser = humantime::parse_duration, default_value = DEFAULT_EVICTION_MIN_RESIDENT)]
     eviction_min_resident: Duration,
+    /// Enable fanning out WAL to different shards from the same reader
+    #[arg(long)]
+    wal_reader_fanout: bool,
+    /// Only fan out the WAL reader if the absoulte delta between the new requested position
+    /// and the current position of the reader is smaller than this value.
+    #[arg(long)]
+    max_delta_for_fanout: Option<u64>,
 }
 
 // Like PathBufValueParser, but allows empty string.
@@ -370,6 +377,8 @@ async fn main() -> anyhow::Result<()> {
         control_file_save_interval: args.control_file_save_interval,
         partial_backup_concurrency: args.partial_backup_concurrency,
         eviction_min_resident: args.eviction_min_resident,
+        wal_reader_fanout: args.wal_reader_fanout,
+        max_delta_for_fanout: args.max_delta_for_fanout,
     });
 
     // initialize sentry if SENTRY_DSN is provided

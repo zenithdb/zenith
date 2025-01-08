@@ -11,3 +11,4 @@ postgres_ffi.workspace = true
 pq_proto.workspace = true
 tokio.workspace = true
 utils.workspace = true
+pageserver_api.workspace = true

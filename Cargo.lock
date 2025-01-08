@@ -5532,6 +5532,7 @@ dependencies = [
  "crc32c",
  "criterion",
  "desim",
+ "env_logger",
  "fail",
  "futures",
  "hex",
@@ -5560,6 +5561,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "smallvec",
  "storage_broker",
  "strum",
  "strum_macros",
@@ -5585,6 +5587,7 @@ name = "safekeeper_api"
 version = "0.1.0"
 dependencies = [
  "const_format",
+ "pageserver_api",
  "postgres_ffi",
  "pq_proto",
  "serde",
