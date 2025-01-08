@@ -3231,14 +3231,6 @@ impl Timeline {
 
             let Some(ancestor_timeline) = timeline.ancestor_timeline.as_ref() else {
                 // Not fully retrieved but no ancestor timeline.
-
-                // Remove sparse keys from the keyspace so that it doesn't fire errors.
-                keyspace.remove_overlapping_with(&KeySpace {
-                    ranges: vec![SPARSE_RANGE],
-                });
-                if keyspace.is_empty() {
-                    break None;
-                }
                 break Some(keyspace);
             };
 
@@ -3263,6 +3255,21 @@ impl Timeline {
                 .get_ready_ancestor_timeline(ancestor_timeline, ctx)
                 .await?;
             timeline = &*timeline_owned;
+        };
+
+        // Remove sparse keys from the keyspace so that it doesn't fire errors.
+        let missing_keyspace = if let Some(missing_keyspace) = missing_keyspace {
+            let mut missing_keyspace = missing_keyspace;
+            missing_keyspace.remove_overlapping_with(&KeySpace {
+                ranges: vec![SPARSE_RANGE],
+            });
+            if missing_keyspace.is_empty() {
+                None
+            } else {
+                Some(missing_keyspace)
+            }
+        } else {
+            None
         };
 
         if let Some(missing_keyspace) = missing_keyspace {
