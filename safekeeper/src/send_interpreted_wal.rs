@@ -268,7 +268,8 @@ impl InterpretedWalReader {
         loop {
             tokio::select! {
                 // Main branch for reading WAL and forwarding it
-                wal = self.wal_stream.next() => {
+                wal_or_reset = self.wal_stream.next() => {
+                    let wal = wal_or_reset.map(|wor| wor.get_wal().expect("reset handled in select branch below"));
                     let WalBytes {
                         wal,
                         wal_start_lsn: _,
@@ -419,7 +420,7 @@ impl InterpretedWalReader {
                         senders.push(ShardSenderState { sender_id: new_sender_id, tx: sender, next_record_lsn: start_pos});
                         let current_pos = self.state.read().unwrap().current_position().unwrap();
                         if start_pos < current_pos {
-                            self.wal_stream.reset(start_pos);
+                            self.wal_stream.reset(start_pos).await;
                             wal_decoder = WalStreamDecoder::new(start_pos, self.pg_version);
                         }
 

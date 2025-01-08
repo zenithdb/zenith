@@ -34,17 +34,17 @@ struct PositionedWalReader {
 
 /// A streaming WAL reader wrapper which can be reset while running
 pub(crate) struct StreamingWalReader {
-    stream: BoxStream<'static, anyhow::Result<WalBytes>>,
+    stream: BoxStream<'static, WalOrReset>,
     start_changed_tx: tokio::sync::watch::Sender<Lsn>,
 }
 
-enum WalOrReset {
+pub(crate) enum WalOrReset {
     Wal(anyhow::Result<WalBytes>),
     Reset(Lsn),
 }
 
 impl WalOrReset {
-    fn get_wal(self) -> Option<anyhow::Result<WalBytes>> {
+    pub(crate) fn get_wal(self) -> Option<anyhow::Result<WalBytes>> {
         match self {
             WalOrReset::Wal(wal) => Some(wal),
             WalOrReset::Reset(_) => None,
@@ -79,8 +79,6 @@ impl StreamingWalReader {
 
         // When a change notification is received while polling the internal
         // reader, stop polling the read future and service the change.
-        // To make this work with `unfold`, a no-op [`WalOrReset::Reset`]
-        // record is produced and filtered out.
         let stream = futures::stream::unfold(state, |mut state| async move {
             let mut change_rx = state.start_changed_rx.take().unwrap();
 
@@ -102,7 +100,6 @@ impl StreamingWalReader {
 
             Some((wal_or_reset, state))
         })
-        .filter_map(|wal_or_reset| async move { wal_or_reset.get_wal() })
         .boxed();
 
         Self {
@@ -112,13 +109,27 @@ impl StreamingWalReader {
     }
 
     /// Reset the stream to a given position.
-    pub(crate) fn reset(&mut self, start: Lsn) {
+    pub(crate) async fn reset(&mut self, start: Lsn) {
         self.start_changed_tx.send(start).unwrap();
+        while let Some(wal_or_reset) = self.stream.next().await {
+            match wal_or_reset {
+                WalOrReset::Reset(at) => {
+                    // Stream confirmed the reset.
+                    // There may only one ongoing reset at any given time,
+                    // hence the assertion.
+                    assert_eq!(at, start);
+                    break;
+                }
+                WalOrReset::Wal(_) => {
+                    // Ignore wal generated before reset was handled
+                }
+            }
+        }
     }
 }
 
 impl Stream for StreamingWalReader {
-    type Item = anyhow::Result<WalBytes>;
+    type Item = WalOrReset;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.stream).poll_next(cx)
@@ -252,8 +263,8 @@ mod tests {
         );
 
         let mut before_reset = Vec::new();
-        while let Some(wal) = streaming_wal_reader.next().await {
-            let wal = wal.unwrap();
+        while let Some(wor) = streaming_wal_reader.next().await {
+            let wal = wor.get_wal().unwrap().unwrap();
             let stop = wal.available_wal_end_lsn == wal.wal_end_lsn;
             before_reset.push(wal);
 
@@ -264,13 +275,13 @@ mod tests {
 
         tracing::info!("Resetting the WAL stream ...");
 
-        streaming_wal_reader.reset(start_lsn);
+        streaming_wal_reader.reset(start_lsn).await;
 
         tracing::info!("Doing second round of reads ...");
 
         let mut after_reset = Vec::new();
-        while let Some(wal) = streaming_wal_reader.next().await {
-            let wal = wal.unwrap();
+        while let Some(wor) = streaming_wal_reader.next().await {
+            let wal = wor.get_wal().unwrap().unwrap();
             let stop = wal.available_wal_end_lsn == wal.wal_end_lsn;
             after_reset.push(wal);
 
