@@ -9,7 +9,9 @@ mod index_part;
 mod key;
 mod layer_map_analyzer;
 mod layers;
+mod page_trace;
 
+use page_trace::PageTraceCmd;
 use std::{
     str::FromStr,
     time::{Duration, SystemTime},
@@ -64,6 +66,7 @@ enum Commands {
     Layer(LayerCmd),
     /// Debug print a hex key found from logs
     Key(key::DescribeKeyCommand),
+    PageTrace(PageTraceCmd),
 }
 
 /// Read and update pageserver metadata file
@@ -183,6 +186,9 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
         }
         Commands::Key(dkc) => dkc.execute(),
+        Commands::PageTrace(cmd) => {
+            page_trace::main(&cmd).await?;
+        }
     };
     Ok(())
 }

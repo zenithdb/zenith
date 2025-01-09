@@ -67,6 +67,7 @@ use crate::tenant::PageReconstructError;
 use crate::tenant::Timeline;
 use crate::{basebackup, timed_after_cancellation};
 use pageserver_api::key::rel_block_to_key;
+use pageserver_api::models::PageTraceEvent;
 use pageserver_api::reltag::{BlockNumber, RelTag, SlruKind};
 use postgres_ffi::pg_constants::DEFAULTTABLESPACE_OID;
 use postgres_ffi::BLCKSZ;
@@ -1660,6 +1661,18 @@ impl PageServerHandler {
         timeline
             .query_metrics
             .observe_getpage_batch_start(requests.len());
+
+        if let Some(page_trace) = timeline.page_trace.load().as_ref() {
+            let time = SystemTime::now();
+            for (rel_tag, blknum, _timer) in &requests {
+                let key = rel_block_to_key(*rel_tag, *blknum).to_compact();
+                page_trace.send(PageTraceEvent {
+                    key,
+                    effective_lsn,
+                    time,
+                })
+            }
+        }
 
         let results = timeline
             .get_rel_page_at_lsn_batched(

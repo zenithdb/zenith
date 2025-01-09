@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+bincode.workspace = true
 camino.workspace = true
 clap = { workspace = true, features = ["string"] }
 humantime.workspace = true

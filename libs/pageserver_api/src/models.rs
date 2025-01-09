@@ -29,7 +29,7 @@ use utils::{
 };
 
 use crate::{
-    key::Key,
+    key::{CompactKey, Key},
     reltag::RelTag,
     shard::{ShardCount, ShardStripeSize, TenantShardId},
 };
@@ -1766,6 +1766,13 @@ impl PagestreamBeMessage {
             Self::GetSlruSegment(_) => "GetSlruSegment",
         }
     }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct PageTraceEvent {
+    pub key: CompactKey,
+    pub effective_lsn: Lsn,
+    pub time: SystemTime,
 }
 
 #[cfg(test)]
