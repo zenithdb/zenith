@@ -1530,6 +1530,7 @@ async fn timeline_page_trace_handler(
     let tenant_shard_id: TenantShardId = parse_request_param(&request, "tenant_shard_id")?;
     let timeline_id: TimelineId = parse_request_param(&request, "timeline_id")?;
     let state = get_state(&request);
+    check_permission(&request, Some(tenant_shard_id.tenant_id))?;
 
     let size_limit =
         parse_query_param::<_, u64>(&request, "size_limit_bytes")?.unwrap_or(1024 * 1024);
