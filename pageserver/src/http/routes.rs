@@ -1554,6 +1554,9 @@ async fn timeline_page_trace_handler(
         let timeout = deadline.saturating_duration_since(Instant::now());
         tokio::select! {
             event = trace_rx.recv() => {
+                let Some(event) = event else {
+                    break; // should never happen, sender doesn't close
+                };
                 buffer.extend(bincode::serialize(&event).unwrap());
 
                 if buffer.len() >= size_limit as usize {

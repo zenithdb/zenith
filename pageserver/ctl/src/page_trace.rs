@@ -29,7 +29,7 @@ pub(crate) async fn main(cmd: &PageTraceCmd) -> anyhow::Result<()> {
     })?;
 
     loop {
-        let mut event_bytes = vec![0; event_size as usize + 1];
+        let mut event_bytes = vec![0; event_size as usize];
         if let Err(e) = reader.read_exact(&mut event_bytes) {
             if e.kind() == ErrorKind::UnexpectedEof {
                 eprintln!("End of input, read {} keys", events.len());
