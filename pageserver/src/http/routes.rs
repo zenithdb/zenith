@@ -97,8 +97,8 @@ use crate::tenant::{LogicalSizeCalculationCause, PageReconstructError};
 use crate::DEFAULT_PG_VERSION;
 use crate::{disk_usage_eviction_task, tenant};
 use pageserver_api::models::{
-    CompactInfoResponse, StatusResponse, TenantConfigRequest, TenantInfo, TimelineCreateRequest,
-    TimelineGcRequest, TimelineInfo,
+    StatusResponse, TenantConfigRequest, TenantInfo, TimelineCreateRequest, TimelineGcRequest,
+    TimelineInfo,
 };
 use utils::{
     auth::SwappableJwtAuth,
@@ -2052,15 +2052,7 @@ async fn timeline_compact_info_handler(
         let tenant = state
             .tenant_manager
             .get_attached_tenant_shard(tenant_shard_id)?;
-        let res = tenant.get_scheduled_compaction_tasks(timeline_id);
-        let mut resp = Vec::new();
-        for item in res {
-            resp.push(CompactInfoResponse {
-                compact_key_range: item.compact_key_range,
-                compact_lsn_range: item.compact_lsn_range,
-                sub_compaction: item.sub_compaction,
-            });
-        }
+        let resp = tenant.get_scheduled_compaction_tasks(timeline_id);
         json_response(StatusCode::OK, resp)
     }
     .instrument(info_span!("timeline_compact_info", tenant_id = %tenant_shard_id.tenant_id, shard_id = %tenant_shard_id.shard_slug(), %timeline_id))

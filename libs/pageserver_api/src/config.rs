@@ -301,6 +301,11 @@ pub struct TenantConfigToml {
     pub timeline_offloading: bool,
 
     pub wal_receiver_protocol_override: Option<PostgresClientProtocol>,
+
+    /// gc-compaction related configs
+    pub gc_compaction_enabled: bool,
+    pub gc_compaction_initial_threshold_mb: u64,
+    pub gc_compaction_ratio_percent: u64,
 }
 
 pub mod defaults {
@@ -494,6 +499,9 @@ pub mod tenant_conf_defaults {
     // By default ingest enough WAL for two new L0 layers before checking if new image
     // image layers should be created.
     pub const DEFAULT_IMAGE_LAYER_CREATION_CHECK_THRESHOLD: u8 = 2;
+    pub const DEFAULT_GC_COMPACTION_ENABLED: bool = false;
+    pub const DEFAULT_GC_COMPACTION_INITIAL_THRESHOLD_MB: u64 = 10240;
+    pub const DEFAULT_GC_COMPACTION_RATIO_PERCENT: u64 = 100;
 }
 
 impl Default for TenantConfigToml {
@@ -538,6 +546,9 @@ impl Default for TenantConfigToml {
             lsn_lease_length_for_ts: LsnLease::DEFAULT_LENGTH_FOR_TS,
             timeline_offloading: false,
             wal_receiver_protocol_override: None,
+            gc_compaction_enabled: DEFAULT_GC_COMPACTION_ENABLED,
+            gc_compaction_initial_threshold_mb: DEFAULT_GC_COMPACTION_INITIAL_THRESHOLD_MB,
+            gc_compaction_ratio_percent: DEFAULT_GC_COMPACTION_RATIO_PERCENT,
         }
     }
 }
