@@ -55,7 +55,7 @@ async fn serve(port: u16, compute: Arc<ComputeNode>) {
         .route("/database_schema", get(database_schema::get_schema_dump))
         .route("/dbs_and_roles", get(dbs_and_roles::get_catalog_objects))
         .route(
-            "/extension_server/*filename",
+            "/extension_server/{*filename}",
             post(extension_server::download_extension),
         )
         .route("/extensions", post(extensions::install_extension))
