@@ -80,7 +80,7 @@ def test_compute_catalog(neon_simple_env: NeonEnv):
         ddl = client.database_schema(database=test_db["name"])
 
         # Check that it looks like a valid PostgreSQL dump
-        assert "-- PostgreSQL database dump" in ddl
+        assert "-- PostgreSQL database dump complete" in ddl
 
         # Check that it doesn't contain health_check and migration traces.
         # They are only created in system `postgres` database, so by checking
