@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use ed25519_dalek::SigningKey;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use p256::ecdsa::SigningKey;
-use p256::elliptic_curve::JwkEcKey;
+use jose_jwk::jose_b64;
 use rand::rngs::OsRng;
 use tokio::net::{lookup_host, TcpStream};
 use tracing::field::display;
@@ -354,9 +354,15 @@ impl PoolingBackend {
     }
 }
 
-fn create_random_jwk() -> (SigningKey, JwkEcKey) {
-    let key = SigningKey::random(&mut OsRng);
-    let jwk = p256::PublicKey::from(key.verifying_key()).to_jwk();
+fn create_random_jwk() -> (SigningKey, jose_jwk::Key) {
+    let key = SigningKey::generate(&mut OsRng);
+
+    let jwk = jose_jwk::Key::Okp(jose_jwk::Okp {
+        crv: jose_jwk::OkpCurves::Ed25519,
+        x: jose_b64::serde::Bytes::from(key.verifying_key().to_bytes().to_vec()),
+        d: None,
+    });
+
     (key, jwk)
 }
 

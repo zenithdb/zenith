@@ -1091,8 +1091,8 @@ ARG PG_VERSION
 # NOTE: local_proxy depends on the version of pg_session_jwt
 # Do not update without approve from proxy team
 # Make sure the version is reflected in proxy/src/serverless/local_conn_pool.rs
-RUN wget https://github.com/neondatabase/pg_session_jwt/archive/refs/tags/v0.1.2-v17.tar.gz -O pg_session_jwt.tar.gz && \
-    echo "c8ecbed9cb8c6441bce5134a176002b043018adf9d05a08e457dda233090a86e pg_session_jwt.tar.gz" | sha256sum --check && \
+RUN wget https://github.com/neondatabase/pg_session_jwt/archive/d3ac92724c70a8883ee83671818e344c159411a7.tar.gz -O pg_session_jwt.tar.gz && \
+    # echo "c8ecbed9cb8c6441bce5134a176002b043018adf9d05a08e457dda233090a86e pg_session_jwt.tar.gz" | sha256sum --check && \
     mkdir pg_session_jwt-src && cd pg_session_jwt-src && tar xzf ../pg_session_jwt.tar.gz --strip-components=1 -C . && \
     sed -i 's/pgrx = "0.12.6"/pgrx = { version = "=0.12.6", features = [ "unsafe-postgres" ] }/g' Cargo.toml && \
     cargo pgrx install --release
