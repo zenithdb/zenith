@@ -65,14 +65,15 @@ pub enum ComputeStatus {
 
 impl Display for ComputeStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // snake_case matches the serde implementation
         match self {
             ComputeStatus::Empty => f.write_str("empty"),
-            ComputeStatus::ConfigurationPending => f.write_str("configuration-pending"),
+            ComputeStatus::ConfigurationPending => f.write_str("configuration_pending"),
             ComputeStatus::Init => f.write_str("init"),
             ComputeStatus::Running => f.write_str("running"),
             ComputeStatus::Configuration => f.write_str("configuration"),
             ComputeStatus::Failed => f.write_str("failed"),
-            ComputeStatus::TerminationPending => f.write_str("termination-pending"),
+            ComputeStatus::TerminationPending => f.write_str("termination_pending"),
             ComputeStatus::Terminated => f.write_str("terminated"),
         }
     }
