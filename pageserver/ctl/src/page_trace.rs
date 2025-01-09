@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use camino::Utf8PathBuf;
 use clap::Parser;
-use pageserver_api::key::{CompactKey, Key};
+use pageserver_api::key::Key;
 use pageserver_api::models::PageTraceEvent;
 use pageserver_api::reltag::RelTag;
 use utils::lsn::Lsn;
@@ -23,7 +23,7 @@ pub(crate) async fn main(cmd: &PageTraceCmd) -> anyhow::Result<()> {
     let mut events = Vec::new();
 
     let event_size = bincode::serialized_size(&PageTraceEvent {
-        key: (0 as i128).into(),
+        key: 0.into(),
         effective_lsn: Lsn(0),
         time: SystemTime::now(),
     })?;
