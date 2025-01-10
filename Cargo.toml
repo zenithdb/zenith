@@ -186,7 +186,7 @@ tokio-tar = "0.3"
 tokio-util = { version = "0.7.10", features = ["io", "rt"] }
 toml = "0.8"
 toml_edit = "0.22"
-tonic = {version = "0.12.3", features = ["tls", "tls-roots"]}
+tonic = {version = "0.12.3", default-features = false, features = ["channel", "tls", "tls-roots"]}
 tower = { version = "0.5.2", default-features = false }
 tower-http = { version = "0.6.2", features = ["request-id", "trace"] }
 tower-service = "0.3.3"
