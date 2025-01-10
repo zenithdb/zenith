@@ -522,14 +522,15 @@ class NeonLocalCli(AbstractNeonCli):
         safekeepers: list[int] | None = None,
         remote_ext_config: str | None = None,
         pageserver_id: int | None = None,
-        allow_multiple=False,
+        allow_multiple: bool = False,
         basebackup_request_tries: int | None = None,
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         args = [
             "endpoint",
             "start",
         ]
-        extra_env_vars = {}
+        extra_env_vars = env or {}
         if basebackup_request_tries is not None:
             extra_env_vars["NEON_COMPUTE_TESTING_BASEBACKUP_TRIES"] = str(basebackup_request_tries)
         if remote_ext_config is not None:

@@ -33,7 +33,7 @@ jobs:
           # SC2086 - Double quote to prevent globbing and word splitting. - https://www.shellcheck.net/wiki/SC2086
           SHELLCHECK_OPTS: --exclude=SC2046,SC2086
         with:
-          fail_on_error: true
+          fail_level: error
           filter_mode: nofilter
           level: error
 

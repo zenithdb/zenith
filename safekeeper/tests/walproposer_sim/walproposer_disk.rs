@@ -18,7 +18,7 @@ impl DiskWalProposer {
                 internal_available_lsn: Lsn(0),
                 prev_lsn: Lsn(0),
                 disk: BlockStorage::new(),
-                wal_generator: WalGenerator::new(LogicalMessageGenerator::new(c"", &[])),
+                wal_generator: WalGenerator::new(LogicalMessageGenerator::new(c"", &[]), Lsn(0)),
             }),
         })
     }

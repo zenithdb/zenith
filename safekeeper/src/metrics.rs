@@ -455,6 +455,7 @@ pub struct FullTimelineInfo {
 
 /// Collects metrics for all active timelines.
 pub struct TimelineCollector {
+    global_timelines: Arc<GlobalTimelines>,
     descs: Vec<Desc>,
     commit_lsn: GenericGaugeVec<AtomicU64>,
     backup_lsn: GenericGaugeVec<AtomicU64>,
@@ -478,14 +479,8 @@ pub struct TimelineCollector {
     active_timelines_count: IntGauge,
 }
 
-impl Default for TimelineCollector {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl TimelineCollector {
-    pub fn new() -> TimelineCollector {
+    pub fn new(global_timelines: Arc<GlobalTimelines>) -> TimelineCollector {
         let mut descs = Vec::new();
 
         let commit_lsn = GenericGaugeVec::new(
@@ -676,6 +671,7 @@ impl TimelineCollector {
         descs.extend(active_timelines_count.desc().into_iter().cloned());
 
         TimelineCollector {
+            global_timelines,
             descs,
             commit_lsn,
             backup_lsn,
@@ -728,17 +724,18 @@ impl Collector for TimelineCollector {
         self.written_wal_seconds.reset();
         self.flushed_wal_seconds.reset();
 
-        let timelines_count = GlobalTimelines::get_all().len();
+        let timelines_count = self.global_timelines.get_all().len();
         let mut active_timelines_count = 0;
 
         // Prometheus Collector is sync, and data is stored under async lock. To
         // bridge the gap with a crutch, collect data in spawned thread with
         // local tokio runtime.
+        let global_timelines = self.global_timelines.clone();
         let infos = std::thread::spawn(|| {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .expect("failed to create rt");
-            rt.block_on(collect_timeline_metrics())
+            rt.block_on(collect_timeline_metrics(global_timelines))
         })
         .join()
         .expect("collect_timeline_metrics thread panicked");
@@ -857,9 +854,9 @@ impl Collector for TimelineCollector {
     }
 }
 
-async fn collect_timeline_metrics() -> Vec<FullTimelineInfo> {
+async fn collect_timeline_metrics(global_timelines: Arc<GlobalTimelines>) -> Vec<FullTimelineInfo> {
     let mut res = vec![];
-    let active_timelines = GlobalTimelines::get_global_broker_active_set().get_all();
+    let active_timelines = global_timelines.get_global_broker_active_set().get_all();
 
     for tli in active_timelines {
         if let Some(info) = tli.info_for_metrics().await {

@@ -27,6 +27,8 @@ from werkzeug.wrappers.response import Response
 if TYPE_CHECKING:
     from typing import Any
 
+    from fixtures.httpserver import ListenAddress
+
 
 # TODO: collect all of the env setup *AFTER* removal of RemoteStorageKind.NOOP
 
@@ -34,7 +36,7 @@ if TYPE_CHECKING:
 def test_metric_collection(
     httpserver: HTTPServer,
     neon_env_builder: NeonEnvBuilder,
-    httpserver_listen_address,
+    httpserver_listen_address: ListenAddress,
 ):
     (host, port) = httpserver_listen_address
     metric_collection_endpoint = f"http://{host}:{port}/billing/api/v1/usage_events"
@@ -195,7 +197,7 @@ def test_metric_collection(
 def test_metric_collection_cleans_up_tempfile(
     httpserver: HTTPServer,
     neon_env_builder: NeonEnvBuilder,
-    httpserver_listen_address,
+    httpserver_listen_address: ListenAddress,
 ):
     (host, port) = httpserver_listen_address
     metric_collection_endpoint = f"http://{host}:{port}/billing/api/v1/usage_events"

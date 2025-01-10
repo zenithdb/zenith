@@ -31,9 +31,9 @@ use pageserver_api::{
     },
     keyspace::{KeySpaceAccum, KeySpaceRandomAccum, SparseKeyPartitioning},
     models::{
-        CompactionAlgorithm, CompactionAlgorithmSettings, DownloadRemoteLayersTaskInfo,
-        DownloadRemoteLayersTaskSpawnRequest, EvictionPolicy, InMemoryLayerInfo, LayerMapInfo,
-        LsnLease, TimelineState,
+        CompactKeyRange, CompactLsnRange, CompactionAlgorithm, CompactionAlgorithmSettings,
+        DownloadRemoteLayersTaskInfo, DownloadRemoteLayersTaskSpawnRequest, EvictionPolicy,
+        InMemoryLayerInfo, LayerMapInfo, LsnLease, TimelineState,
     },
     reltag::BlockNumber,
     shard::{ShardIdentity, ShardNumber, TenantShardId},
@@ -780,46 +780,33 @@ pub(crate) enum CompactFlags {
 #[serde_with::serde_as]
 #[derive(Debug, Clone, serde::Deserialize)]
 pub(crate) struct CompactRequest {
-    pub compact_range: Option<CompactRange>,
-    pub compact_below_lsn: Option<Lsn>,
+    pub compact_key_range: Option<CompactKeyRange>,
+    pub compact_lsn_range: Option<CompactLsnRange>,
     /// Whether the compaction job should be scheduled.
     #[serde(default)]
     pub scheduled: bool,
     /// Whether the compaction job should be split across key ranges.
     #[serde(default)]
     pub sub_compaction: bool,
-}
-
-#[serde_with::serde_as]
-#[derive(Debug, Clone, serde::Deserialize)]
-pub(crate) struct CompactRange {
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    pub start: Key,
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    pub end: Key,
-}
-
-impl From<Range<Key>> for CompactRange {
-    fn from(range: Range<Key>) -> Self {
-        CompactRange {
-            start: range.start,
-            end: range.end,
-        }
-    }
+    /// Max job size for each subcompaction job.
+    pub sub_compaction_max_job_size_mb: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CompactOptions {
     pub flags: EnumSet<CompactFlags>,
     /// If set, the compaction will only compact the key range specified by this option.
-    /// This option is only used by GC compaction.
-    pub compact_range: Option<CompactRange>,
-    /// If set, the compaction will only compact the LSN below this value.
-    /// This option is only used by GC compaction.
-    pub compact_below_lsn: Option<Lsn>,
+    /// This option is only used by GC compaction. For the full explanation, see [`compaction::GcCompactJob`].
+    pub compact_key_range: Option<CompactKeyRange>,
+    /// If set, the compaction will only compact the LSN within this value.
+    /// This option is only used by GC compaction. For the full explanation, see [`compaction::GcCompactJob`].
+    pub compact_lsn_range: Option<CompactLsnRange>,
     /// Enable sub-compaction (split compaction job across key ranges).
     /// This option is only used by GC compaction.
     pub sub_compaction: bool,
+    /// Set job size for the GC compaction.
+    /// This option is only used by GC compaction.
+    pub sub_compaction_max_job_size_mb: Option<u64>,
 }
 
 impl std::fmt::Debug for Timeline {
@@ -1641,9 +1628,10 @@ impl Timeline {
             cancel,
             CompactOptions {
                 flags,
-                compact_range: None,
-                compact_below_lsn: None,
+                compact_key_range: None,
+                compact_lsn_range: None,
                 sub_compaction: false,
+                sub_compaction_max_job_size_mb: None,
             },
             ctx,
         )
@@ -4019,8 +4007,11 @@ impl Timeline {
             // NB: there are two callers, one is the compaction task, of which there is only one per struct Tenant and hence Timeline.
             // The other is the initdb optimization in flush_frozen_layer, used by `boostrap_timeline`, which runs before `.activate()`
             // and hence before the compaction task starts.
+            // Note that there are a third "caller" that will take the `partitioning` lock. It is `gc_compaction_split_jobs` for
+            // gc-compaction where it uses the repartition data to determine the split jobs. In the future, it might use its own
+            // heuristics, but for now, we should allow concurrent access to it and let the caller retry compaction.
             return Err(CompactionError::Other(anyhow!(
-                "repartition() called concurrently, this should not happen"
+                "repartition() called concurrently, this is rare and a retry should be fine"
             )));
         };
         let ((dense_partition, sparse_partition), partition_lsn) = &*partitioning_guard;
@@ -4868,6 +4859,7 @@ impl Timeline {
 
     async fn find_gc_time_cutoff(
         &self,
+        now: SystemTime,
         pitr: Duration,
         cancel: &CancellationToken,
         ctx: &RequestContext,
@@ -4875,7 +4867,6 @@ impl Timeline {
         debug_assert_current_span_has_tenant_and_timeline_id();
         if self.shard_identity.is_shard_zero() {
             // Shard Zero has SLRU data and can calculate the PITR time -> LSN mapping itself
-            let now = SystemTime::now();
             let time_range = if pitr == Duration::ZERO {
                 humantime::parse_duration(DEFAULT_PITR_INTERVAL).expect("constant is invalid")
             } else {
@@ -4961,6 +4952,7 @@ impl Timeline {
     #[instrument(skip_all, fields(timeline_id=%self.timeline_id))]
     pub(super) async fn find_gc_cutoffs(
         &self,
+        now: SystemTime,
         space_cutoff: Lsn,
         pitr: Duration,
         cancel: &CancellationToken,
@@ -4988,7 +4980,7 @@ impl Timeline {
         // - if PITR interval is set, then this is our cutoff.
         // - if PITR interval is not set, then we do a lookup
         //   based on DEFAULT_PITR_INTERVAL, so that size-based retention does not result in keeping history around permanently on idle databases.
-        let time_cutoff = self.find_gc_time_cutoff(pitr, cancel, ctx).await?;
+        let time_cutoff = self.find_gc_time_cutoff(now, pitr, cancel, ctx).await?;
 
         Ok(match (pitr, time_cutoff) {
             (Duration::ZERO, Some(time_cutoff)) => {
@@ -5816,7 +5808,7 @@ enum OpenLayerAction {
     None,
 }
 
-impl<'a> TimelineWriter<'a> {
+impl TimelineWriter<'_> {
     async fn handle_open_layer_action(
         &mut self,
         at: Lsn,

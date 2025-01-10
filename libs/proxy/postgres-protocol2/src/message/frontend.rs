@@ -3,7 +3,6 @@
 
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{Buf, BufMut, BytesMut};
-use std::convert::TryFrom;
 use std::error::Error;
 use std::io;
 use std::marker;

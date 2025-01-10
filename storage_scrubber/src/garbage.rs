@@ -459,12 +459,10 @@ pub async fn get_timeline_objects(
     Ok(list.keys)
 }
 
-const MAX_KEYS_PER_DELETE: usize = 1000;
-
 /// Drain a buffer of keys into DeleteObjects requests
 ///
 /// If `drain` is true, drains keys completely; otherwise stops when <
-/// MAX_KEYS_PER_DELETE keys are left.
+/// `max_keys_per_delete`` keys are left.
 /// `num_deleted` returns number of deleted keys.
 async fn do_delete(
     remote_client: &GenericRemoteStorage,
@@ -474,9 +472,10 @@ async fn do_delete(
     progress_tracker: &mut DeletionProgressTracker,
 ) -> anyhow::Result<()> {
     let cancel = CancellationToken::new();
-    while (!keys.is_empty() && drain) || (keys.len() >= MAX_KEYS_PER_DELETE) {
+    let max_keys_per_delete = remote_client.max_keys_per_delete();
+    while (!keys.is_empty() && drain) || (keys.len() >= max_keys_per_delete) {
         let request_keys =
-            keys.split_off(keys.len() - (std::cmp::min(MAX_KEYS_PER_DELETE, keys.len())));
+            keys.split_off(keys.len() - (std::cmp::min(max_keys_per_delete, keys.len())));
 
         let request_keys: Vec<RemotePath> = request_keys.into_iter().map(|o| o.key).collect();
 
@@ -617,7 +616,7 @@ pub async fn purge_garbage(
         }
 
         objects_to_delete.append(&mut object_list);
-        if objects_to_delete.len() >= MAX_KEYS_PER_DELETE {
+        if objects_to_delete.len() >= remote_client.max_keys_per_delete() {
             do_delete(
                 &remote_client,
                 &mut objects_to_delete,

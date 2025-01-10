@@ -55,3 +55,17 @@ class EndpointHttpClient(requests.Session):
         res = self.get(f"http://localhost:{self.port}/metrics")
         res.raise_for_status()
         return res.text
+
+    def configure_failpoints(self, *args: tuple[str, str]) -> None:
+        body: list[dict[str, str]] = []
+
+        for fp in args:
+            body.append(
+                {
+                    "name": fp[0],
+                    "action": fp[1],
+                }
+            )
+
+        res = self.post(f"http://localhost:{self.port}/failpoints", json=body)
+        res.raise_for_status()

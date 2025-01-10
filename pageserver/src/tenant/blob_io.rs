@@ -35,7 +35,7 @@ pub struct CompressionInfo {
     pub compressed_size: Option<usize>,
 }
 
-impl<'a> BlockCursor<'a> {
+impl BlockCursor<'_> {
     /// Read a blob into a new buffer.
     pub async fn read_blob(
         &self,

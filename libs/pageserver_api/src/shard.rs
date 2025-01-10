@@ -173,7 +173,11 @@ impl ShardIdentity {
 
     /// Return true if the key should be stored on all shards, not just one.
     pub fn is_key_global(&self, key: &Key) -> bool {
-        if key.is_slru_block_key() || key.is_slru_segment_size_key() || key.is_aux_file_key() {
+        if key.is_slru_block_key()
+            || key.is_slru_segment_size_key()
+            || key.is_aux_file_key()
+            || key.is_slru_dir_key()
+        {
             // Special keys that are only stored on shard 0
             false
         } else if key.is_rel_block_key() {

@@ -10,7 +10,6 @@ use tracing::info;
 
 use super::backend::ComputeCredentialKeys;
 use super::{AuthError, PasswordHackPayload};
-use crate::config::TlsServerEndPoint;
 use crate::context::RequestContext;
 use crate::control_plane::AuthSecret;
 use crate::intern::EndpointIdInt;
@@ -18,6 +17,7 @@ use crate::sasl;
 use crate::scram::threadpool::ThreadPool;
 use crate::scram::{self};
 use crate::stream::{PqStream, Stream};
+use crate::tls::TlsServerEndPoint;
 
 /// Every authentication selector is supposed to implement this trait.
 pub(crate) trait AuthMethod {

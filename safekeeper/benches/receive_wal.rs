@@ -1,11 +1,7 @@
 //! WAL ingestion benchmarks.
 
-#[path = "benchutils.rs"]
-mod benchutils;
-
 use std::io::Write as _;
 
-use benchutils::Env;
 use bytes::BytesMut;
 use camino_tempfile::tempfile;
 use criterion::{criterion_group, criterion_main, BatchSize, Bencher, Criterion};
@@ -16,6 +12,7 @@ use safekeeper::receive_wal::{self, WalAcceptor};
 use safekeeper::safekeeper::{
     AcceptorProposerMessage, AppendRequest, AppendRequestHeader, ProposerAcceptorMessage,
 };
+use safekeeper::test_utils::Env;
 use tokio::io::AsyncWriteExt as _;
 use utils::id::{NodeId, TenantTimelineId};
 use utils::lsn::Lsn;
@@ -76,12 +73,15 @@ fn bench_process_msg(c: &mut Criterion) {
         assert!(size >= prefixlen);
         let message = vec![0; size - prefixlen];
 
-        let walgen = &mut WalGenerator::new(LogicalMessageGenerator::new(prefix, &message));
+        let walgen = &mut WalGenerator::new(LogicalMessageGenerator::new(prefix, &message), Lsn(0));
 
         // Set up the Safekeeper.
         let env = Env::new(fsync)?;
-        let mut safekeeper =
-            runtime.block_on(env.make_safekeeper(NodeId(1), TenantTimelineId::generate()))?;
+        let mut safekeeper = runtime.block_on(env.make_safekeeper(
+            NodeId(1),
+            TenantTimelineId::generate(),
+            Lsn(0),
+        ))?;
 
         b.iter_batched_ref(
             // Pre-construct WAL records and requests. Criterion will batch them.
@@ -134,7 +134,8 @@ fn bench_wal_acceptor(c: &mut Criterion) {
         let runtime = tokio::runtime::Runtime::new()?; // needs multithreaded
 
         let env = Env::new(fsync)?;
-        let walgen = &mut WalGenerator::new(LogicalMessageGenerator::new(c"prefix", b"message"));
+        let walgen =
+            &mut WalGenerator::new(LogicalMessageGenerator::new(c"prefix", b"message"), Lsn(0));
 
         // Create buffered channels that can fit all requests, to avoid blocking on channels.
         let (msg_tx, msg_rx) = tokio::sync::mpsc::channel(n);
@@ -145,7 +146,7 @@ fn bench_wal_acceptor(c: &mut Criterion) {
             // TODO: WalAcceptor doesn't actually need a full timeline, only
             // Safekeeper::process_msg(). Consider decoupling them to simplify the setup.
             let tli = env
-                .make_timeline(NodeId(1), TenantTimelineId::generate())
+                .make_timeline(NodeId(1), TenantTimelineId::generate(), Lsn(0))
                 .await?
                 .wal_residence_guard()
                 .await?;
@@ -239,7 +240,7 @@ fn bench_wal_acceptor_throughput(c: &mut Criterion) {
         assert!(size >= prefixlen);
         let message = vec![0; size - prefixlen];
 
-        let walgen = &mut WalGenerator::new(LogicalMessageGenerator::new(prefix, &message));
+        let walgen = &mut WalGenerator::new(LogicalMessageGenerator::new(prefix, &message), Lsn(0));
 
         // Construct and spawn the WalAcceptor task.
         let env = Env::new(fsync)?;
@@ -249,7 +250,7 @@ fn bench_wal_acceptor_throughput(c: &mut Criterion) {
 
         runtime.block_on(async {
             let tli = env
-                .make_timeline(NodeId(1), TenantTimelineId::generate())
+                .make_timeline(NodeId(1), TenantTimelineId::generate(), Lsn(0))
                 .await?
                 .wal_residence_guard()
                 .await?;

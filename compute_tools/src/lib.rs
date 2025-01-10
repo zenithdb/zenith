@@ -3,8 +3,6 @@
 #![deny(unsafe_code)]
 #![deny(clippy::undocumented_unsafe_blocks)]
 
-extern crate hyper0 as hyper;
-
 pub mod checker;
 pub mod config;
 pub mod configurator;

@@ -3,7 +3,7 @@ name: Create Release Branch
 on:
   schedule:
     # It should be kept in sync with if-condition in jobs
-    - cron: '0 6 * * MON' # Storage release
+    - cron: '0 6 * * FRI' # Storage release
     - cron: '0 6 * * THU' # Proxy release
   workflow_dispatch:
     inputs:
@@ -29,7 +29,7 @@ defaults:
 
 jobs:
   create-storage-release-branch:
-    if: ${{ github.event.schedule == '0 6 * * MON' || inputs.create-storage-release-branch }}
+    if: ${{ github.event.schedule == '0 6 * * FRI' || inputs.create-storage-release-branch }}
 
     permissions:
       contents: write

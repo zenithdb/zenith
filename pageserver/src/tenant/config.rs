@@ -11,7 +11,7 @@
 pub(crate) use pageserver_api::config::TenantConfigToml as TenantConf;
 use pageserver_api::models::CompactionAlgorithmSettings;
 use pageserver_api::models::EvictionPolicy;
-use pageserver_api::models::{self, ThrottleConfig};
+use pageserver_api::models::{self, TenantConfigPatch, ThrottleConfig};
 use pageserver_api::shard::{ShardCount, ShardIdentity, ShardNumber, ShardStripeSize};
 use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
@@ -426,6 +426,129 @@ impl TenantConfOpt {
                 .wal_receiver_protocol_override
                 .or(global_conf.wal_receiver_protocol_override),
         }
+    }
+
+    pub fn apply_patch(self, patch: TenantConfigPatch) -> anyhow::Result<TenantConfOpt> {
+        let Self {
+            mut checkpoint_distance,
+            mut checkpoint_timeout,
+            mut compaction_target_size,
+            mut compaction_period,
+            mut compaction_threshold,
+            mut compaction_algorithm,
+            mut gc_horizon,
+            mut gc_period,
+            mut image_creation_threshold,
+            mut pitr_interval,
+            mut walreceiver_connect_timeout,
+            mut lagging_wal_timeout,
+            mut max_lsn_wal_lag,
+            mut eviction_policy,
+            mut min_resident_size_override,
+            mut evictions_low_residence_duration_metric_threshold,
+            mut heatmap_period,
+            mut lazy_slru_download,
+            mut timeline_get_throttle,
+            mut image_layer_creation_check_threshold,
+            mut lsn_lease_length,
+            mut lsn_lease_length_for_ts,
+            mut timeline_offloading,
+            mut wal_receiver_protocol_override,
+        } = self;
+
+        patch.checkpoint_distance.apply(&mut checkpoint_distance);
+        patch
+            .checkpoint_timeout
+            .map(|v| humantime::parse_duration(&v))?
+            .apply(&mut checkpoint_timeout);
+        patch
+            .compaction_target_size
+            .apply(&mut compaction_target_size);
+        patch
+            .compaction_period
+            .map(|v| humantime::parse_duration(&v))?
+            .apply(&mut compaction_period);
+        patch.compaction_threshold.apply(&mut compaction_threshold);
+        patch.compaction_algorithm.apply(&mut compaction_algorithm);
+        patch.gc_horizon.apply(&mut gc_horizon);
+        patch
+            .gc_period
+            .map(|v| humantime::parse_duration(&v))?
+            .apply(&mut gc_period);
+        patch
+            .image_creation_threshold
+            .apply(&mut image_creation_threshold);
+        patch
+            .pitr_interval
+            .map(|v| humantime::parse_duration(&v))?
+            .apply(&mut pitr_interval);
+        patch
+            .walreceiver_connect_timeout
+            .map(|v| humantime::parse_duration(&v))?
+            .apply(&mut walreceiver_connect_timeout);
+        patch
+            .lagging_wal_timeout
+            .map(|v| humantime::parse_duration(&v))?
+            .apply(&mut lagging_wal_timeout);
+        patch.max_lsn_wal_lag.apply(&mut max_lsn_wal_lag);
+        patch.eviction_policy.apply(&mut eviction_policy);
+        patch
+            .min_resident_size_override
+            .apply(&mut min_resident_size_override);
+        patch
+            .evictions_low_residence_duration_metric_threshold
+            .map(|v| humantime::parse_duration(&v))?
+            .apply(&mut evictions_low_residence_duration_metric_threshold);
+        patch
+            .heatmap_period
+            .map(|v| humantime::parse_duration(&v))?
+            .apply(&mut heatmap_period);
+        patch.lazy_slru_download.apply(&mut lazy_slru_download);
+        patch
+            .timeline_get_throttle
+            .apply(&mut timeline_get_throttle);
+        patch
+            .image_layer_creation_check_threshold
+            .apply(&mut image_layer_creation_check_threshold);
+        patch
+            .lsn_lease_length
+            .map(|v| humantime::parse_duration(&v))?
+            .apply(&mut lsn_lease_length);
+        patch
+            .lsn_lease_length_for_ts
+            .map(|v| humantime::parse_duration(&v))?
+            .apply(&mut lsn_lease_length_for_ts);
+        patch.timeline_offloading.apply(&mut timeline_offloading);
+        patch
+            .wal_receiver_protocol_override
+            .apply(&mut wal_receiver_protocol_override);
+
+        Ok(Self {
+            checkpoint_distance,
+            checkpoint_timeout,
+            compaction_target_size,
+            compaction_period,
+            compaction_threshold,
+            compaction_algorithm,
+            gc_horizon,
+            gc_period,
+            image_creation_threshold,
+            pitr_interval,
+            walreceiver_connect_timeout,
+            lagging_wal_timeout,
+            max_lsn_wal_lag,
+            eviction_policy,
+            min_resident_size_override,
+            evictions_low_residence_duration_metric_threshold,
+            heatmap_period,
+            lazy_slru_download,
+            timeline_get_throttle,
+            image_layer_creation_check_threshold,
+            lsn_lease_length,
+            lsn_lease_length_for_ts,
+            timeline_offloading,
+            wal_receiver_protocol_override,
+        })
     }
 }
 

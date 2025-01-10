@@ -60,7 +60,7 @@ impl Client {
     ) -> anyhow::Result<PagestreamClient> {
         let copy_both: tokio_postgres::CopyBothDuplex<bytes::Bytes> = self
             .client
-            .copy_both_simple(&format!("pagestream_v2 {tenant_id} {timeline_id}"))
+            .copy_both_simple(&format!("pagestream_v3 {tenant_id} {timeline_id}"))
             .await?;
         let Client {
             cancel_on_client_drop,

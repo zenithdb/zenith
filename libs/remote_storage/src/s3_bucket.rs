@@ -48,7 +48,7 @@ use crate::{
     metrics::{start_counting_cancelled_wait, start_measuring_requests},
     support::PermitCarrying,
     ConcurrencyLimiter, Download, DownloadError, DownloadOpts, Listing, ListingMode, ListingObject,
-    RemotePath, RemoteStorage, TimeTravelError, TimeoutOrCancel, MAX_KEYS_PER_DELETE,
+    RemotePath, RemoteStorage, TimeTravelError, TimeoutOrCancel, MAX_KEYS_PER_DELETE_S3,
     REMOTE_STORAGE_PREFIX_SEPARATOR,
 };
 
@@ -355,7 +355,7 @@ impl S3Bucket {
         let kind = RequestKind::Delete;
         let mut cancel = std::pin::pin!(cancel.cancelled());
 
-        for chunk in delete_objects.chunks(MAX_KEYS_PER_DELETE) {
+        for chunk in delete_objects.chunks(MAX_KEYS_PER_DELETE_S3) {
             let started_at = start_measuring_requests(kind);
 
             let req = self
@@ -813,9 +813,9 @@ impl RemoteStorage for S3Bucket {
         .await
     }
 
-    async fn delete_objects<'a>(
+    async fn delete_objects(
         &self,
-        paths: &'a [RemotePath],
+        paths: &[RemotePath],
         cancel: &CancellationToken,
     ) -> anyhow::Result<()> {
         let kind = RequestKind::Delete;
@@ -830,6 +830,10 @@ impl RemoteStorage for S3Bucket {
         }
 
         self.delete_oids(&permit, &delete_objects, cancel).await
+    }
+
+    fn max_keys_per_delete(&self) -> usize {
+        MAX_KEYS_PER_DELETE_S3
     }
 
     async fn delete(&self, path: &RemotePath, cancel: &CancellationToken) -> anyhow::Result<()> {

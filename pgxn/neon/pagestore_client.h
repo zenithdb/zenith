@@ -44,10 +44,15 @@ typedef enum
 	T_NeonGetSlruSegmentResponse,
 } NeonMessageTag;
 
+typedef uint64 NeonRequestId;
+
 /* base struct for c-style inheritance */
 typedef struct
 {
 	NeonMessageTag tag;
+	NeonRequestId reqid;
+	XLogRecPtr	lsn;
+	XLogRecPtr	not_modified_since;
 } NeonMessage;
 
 #define messageTag(m) (((const NeonMessage *)(m))->tag)
@@ -66,6 +71,7 @@ typedef enum {
 	SLRU_MULTIXACT_MEMBERS,
 	SLRU_MULTIXACT_OFFSETS
 } SlruKind;
+
 
 /*--
  * supertype of all the Neon*Request structs below.
@@ -87,37 +93,37 @@ typedef enum {
  *
  * These structs describe the V2 of these requests. (The old now-defunct V1
  * protocol contained just one LSN and a boolean 'latest' flag.)
+ *
+ * V3 version of protocol adds request ID to all requests. This request ID is also included in response
+ * as well as other fields from requests, which allows to verify that we receive response for our request.
+ * We copy fields from request to response to make checking more reliable: request ID is formed from process ID
+ * and local counter, so in principle there can be duplicated requests IDs if process PID is reused.
  */
-typedef struct
-{
-	NeonMessageTag tag;
-	XLogRecPtr	lsn;
-	XLogRecPtr	not_modified_since;
-} NeonRequest;
+typedef NeonMessage NeonRequest;
 
 typedef struct
 {
-	NeonRequest req;
+	NeonRequest hdr;
 	NRelFileInfo rinfo;
 	ForkNumber	forknum;
 } NeonExistsRequest;
 
 typedef struct
 {
-	NeonRequest req;
+	NeonRequest hdr;
 	NRelFileInfo rinfo;
 	ForkNumber	forknum;
 } NeonNblocksRequest;
 
 typedef struct
 {
-	NeonRequest req;
+	NeonRequest hdr;
 	Oid			dbNode;
 } NeonDbSizeRequest;
 
 typedef struct
 {
-	NeonRequest req;
+	NeonRequest hdr;
 	NRelFileInfo rinfo;
 	ForkNumber	forknum;
 	BlockNumber blkno;
@@ -125,32 +131,29 @@ typedef struct
 
 typedef struct
 {
-	NeonRequest req;
-	SlruKind kind;
-	int      segno;
+	NeonRequest hdr;
+	SlruKind	kind;
+	int			segno;
 } NeonGetSlruSegmentRequest;
 
 /* supertype of all the Neon*Response structs below */
-typedef struct
-{
-	NeonMessageTag tag;
-} NeonResponse;
+typedef NeonMessage NeonResponse;
 
 typedef struct
 {
-	NeonMessageTag tag;
+	NeonExistsRequest req;
 	bool		exists;
 } NeonExistsResponse;
 
 typedef struct
 {
-	NeonMessageTag tag;
+	NeonNblocksRequest req;
 	uint32		n_blocks;
 } NeonNblocksResponse;
 
 typedef struct
 {
-	NeonMessageTag tag;
+	NeonGetPageRequest req;
 	char		page[FLEXIBLE_ARRAY_MEMBER];
 } NeonGetPageResponse;
 
@@ -158,21 +161,21 @@ typedef struct
 
 typedef struct
 {
-	NeonMessageTag tag;
+	NeonDbSizeRequest req;
 	int64		db_size;
 } NeonDbSizeResponse;
 
 typedef struct
 {
-	NeonMessageTag tag;
+	NeonResponse req;
 	char		message[FLEXIBLE_ARRAY_MEMBER]; /* null-terminated error
 												 * message */
 } NeonErrorResponse;
 
 typedef struct
 {
-	NeonMessageTag tag;
-	int         n_blocks;
+	NeonGetSlruSegmentRequest req;
+	int			n_blocks;
 	char		data[BLCKSZ * SLRU_PAGES_PER_SEGMENT];
 } NeonGetSlruSegmentResponse;
 

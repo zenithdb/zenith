@@ -102,23 +102,39 @@ User can pass several optional headers that will affect resulting json.
 2. `Neon-Array-Mode: true`. Return postgres rows as arrays instead of objects. That is more compact representation and also helps in some edge
 cases where it is hard to use rows represented as objects (e.g. when several fields have the same name).
 
+## Test proxy locally
 
-## Using SNI-based routing on localhost
+Proxy determines project name from the subdomain, request to the `round-rice-566201.somedomain.tld` will be routed to the project named `round-rice-566201`. Unfortunately, `/etc/hosts` does not support domain wildcards, so we can use *.localtest.me` which resolves to `127.0.0.1`.
 
-Now proxy determines project name from the subdomain, request to the `round-rice-566201.somedomain.tld` will be routed to the project named `round-rice-566201`. Unfortunately, `/etc/hosts` does not support domain wildcards, so I usually use `*.localtest.me` which resolves to `127.0.0.1`. Now we can create self-signed certificate and play with proxy:
-
+Let's create self-signed certificate by running:
 ```sh
 openssl req -new -x509 -days 365 -nodes -text -out server.crt -keyout server.key -subj "/CN=*.localtest.me"
 ```
 
-start proxy
-
+Then we need to build proxy with 'testing' feature and run, e.g.:
 ```sh
-./target/debug/proxy -c server.crt -k server.key
+RUST_LOG=proxy cargo run -p proxy --bin proxy --features testing -- --auth-backend postgres --auth-endpoint 'postgresql://proxy:password@endpoint.localtest.me:5432/postgres' --is-private-access-proxy true -c server.crt -k server.key
 ```
 
-and connect to it
+We will also need to have a postgres instance. Assuming that we have setted up docker we can set it up as follows:
+```sh
+docker run \
+  --detach \
+  --name proxy-postgres \
+  --env POSTGRES_PASSWORD=proxy-postgres \
+  --publish 5432:5432 \
+  postgres:17-bookworm
+```
+
+Next step is setting up auth table and schema as well as creating role (without the JWT table):
+```sh
+docker exec -it proxy-postgres psql -U postgres -c "CREATE SCHEMA IF NOT EXISTS neon_control_plane"
+docker exec -it proxy-postgres psql -U postgres -c "CREATE TABLE neon_control_plane.endpoints (endpoint_id VARCHAR(255) PRIMARY KEY, allowed_ips VARCHAR(255))"
+docker exec -it proxy-postgres psql -U postgres -c "CREATE ROLE proxy WITH SUPERUSER LOGIN PASSWORD 'password';"
+```
+
+Now from client you can start a new session:
 
 ```sh
-PGSSLROOTCERT=./server.crt psql 'postgres://my-cluster-42.localtest.me:1234?sslmode=verify-full'
+PGSSLROOTCERT=./server.crt psql  "postgresql://proxy:password@endpoint.localtest.me:4432/postgres?sslmode=verify-full"
 ```

@@ -8,10 +8,9 @@ inputs:
   unique-key:
     description: 'string to distinguish different results in the same run'
     required: true
-  aws_oicd_role_arn:
-    description: 'the OIDC role arn to (re-)acquire for allure report upload - if not set call must acquire OIDC role'
-    required: false
-    default: ''
+  aws-oicd-role-arn:
+    description: 'OIDC role arn to interract with S3'
+    required: true
 
 runs:
   using: "composite"
@@ -36,12 +35,11 @@ runs:
       env:
         REPORT_DIR: ${{ inputs.report-dir }}
 
-    - name: (Re-)configure AWS credentials # necessary to upload reports to S3 after a long-running test
-      if: ${{ !cancelled() && (inputs.aws_oicd_role_arn != '') }}
-      uses: aws-actions/configure-aws-credentials@v4
+    - uses: aws-actions/configure-aws-credentials@v4
+      if: ${{ !cancelled() }}
       with:
         aws-region: eu-central-1
-        role-to-assume: ${{ inputs.aws_oicd_role_arn }}
+        role-to-assume: ${{ inputs.aws-oicd-role-arn }}
         role-duration-seconds: 3600 # 1 hour should be more than enough to upload report
 
     - name: Upload test results

@@ -8,14 +8,14 @@ use std::collections::HashMap;
 use chrono::NaiveDateTime;
 use pageserver_api::models::AuxFilePolicy;
 use serde::{Deserialize, Serialize};
-use utils::id::TimelineId;
 
+use super::is_same_remote_layer_path;
 use crate::tenant::metadata::TimelineMetadata;
 use crate::tenant::storage_layer::LayerName;
 use crate::tenant::timeline::import_pgdata;
 use crate::tenant::Generation;
 use pageserver_api::shard::ShardIndex;
-
+use utils::id::TimelineId;
 use utils::lsn::Lsn;
 
 /// In-memory representation of an `index_part.json` file
@@ -45,10 +45,8 @@ pub struct IndexPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import_pgdata: Option<import_pgdata::index_part_format::Root>,
 
-    /// Per layer file name metadata, which can be present for a present or missing layer file.
-    ///
-    /// Older versions of `IndexPart` will not have this property or have only a part of metadata
-    /// that latest version stores.
+    /// Layer filenames and metadata. For an index persisted in remote storage, all layers must
+    /// exist in remote storage.
     pub layer_metadata: HashMap<LayerName, LayerFileMetadata>,
 
     /// Because of the trouble of eyeballing the legacy "metadata" field, we copied the
@@ -142,6 +140,17 @@ impl IndexPart {
     #[cfg(test)]
     pub(crate) fn example() -> Self {
         Self::empty(TimelineMetadata::example())
+    }
+
+    /// Returns true if the index contains a reference to the given layer (i.e. file path).
+    ///
+    /// TODO: there should be a variant of LayerName for the physical remote path that contains
+    /// information about the shard and generation, to avoid passing in metadata.
+    pub fn references(&self, name: &LayerName, metadata: &LayerFileMetadata) -> bool {
+        let Some(index_metadata) = self.layer_metadata.get(name) else {
+            return false;
+        };
+        is_same_remote_layer_path(name, metadata, name, index_metadata)
     }
 }
 

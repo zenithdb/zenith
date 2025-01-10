@@ -121,9 +121,6 @@ page_cache_size=10
     assert vectored_average < 8
 
 
-@pytest.mark.skip(
-    "This is being fixed and tracked in https://github.com/neondatabase/neon/issues/9114"
-)
 @skip_in_debug_build("only run with release build")
 def test_pageserver_gc_compaction_smoke(neon_env_builder: NeonEnvBuilder):
     SMOKE_CONF = {
@@ -137,6 +134,10 @@ def test_pageserver_gc_compaction_smoke(neon_env_builder: NeonEnvBuilder):
     }
 
     env = neon_env_builder.init_start(initial_tenant_conf=SMOKE_CONF)
+    env.pageserver.allowed_errors.append(
+        r".*failed to acquire partition lock during gc-compaction.*"
+    )
+    env.pageserver.allowed_errors.append(r".*repartition() called concurrently.*")
 
     tenant_id = env.initial_tenant
     timeline_id = env.initial_timeline
@@ -156,22 +157,30 @@ def test_pageserver_gc_compaction_smoke(neon_env_builder: NeonEnvBuilder):
         if i % 10 == 0:
             log.info(f"Running churn round {i}/{churn_rounds} ...")
 
-        ps_http.timeline_compact(
-            tenant_id,
-            timeline_id,
-            enhanced_gc_bottom_most_compaction=True,
-            body={
-                "scheduled": True,
-                "sub_compaction": True,
-                "compact_range": {
-                    "start": "000000000000000000000000000000000000",
-                    # skip the SLRU range for now -- it races with get-lsn-by-timestamp, TODO: fix this
-                    "end": "010000000000000000000000000000000000",
+        if (i - 1) % 10 == 0:
+            # Run gc-compaction every 10 rounds to ensure the test doesn't take too long time.
+            ps_http.timeline_compact(
+                tenant_id,
+                timeline_id,
+                enhanced_gc_bottom_most_compaction=True,
+                body={
+                    "scheduled": True,
+                    "sub_compaction": True,
+                    "compact_key_range": {
+                        "start": "000000000000000000000000000000000000",
+                        "end": "030000000000000000000000000000000000",
+                    },
+                    "sub_compaction_max_job_size_mb": 16,
                 },
-            },
-        )
+            )
 
         workload.churn_rows(row_count, env.pageserver.id)
+
+    def compaction_finished():
+        queue_depth = len(ps_http.timeline_compact_info(tenant_id, timeline_id))
+        assert queue_depth == 0
+
+    wait_until(compaction_finished, timeout=60)
 
     # ensure gc_compaction is scheduled and it's actually running (instead of skipping due to no layers picked)
     env.pageserver.assert_log_contains(
@@ -180,6 +189,10 @@ def test_pageserver_gc_compaction_smoke(neon_env_builder: NeonEnvBuilder):
 
     log.info("Validating at workload end ...")
     workload.validate(env.pageserver.id)
+
+    # Run a legacy compaction+gc to ensure gc-compaction can coexist with legacy compaction.
+    ps_http.timeline_checkpoint(tenant_id, timeline_id, wait_until_uploaded=True)
+    ps_http.timeline_gc(tenant_id, timeline_id, None)
 
 
 # Stripe sizes in number of pages.

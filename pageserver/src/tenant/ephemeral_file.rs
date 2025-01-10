@@ -174,11 +174,11 @@ impl EphemeralFile {
 }
 
 impl super::storage_layer::inmemory_layer::vectored_dio_read::File for EphemeralFile {
-    async fn read_exact_at_eof_ok<'a, 'b, B: IoBufAlignedMut + Send>(
-        &'b self,
+    async fn read_exact_at_eof_ok<B: IoBufAlignedMut + Send>(
+        &self,
         start: u64,
         dst: tokio_epoll_uring::Slice<B>,
-        ctx: &'a RequestContext,
+        ctx: &RequestContext,
     ) -> std::io::Result<(tokio_epoll_uring::Slice<B>, usize)> {
         let submitted_offset = self.buffered_writer.bytes_submitted();
 

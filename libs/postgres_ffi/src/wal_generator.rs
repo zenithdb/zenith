@@ -106,11 +106,11 @@ impl<R: RecordGenerator> WalGenerator<R> {
     const TIMELINE_ID: u32 = 1;
 
     /// Creates a new WAL generator with the given record generator.
-    pub fn new(record_generator: R) -> WalGenerator<R> {
+    pub fn new(record_generator: R, start_lsn: Lsn) -> WalGenerator<R> {
         Self {
             record_generator,
-            lsn: Lsn(0),
-            prev_lsn: Lsn(0),
+            lsn: start_lsn,
+            prev_lsn: start_lsn,
         }
     }
 
@@ -230,6 +230,22 @@ impl LogicalMessageGenerator {
             message_size: message.len() as u64,
         };
         [&header.encode(), prefix, message].concat().into()
+    }
+
+    /// Computes how large a value must be to get a record of the given size. Convenience method to
+    /// construct records of pre-determined size. Panics if the record size is too small.
+    pub fn make_value_size(record_size: usize, prefix: &CStr) -> usize {
+        let xlog_header_size = XLOG_SIZE_OF_XLOG_RECORD;
+        let lm_header_size = size_of::<XlLogicalMessage>();
+        let prefix_size = prefix.to_bytes_with_nul().len();
+        let data_header_size = match record_size - xlog_header_size - 2 {
+            0..=255 => 2,
+            256..=258 => panic!("impossible record_size {record_size}"),
+            259.. => 5,
+        };
+        record_size
+            .checked_sub(xlog_header_size + lm_header_size + prefix_size + data_header_size)
+            .expect("record_size too small")
     }
 }
 

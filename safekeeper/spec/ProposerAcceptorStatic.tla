@@ -18,7 +18,7 @@
 \* - old WAL is immediately copied to proposer on its election, without on-demand fetch later.
 
 \* Some ideas how to break it to play around to get a feeling:
-\* - replace Quorums with BadQuorums.
+\* - replace Quorum with BadQuorum.
 \* - remove 'don't commit entries from previous terms separately' rule in
 \*   CommitEntries and observe figure 8 from the raft paper.
 \*   With p2a3t4l4 32 steps error was found in 1h on 80 cores.
@@ -69,16 +69,26 @@ Upsert(f, k, v, l(_)) ==
 
 \*****************
 
-NumAccs == Cardinality(acceptors)
+\* Does set of acceptors `acc_set` form the quorum in the member set `members`?
+\* Acceptors not from `members` are excluded (matters only for reconfig).
+FormsQuorum(acc_set, members) ==
+    Cardinality(acc_set \intersect members) >= (Cardinality(members) \div 2 + 1)
 
-\* does acc_set form the quorum?
-Quorum(acc_set) == Cardinality(acc_set) >= (NumAccs \div 2 + 1)
-\* all quorums of acceptors
-Quorums == {subset \in SUBSET acceptors: Quorum(subset)}
+\* Like FormsQuorum, but for minimal quorum.
+FormsMinQuorum(acc_set, members) ==
+    Cardinality(acc_set \intersect members) = (Cardinality(members) \div 2 + 1)
 
-\* For substituting Quorums and seeing what happens.
-BadQuorum(acc_set) == Cardinality(acc_set) >= (NumAccs \div 2)
-BadQuorums == {subset \in SUBSET acceptors: BadQuorum(subset)}
+\* All sets of acceptors forming minimal quorums in the member set `members`.
+AllQuorums(members) == {subset \in SUBSET members: FormsQuorum(subset, members)}
+AllMinQuorums(members) == {subset \in SUBSET acceptors: FormsMinQuorum(subset, members)}
+
+\* For substituting Quorum and seeing what happens.
+FormsBadQuorum(acc_set, members) ==
+    Cardinality(acc_set \intersect members) >= (Cardinality(members) \div 2)
+FormsMinBadQuorum(acc_set, members) ==
+    Cardinality(acc_set \intersect members) = (Cardinality(members) \div 2)
+AllBadQuorums(members) == {subset \in SUBSET acceptors: FormsBadQuorum(subset, members)}
+AllMinBadQuorums(members) == {subset \in SUBSET acceptors: FormsMinBadQuorum(subset, members)}
 
 \* flushLsn (end of WAL, i.e. index of next entry) of acceptor a.
 FlushLsn(a) == Len(acc_state[a].wal) + 1
@@ -135,10 +145,11 @@ TypeOk ==
         /\ IsWal(prop_state[p].wal)
         \* Map of acceptor -> next lsn to send. It is set when truncate_wal is
         \* done so sending entries is allowed only after that. In the impl TCP
-        \* ensures this ordering.
+        \* ensures this ordering. We use NULL instead of missing value to use
+        \* EXCEPT in AccReset.
         /\ \A a \in DOMAIN prop_state[p].nextSendLsn:
                /\ a \in acceptors
-               /\ prop_state[p].nextSendLsn[a] \in Lsns
+               /\ prop_state[p].nextSendLsn[a] \in Lsns \union {NULL}
     /\ \A a \in acceptors:
            /\ DOMAIN acc_state[a] = {"term", "termHistory", "wal"}
            /\ acc_state[a].term \in Terms
@@ -167,6 +178,19 @@ TypeOk ==
 \* Initial
 \********************************************************************************
 
+InitAcc ==
+    [
+        \* There will be no leader in zero term, 1 is the first
+        \* real.
+        term |-> 0,
+        \* Again, leader in term 0 doesn't exist, but we initialize
+        \* term histories with it to always have common point in
+        \* them. Lsn is 1 because TLA+ sequences are indexed from 1
+        \* (we don't want to truncate WAL out of range).
+        termHistory |-> << [term |-> 0, lsn |-> 1] >>,
+        wal |-> << >>
+    ]
+
 Init ==
     /\ prop_state = [p \in proposers |-> [
                         state |-> "campaign",
@@ -174,19 +198,9 @@ Init ==
                         votes |-> EmptyF,
                         termHistory |-> << >>,
                         wal |-> << >>,
-                        nextSendLsn |-> EmptyF
+                        nextSendLsn |-> [a \in acceptors |-> NULL]
                     ]]
-    /\ acc_state = [a \in acceptors |-> [
-                       \* There will be no leader in zero term, 1 is the first
-                       \* real.
-                       term |-> 0,
-                       \* Again, leader in term 0 doesn't exist, but we initialize
-                       \* term histories with it to always have common point in
-                       \* them. Lsn is 1 because TLA+ sequences are indexed from 1
-                       \* (we don't want to truncate WAL out of range).
-                       termHistory |-> << [term |-> 0, lsn |-> 1] >>,
-                       wal |-> << >>
-                   ]]
+    /\ acc_state = [a \in acceptors |-> InitAcc]
     /\ committed = {}
     /\ elected_history = EmptyF
 
@@ -195,23 +209,35 @@ Init ==
 \* Actions
 \********************************************************************************
 
-\* Proposer loses all state.
+RestartProposerWithTerm(p, new_term) ==
+    /\ prop_state' = [prop_state EXCEPT ![p].state = "campaign",
+                                        ![p].term = new_term,
+                                        ![p].votes = EmptyF,
+                                        ![p].termHistory = << >>,
+                                        ![p].wal = << >>,
+                                        ![p].nextSendLsn = [a \in acceptors |-> NULL]]
+    /\ UNCHANGED <<acc_state, committed, elected_history>>
+
+\* Proposer p loses all state, restarting.
 \* For simplicity (and to reduct state space), we assume it immediately gets
 \* current state from quorum q of acceptors determining the term he will request
 \* to vote for.
-RestartProposer(p, q) ==
-    /\ Quorum(q)
-    /\ LET new_term == Maximum({acc_state[a].term : a \in q}) + 1 IN
-           /\ prop_state' = [prop_state EXCEPT ![p].state = "campaign",
-                                               ![p].term = new_term,
-                                               ![p].votes = EmptyF,
-                                               ![p].termHistory = << >>,
-                                               ![p].wal = << >>,
-                                               ![p].nextSendLsn = EmptyF]
-           /\ UNCHANGED <<acc_state, committed, elected_history>>
+RestartProposer(p) ==
+    \E q \in AllQuorums(acceptors):
+        LET new_term == Maximum({acc_state[a].term : a \in q}) + 1 IN
+            RestartProposerWithTerm(p, new_term)
 
 \* Term history of acceptor a's WAL: the one saved truncated to contain only <=
-\* local FlushLsn entries.
+\* local FlushLsn entries. Note that FlushLsn is the end LSN of the last entry
+\* (and begin LSN of the next). The mental model for non strict comparison is
+\* that once proposer is elected it immediately writes log record with zero
+\* length. This allows leader to commit existing log without writing any new
+\* entries. For example, assume acceptor has WAL
+\*   1.1, 1.2
+\* written by prop with term 1; its current <last_log_term, flush_lsn>
+\* is <1, 3>. Now prop with term 2 and max vote from this acc is elected.
+\* Once TruncateWAL is done, <last_log_term, flush_lsn> becomes <2, 3>
+\* without any new records explicitly written.
 AcceptorTermHistory(a) ==
     SelectSeq(acc_state[a].termHistory, LAMBDA th_entry: th_entry.lsn <= FlushLsn(a))
 
@@ -230,35 +256,52 @@ Vote(p, a) ==
 \* Get lastLogTerm from term history th.
 LastLogTerm(th) == th[Len(th)].term
 
+\* Compares <term, lsn> pairs: returns true if tl1 >= tl2.
+TermLsnGE(tl1, tl2) ==
+    /\ tl1.term >= tl2.term
+    /\ (tl1.term = tl2.term => tl1.lsn >= tl2.lsn)
+
+\* Choose max <term, lsn> pair in the non empty set of them.
+MaxTermLsn(term_lsn_set) ==
+    CHOOSE max_tl \in term_lsn_set: \A tl \in term_lsn_set: TermLsnGE(max_tl, tl)
+
+\* Find acceptor with the highest <last_log_term, lsn> vote in proposer p's votes.
+MaxVoteAcc(p) ==
+    CHOOSE a \in DOMAIN prop_state[p].votes:
+        LET a_vote == prop_state[p].votes[a]
+            a_vote_term_lsn == [term |-> LastLogTerm(a_vote.termHistory), lsn |-> a_vote.flushLsn]
+            vote_term_lsns == {[term |-> LastLogTerm(v.termHistory), lsn |-> v.flushLsn]: v \in Range(prop_state[p].votes)}
+        IN
+            a_vote_term_lsn = MaxTermLsn(vote_term_lsns)
+
+\* Workhorse for BecomeLeader.
+\* Assumes the check prop_state[p] votes is quorum has been done *outside*.
+DoBecomeLeader(p) ==
+    LET
+        \* Find acceptor with the highest <last_log_term, lsn> vote.
+        max_vote_acc == MaxVoteAcc(p)
+        max_vote == prop_state[p].votes[max_vote_acc]
+        prop_th == Append(max_vote.termHistory, [term |-> prop_state[p].term, lsn |-> max_vote.flushLsn])
+    IN
+        \* We copy all log preceding proposer's term from the max vote node so
+        \* make sure it is still on one term with us. This is a model
+        \* simplification which can be removed, in impl we fetch WAL on demand
+        \* from safekeeper which has it later. Note though that in case of on
+        \* demand fetch we must check on donor not only term match, but that
+        \* truncate_wal had already been done (if it is not max_vote_acc).
+        /\ acc_state[max_vote_acc].term = prop_state[p].term
+        /\ prop_state' = [prop_state EXCEPT ![p].state = "leader",
+                                            ![p].termHistory = prop_th,
+                                            ![p].wal = acc_state[max_vote_acc].wal
+                         ]
+        /\ elected_history' = Upsert(elected_history, prop_state[p].term, 1, LAMBDA c: c + 1)
+        /\ UNCHANGED <<acc_state, committed>>
+
 \* Proposer p gets elected.
 BecomeLeader(p) ==
   /\ prop_state[p].state = "campaign"
-  /\ Quorum(DOMAIN prop_state[p].votes)
-  /\ LET
-         \* Find acceptor with the highest <last_log_term, lsn> vote.
-         max_vote_acc ==
-              CHOOSE a \in DOMAIN prop_state[p].votes:
-                  LET v == prop_state[p].votes[a]
-                  IN \A v2 \in Range(prop_state[p].votes):
-                         /\ LastLogTerm(v.termHistory) >= LastLogTerm(v2.termHistory)
-                         /\ (LastLogTerm(v.termHistory) = LastLogTerm(v2.termHistory) => v.flushLsn >= v2.flushLsn)
-         max_vote == prop_state[p].votes[max_vote_acc]
-         prop_th == Append(max_vote.termHistory, [term |-> prop_state[p].term, lsn |-> max_vote.flushLsn])
-     IN
-         \* We copy all log preceding proposer's term from the max vote node so
-         \* make sure it is still on one term with us. This is a model
-         \* simplification which can be removed, in impl we fetch WAL on demand
-         \* from safekeeper which has it later. Note though that in case of on
-         \* demand fetch we must check on donor not only term match, but that
-         \* truncate_wal had already been done (if it is not max_vote_acc).
-         /\ acc_state[max_vote_acc].term = prop_state[p].term
-         /\ prop_state' = [prop_state EXCEPT ![p].state = "leader",
-                                             ![p].termHistory = prop_th,
-                                             ![p].wal = acc_state[max_vote_acc].wal
-                          ]
-         /\ elected_history' = Upsert(elected_history, prop_state[p].term, 1, LAMBDA c: c + 1)
-         /\ UNCHANGED <<acc_state, committed>>
-
+  /\ FormsQuorum(DOMAIN prop_state[p].votes, acceptors)
+  /\ DoBecomeLeader(p)
 
 \* Acceptor a learns about elected proposer p's term. In impl it matches to
 \* VoteRequest/VoteResponse exchange when leader is already elected and is not
@@ -287,10 +330,11 @@ FindHighestCommonPoint(prop_th, acc_th, acc_flush_lsn) ==
     IN
         [term |-> last_common_term, lsn |-> Min(acc_common_term_end, prop_common_term_end)]
 
-\* Elected proposer p immediately truncates WAL (and term history) of acceptor a
-\* before starting streaming. Establishes nextSendLsn for a.
+\* Elected proposer p immediately truncates WAL (and sets term history) of
+\* acceptor a before starting streaming. Establishes nextSendLsn for a.
 \*
-\* In impl this happens at each reconnection, here we also allow to do it multiple times.
+\* In impl this happens at each reconnection, here we also allow to do it
+\* multiple times.
 TruncateWal(p, a) ==
     /\ prop_state[p].state = "leader"
     /\ acc_state[a].term = prop_state[p].term
@@ -321,8 +365,8 @@ NewEntry(p) ==
 AppendEntry(p, a) ==
     /\ prop_state[p].state = "leader"
     /\ acc_state[a].term = prop_state[p].term
-    /\ a \in DOMAIN prop_state[p].nextSendLsn \* did TruncateWal
-    /\ prop_state[p].nextSendLsn[a] <= Len(prop_state[p].wal) \* have smth to send
+    /\ prop_state[p].nextSendLsn[a] /= NULL  \* did TruncateWal
+    /\ prop_state[p].nextSendLsn[a] <= Len(prop_state[p].wal)  \* have smth to send
     /\ LET
            send_lsn == prop_state[p].nextSendLsn[a]
            entry == prop_state[p].wal[send_lsn]
@@ -337,41 +381,65 @@ AppendEntry(p, a) ==
 PropStartLsn(p) ==
     IF prop_state[p].state = "leader" THEN prop_state[p].termHistory[Len(prop_state[p].termHistory)].lsn ELSE NULL
 
-\* Proposer p commits all entries it can using quorum q. Note that unlike
-\* will62794/logless-reconfig this allows to commit entries from previous terms
-\* (when conditions for that are met).
-CommitEntries(p, q) ==
-    /\ prop_state[p].state = "leader"
-    /\ \A a \in q:
+\* LSN which can be committed by proposer p using min quorum q (check that q
+\* forms quorum must have been done outside). NULL if there is none.
+QuorumCommitLsn(p, q) ==
+    IF
+        /\ prop_state[p].state = "leader"
+        /\ \A a \in q:
+            \* Without explicit responses to appends this ensures that append
+            \* up to FlushLsn has been accepted.
            /\ acc_state[a].term = prop_state[p].term
              \* nextSendLsn existence means TruncateWal has happened, it ensures
              \* acceptor's WAL (and FlushLsn) are from proper proposer's history.
              \* Alternatively we could compare LastLogTerm here, but that's closer to
              \* what we do in the impl (we check flushLsn in AppendResponse, but
              \* AppendRequest is processed only if HandleElected handling was good).
-           /\ a \in DOMAIN prop_state[p].nextSendLsn
-    \* Now find the LSN present on all the quorum.
-    /\ LET quorum_lsn == Minimum({FlushLsn(a): a \in q}) IN
-           \* This is the basic Raft rule of not committing entries from previous
-           \* terms except along with current term entry (commit them only when
-           \* quorum recovers, i.e. last_log_term on it reaches leader's term).
-           /\ quorum_lsn >= PropStartLsn(p)
-           /\ committed' = committed \cup {[term |-> prop_state[p].wal[lsn], lsn |-> lsn]: lsn \in 1..(quorum_lsn - 1)}
-           /\ UNCHANGED <<prop_state, acc_state, elected_history>>
+           /\ prop_state[p].nextSendLsn[a] /= NULL
+    THEN
+        \* Now find the LSN present on all the quorum.
+        LET quorum_lsn == Minimum({FlushLsn(a): a \in q}) IN
+            \* This is the basic Raft rule of not committing entries from previous
+            \* terms except along with current term entry (commit them only when
+            \* quorum recovers, i.e. last_log_term on it reaches leader's term).
+            IF quorum_lsn >= PropStartLsn(p) THEN
+                quorum_lsn
+            ELSE
+                NULL
+    ELSE
+        NULL
+
+\* Commit all entries on proposer p with record lsn < commit_lsn.
+DoCommitEntries(p, commit_lsn) ==
+    /\ committed' = committed \cup {[term |-> prop_state[p].wal[lsn], lsn |-> lsn]: lsn \in 1..(commit_lsn - 1)}
+    /\ UNCHANGED <<prop_state, acc_state, elected_history>>
+
+\* Proposer p commits all entries it can using some quorum. Note that unlike
+\* will62794/logless-reconfig this allows to commit entries from previous terms
+\* (when conditions for that are met).
+CommitEntries(p) ==
+    /\ prop_state[p].state = "leader"
+    \* Using min quorums here is better because 1) QuorumCommitLsn for
+    \* simplicity checks min across all accs in q. 2) it probably makes
+    \* evaluation faster.
+    /\ \E q \in AllMinQuorums(acceptors):
+           LET commit_lsn == QuorumCommitLsn(p, q) IN
+               /\ commit_lsn /= NULL
+               /\ DoCommitEntries(p, commit_lsn)
 
 \*******************************************************************************
 \* Final spec
 \*******************************************************************************
 
 Next ==
-    \/ \E q \in Quorums: \E p \in proposers: RestartProposer(p, q)
+    \/ \E p \in proposers: RestartProposer(p)
     \/ \E p \in proposers: \E a \in acceptors: Vote(p, a)
     \/ \E p \in proposers: BecomeLeader(p)
     \/ \E p \in proposers: \E a \in acceptors: UpdateTerm(p, a)
     \/ \E p \in proposers: \E a \in acceptors: TruncateWal(p, a)
     \/ \E p \in proposers: NewEntry(p)
     \/ \E p \in proposers: \E a \in acceptors: AppendEntry(p, a)
-    \/ \E q \in Quorums: \E p \in proposers: CommitEntries(p, q)
+    \/ \E p \in proposers: CommitEntries(p)
 
 Spec == Init /\ [][Next]_<<prop_state, acc_state, committed, elected_history>>
 

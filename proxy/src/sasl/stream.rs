@@ -50,6 +50,12 @@ impl<S: AsyncWrite + Unpin> SaslStream<'_, S> {
         self.stream.write_message(&msg.to_reply()).await?;
         Ok(())
     }
+
+    // Queue a SASL message for the client.
+    fn send_noflush(&mut self, msg: &ServerMessage<&str>) -> io::Result<()> {
+        self.stream.write_message_noflush(&msg.to_reply())?;
+        Ok(())
+    }
 }
 
 /// SASL authentication outcome.
@@ -85,7 +91,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SaslStream<'_, S> {
                     continue;
                 }
                 Step::Success(result, reply) => {
-                    self.send(&ServerMessage::Final(&reply)).await?;
+                    self.send_noflush(&ServerMessage::Final(&reply))?;
                     Outcome::Success(result)
                 }
                 Step::Failure(reason) => Outcome::Failure(reason),

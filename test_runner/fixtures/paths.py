@@ -21,8 +21,8 @@ if TYPE_CHECKING:
 
 
 BASE_DIR = Path(__file__).parents[2]
-COMPUTE_CONFIG_DIR = BASE_DIR / "compute" / "etc"
 DEFAULT_OUTPUT_DIR: str = "test_output"
+COMPUTE_CONFIG_DIR = BASE_DIR / "compute" / "etc"
 
 
 def get_test_dir(request: FixtureRequest, top_output_dir: Path, prefix: str | None = None) -> Path:

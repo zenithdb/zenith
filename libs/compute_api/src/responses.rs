@@ -1,6 +1,5 @@
 //! Structs representing the JSON formats used in the compute_ctl's HTTP API.
 
-use std::collections::HashSet;
 use std::fmt::Display;
 
 use chrono::{DateTime, Utc};
@@ -16,6 +15,17 @@ pub struct GenericAPIError {
     pub error: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct InfoResponse {
+    pub num_cpus: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExtensionInstallResponse {
+    pub extension: PgIdent,
+    pub version: ExtVersion,
+}
+
 /// Response of the /status API
 #[derive(Serialize, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -24,16 +34,6 @@ pub struct ComputeStatusResponse {
     pub tenant: Option<String>,
     pub timeline: Option<String>,
     pub status: ComputeStatus,
-    #[serde(serialize_with = "rfc3339_serialize")]
-    pub last_active: Option<DateTime<Utc>>,
-    pub error: Option<String>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub struct ComputeState {
-    pub status: ComputeStatus,
-    /// Timestamp of the last Postgres activity
     #[serde(serialize_with = "rfc3339_serialize")]
     pub last_active: Option<DateTime<Utc>>,
     pub error: Option<String>,
@@ -79,7 +79,7 @@ impl Display for ComputeStatus {
     }
 }
 
-fn rfc3339_serialize<S>(x: &Option<DateTime<Utc>>, s: S) -> Result<S::Ok, S::Error>
+pub fn rfc3339_serialize<S>(x: &Option<DateTime<Utc>>, s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -163,8 +163,9 @@ pub enum ControlPlaneComputeStatus {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct InstalledExtension {
     pub extname: String,
-    pub versions: HashSet<String>,
+    pub version: String,
     pub n_databases: u32, // Number of databases using this extension
+    pub owned_by_superuser: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

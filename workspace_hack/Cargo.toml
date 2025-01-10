@@ -91,7 +91,8 @@ tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io", "rt"] }
 toml_edit = { version = "0.22", features = ["serde"] }
 tonic = { version = "0.12", features = ["tls-roots"] }
-tower = { version = "0.4", default-features = false, features = ["balance", "buffer", "limit", "log", "util"] }
+tower-9fbad63c4bcf4a8f = { package = "tower", version = "0.4", default-features = false, features = ["balance", "buffer", "limit", "util"] }
+tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["log", "make", "util"] }
 tracing = { version = "0.1", features = ["log"] }
 tracing-core = { version = "0.1" }
 url = { version = "2", features = ["serde"] }

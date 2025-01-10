@@ -69,7 +69,11 @@ impl ConnectionWithCredentialsProvider {
 
     pub fn new_with_static_credentials<T: IntoConnectionInfo>(params: T) -> Self {
         Self {
-            credentials: Credentials::Static(params.into_connection_info().unwrap()),
+            credentials: Credentials::Static(
+                params
+                    .into_connection_info()
+                    .expect("static configured redis credentials should be a valid format"),
+            ),
             con: None,
             refresh_token_task: None,
             mutex: tokio::sync::Mutex::new(()),

@@ -304,6 +304,15 @@ pub enum WaitCompletionError {
 #[derive(Debug, thiserror::Error)]
 #[error("Upload queue either in unexpected state or hasn't downloaded manifest yet")]
 pub struct UploadQueueNotReadyError;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ShutdownIfArchivedError {
+    #[error(transparent)]
+    NotInitialized(NotInitialized),
+    #[error("timeline is not archived")]
+    NotArchived,
+}
+
 /// Behavioral modes that enable seamless live migration.
 ///
 /// See docs/rfcs/028-pageserver-migration.md to understand how these fit in.
@@ -749,7 +758,7 @@ impl RemoteTimelineClient {
         // ahead of what's _actually_ on the remote during index upload.
         upload_queue.dirty.metadata = metadata.clone();
 
-        self.schedule_index_upload(upload_queue)?;
+        self.schedule_index_upload(upload_queue);
 
         Ok(())
     }
@@ -770,7 +779,7 @@ impl RemoteTimelineClient {
 
         upload_queue.dirty.metadata.apply(update);
 
-        self.schedule_index_upload(upload_queue)?;
+        self.schedule_index_upload(upload_queue);
 
         Ok(())
     }
@@ -809,11 +818,60 @@ impl RemoteTimelineClient {
         if let Some(archived_at_set) = need_upload_scheduled {
             let intended_archived_at = archived_at_set.then(|| Utc::now().naive_utc());
             upload_queue.dirty.archived_at = intended_archived_at;
-            self.schedule_index_upload(upload_queue)?;
+            self.schedule_index_upload(upload_queue);
         }
 
         let need_wait = need_change(&upload_queue.clean.0.archived_at, state).is_some();
         Ok(need_wait)
+    }
+
+    /// Shuts the timeline client down, but only if the timeline is archived.
+    ///
+    /// This function and [`Self::schedule_index_upload_for_timeline_archival_state`] use the
+    /// same lock to prevent races between unarchival and offloading: unarchival requires the
+    /// upload queue to be initialized, and leaves behind an upload queue where either dirty
+    /// or clean has archived_at of `None`. offloading leaves behind an uninitialized upload
+    /// queue.
+    pub(crate) async fn shutdown_if_archived(
+        self: &Arc<Self>,
+    ) -> Result<(), ShutdownIfArchivedError> {
+        {
+            let mut guard = self.upload_queue.lock().unwrap();
+            let upload_queue = guard
+                .initialized_mut()
+                .map_err(ShutdownIfArchivedError::NotInitialized)?;
+
+            match (
+                upload_queue.dirty.archived_at.is_none(),
+                upload_queue.clean.0.archived_at.is_none(),
+            ) {
+                // The expected case: the timeline is archived and we don't want to unarchive
+                (false, false) => {}
+                (true, false) => {
+                    tracing::info!("can't shut down timeline: timeline slated for unarchival");
+                    return Err(ShutdownIfArchivedError::NotArchived);
+                }
+                (dirty_archived, true) => {
+                    tracing::info!(%dirty_archived, "can't shut down timeline: timeline not archived in remote storage");
+                    return Err(ShutdownIfArchivedError::NotArchived);
+                }
+            }
+
+            // Set the shutting_down flag while the guard from the archival check is held.
+            // This prevents a race with unarchival, as initialized_mut will not return
+            // an upload queue from this point.
+            // Also launch the queued tasks like shutdown() does.
+            if !upload_queue.shutting_down {
+                upload_queue.shutting_down = true;
+                upload_queue.queued_operations.push_back(UploadOp::Shutdown);
+                // this operation is not counted similar to Barrier
+                self.launch_queued_tasks(upload_queue);
+            }
+        }
+
+        self.shutdown().await;
+
+        Ok(())
     }
 
     /// Launch an index-file upload operation in the background, setting `import_pgdata` field.
@@ -824,7 +882,7 @@ impl RemoteTimelineClient {
         let mut guard = self.upload_queue.lock().unwrap();
         let upload_queue = guard.initialized_mut()?;
         upload_queue.dirty.import_pgdata = state;
-        self.schedule_index_upload(upload_queue)?;
+        self.schedule_index_upload(upload_queue);
         Ok(())
     }
 
@@ -843,17 +901,14 @@ impl RemoteTimelineClient {
         let upload_queue = guard.initialized_mut()?;
 
         if upload_queue.latest_files_changes_since_metadata_upload_scheduled > 0 {
-            self.schedule_index_upload(upload_queue)?;
+            self.schedule_index_upload(upload_queue);
         }
 
         Ok(())
     }
 
     /// Launch an index-file upload operation in the background (internal function)
-    fn schedule_index_upload(
-        self: &Arc<Self>,
-        upload_queue: &mut UploadQueueInitialized,
-    ) -> Result<(), NotInitialized> {
+    fn schedule_index_upload(self: &Arc<Self>, upload_queue: &mut UploadQueueInitialized) {
         let disk_consistent_lsn = upload_queue.dirty.metadata.disk_consistent_lsn();
         // fix up the duplicated field
         upload_queue.dirty.disk_consistent_lsn = disk_consistent_lsn;
@@ -880,7 +935,6 @@ impl RemoteTimelineClient {
 
         // Launch the task immediately, if possible
         self.launch_queued_tasks(upload_queue);
-        Ok(())
     }
 
     /// Reparent this timeline to a new parent.
@@ -909,7 +963,7 @@ impl RemoteTimelineClient {
                 upload_queue.dirty.metadata.reparent(new_parent);
                 upload_queue.dirty.lineage.record_previous_ancestor(&prev);
 
-                self.schedule_index_upload(upload_queue)?;
+                self.schedule_index_upload(upload_queue);
 
                 Some(self.schedule_barrier0(upload_queue))
             }
@@ -948,7 +1002,7 @@ impl RemoteTimelineClient {
                     assert!(prev.is_none(), "copied layer existed already {layer}");
                 }
 
-                self.schedule_index_upload(upload_queue)?;
+                self.schedule_index_upload(upload_queue);
 
                 Some(self.schedule_barrier0(upload_queue))
             }
@@ -1004,7 +1058,7 @@ impl RemoteTimelineClient {
                     upload_queue.dirty.gc_blocking = current
                         .map(|x| x.with_reason(reason))
                         .or_else(|| Some(index::GcBlocking::started_now_for(reason)));
-                    self.schedule_index_upload(upload_queue)?;
+                    self.schedule_index_upload(upload_queue);
                     Some(self.schedule_barrier0(upload_queue))
                 }
             }
@@ -1057,8 +1111,7 @@ impl RemoteTimelineClient {
                     upload_queue.dirty.gc_blocking =
                         current.as_ref().and_then(|x| x.without_reason(reason));
                     assert!(wanted(upload_queue.dirty.gc_blocking.as_ref()));
-                    // FIXME: bogus ?
-                    self.schedule_index_upload(upload_queue)?;
+                    self.schedule_index_upload(upload_queue);
                     Some(self.schedule_barrier0(upload_queue))
                 }
             }
@@ -1125,8 +1178,8 @@ impl RemoteTimelineClient {
         let mut guard = self.upload_queue.lock().unwrap();
         let upload_queue = guard.initialized_mut()?;
 
-        let with_metadata = self
-            .schedule_unlinking_of_layers_from_index_part0(upload_queue, names.iter().cloned())?;
+        let with_metadata =
+            self.schedule_unlinking_of_layers_from_index_part0(upload_queue, names.iter().cloned());
 
         self.schedule_deletion_of_unlinked0(upload_queue, with_metadata);
 
@@ -1153,7 +1206,7 @@ impl RemoteTimelineClient {
 
         let names = gc_layers.iter().map(|x| x.layer_desc().layer_name());
 
-        self.schedule_unlinking_of_layers_from_index_part0(upload_queue, names)?;
+        self.schedule_unlinking_of_layers_from_index_part0(upload_queue, names);
 
         self.launch_queued_tasks(upload_queue);
 
@@ -1166,7 +1219,7 @@ impl RemoteTimelineClient {
         self: &Arc<Self>,
         upload_queue: &mut UploadQueueInitialized,
         names: I,
-    ) -> Result<Vec<(LayerName, LayerFileMetadata)>, NotInitialized>
+    ) -> Vec<(LayerName, LayerFileMetadata)>
     where
         I: IntoIterator<Item = LayerName>,
     {
@@ -1208,10 +1261,10 @@ impl RemoteTimelineClient {
         // index_part update, because that needs to be uploaded before we can actually delete the
         // files.
         if upload_queue.latest_files_changes_since_metadata_upload_scheduled > 0 {
-            self.schedule_index_upload(upload_queue)?;
+            self.schedule_index_upload(upload_queue);
         }
 
-        Ok(with_metadata)
+        with_metadata
     }
 
     /// Schedules deletion for layer files which have previously been unlinked from the
@@ -1302,7 +1355,7 @@ impl RemoteTimelineClient {
 
         let names = compacted_from.iter().map(|x| x.layer_desc().layer_name());
 
-        self.schedule_unlinking_of_layers_from_index_part0(upload_queue, names)?;
+        self.schedule_unlinking_of_layers_from_index_part0(upload_queue, names);
         self.launch_queued_tasks(upload_queue);
 
         Ok(())
@@ -1948,6 +2001,30 @@ impl RemoteTimelineClient {
                 return;
             }
 
+            // Assert that we don't modify a layer that's referenced by the current index.
+            if cfg!(debug_assertions) {
+                let modified = match &task.op {
+                    UploadOp::UploadLayer(layer, layer_metadata, _) => {
+                        vec![(layer.layer_desc().layer_name(), layer_metadata)]
+                    }
+                    UploadOp::Delete(delete) => {
+                        delete.layers.iter().map(|(n, m)| (n.clone(), m)).collect()
+                    }
+                    // These don't modify layers.
+                    UploadOp::UploadMetadata { .. } => Vec::new(),
+                    UploadOp::Barrier(_) => Vec::new(),
+                    UploadOp::Shutdown => Vec::new(),
+                };
+                if let Ok(queue) = self.upload_queue.lock().unwrap().initialized_mut() {
+                    for (ref name, metadata) in modified {
+                        debug_assert!(
+                            !queue.clean.0.references(name, metadata),
+                            "layer {name} modified while referenced by index",
+                        );
+                    }
+                }
+            }
+
             let upload_result: anyhow::Result<()> = match &task.op {
                 UploadOp::UploadLayer(ref layer, ref layer_metadata, mode) => {
                     if let Some(OpType::FlushDeletion) = mode {
@@ -2512,6 +2589,21 @@ pub fn remote_layer_path(
     );
 
     RemotePath::from_string(&path).expect("Failed to construct path")
+}
+
+/// Returns true if a and b have the same layer path within a tenant/timeline. This is essentially
+/// remote_layer_path(a) == remote_layer_path(b) without the string allocations.
+///
+/// TODO: there should be a variant of LayerName for the physical path that contains information
+/// about the shard and generation, such that this could be replaced by a simple comparison.
+pub fn is_same_remote_layer_path(
+    aname: &LayerName,
+    ameta: &LayerFileMetadata,
+    bname: &LayerName,
+    bmeta: &LayerFileMetadata,
+) -> bool {
+    // NB: don't assert remote_layer_path(a) == remote_layer_path(b); too expensive even for debug.
+    aname == bname && ameta.shard == bmeta.shard && ameta.generation == bmeta.generation
 }
 
 pub fn remote_initdb_archive_path(tenant_id: &TenantId, timeline_id: &TimelineId) -> RemotePath {

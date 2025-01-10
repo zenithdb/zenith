@@ -45,7 +45,7 @@ COPY --chown=nonroot . .
 
 ARG ADDITIONAL_RUSTFLAGS
 RUN set -e \
-    && PQ_LIB_DIR=$(pwd)/pg_install/v${STABLE_PG_VERSION}/lib RUSTFLAGS="-Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=-Wl,--no-rosegment ${ADDITIONAL_RUSTFLAGS}" cargo build \
+    && PQ_LIB_DIR=$(pwd)/pg_install/v${STABLE_PG_VERSION}/lib RUSTFLAGS="-Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=-Wl,--no-rosegment -Cforce-frame-pointers=yes ${ADDITIONAL_RUSTFLAGS}" cargo build \
       --bin pg_sni_router  \
       --bin pageserver  \
       --bin pagectl  \
@@ -69,6 +69,8 @@ RUN set -e \
         libreadline-dev \
         libseccomp-dev \
         ca-certificates \
+	# System postgres for use with client libraries (e.g. in storage controller)
+        postgresql-15 \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
     && useradd -d /data neon \
     && chown -R neon:neon /data
@@ -100,11 +102,6 @@ RUN mkdir -p /data/.neon/ && \
        "availability_zone='local'\n" \
   > /data/.neon/pageserver.toml && \
   chown -R neon:neon /data/.neon
-
-# When running a binary that links with libpq, default to using our most recent postgres version.  Binaries
-# that want a particular postgres version will select it explicitly: this is just a default.
-ENV LD_LIBRARY_PATH=/usr/local/v${DEFAULT_PG_VERSION}/lib
-
 
 VOLUME ["/data"]
 USER neon

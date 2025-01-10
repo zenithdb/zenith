@@ -148,7 +148,7 @@ pub trait CompactionDeltaLayer<E: CompactionJobExecutor + ?Sized>: CompactionLay
         Self: 'a;
 
     /// Return all keys in this delta layer.
-    fn load_keys<'a>(
+    fn load_keys(
         &self,
         ctx: &E::RequestContext,
     ) -> impl Future<Output = anyhow::Result<Vec<Self::DeltaEntry<'_>>>> + Send;

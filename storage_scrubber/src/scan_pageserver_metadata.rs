@@ -21,8 +21,12 @@ pub struct MetadataSummary {
     tenant_count: usize,
     timeline_count: usize,
     timeline_shard_count: usize,
-    with_errors: HashSet<TenantShardTimelineId>,
-    with_warnings: HashSet<TenantShardTimelineId>,
+    /// Tenant-shard timeline (key) mapping to errors. The key has to be a string because it will be serialized to a JSON.
+    /// The key is generated using `TenantShardTimelineId::to_string()`.
+    with_errors: HashMap<String, Vec<String>>,
+    /// Tenant-shard timeline (key) mapping to warnings. The key has to be a string because it will be serialized to a JSON.
+    /// The key is generated using `TenantShardTimelineId::to_string()`.
+    with_warnings: HashMap<String, Vec<String>>,
     with_orphans: HashSet<TenantShardTimelineId>,
     indices_by_version: HashMap<usize, usize>,
 
@@ -43,6 +47,8 @@ impl MetadataSummary {
             index_part,
             index_part_generation: _,
             s3_layers: _,
+            index_part_last_modified_time: _,
+            index_part_snapshot_time: _,
         } = &data.blob_data
         {
             *self
@@ -52,7 +58,12 @@ impl MetadataSummary {
         }
     }
 
-    fn update_analysis(&mut self, id: &TenantShardTimelineId, analysis: &TimelineAnalysis) {
+    fn update_analysis(
+        &mut self,
+        id: &TenantShardTimelineId,
+        analysis: &TimelineAnalysis,
+        verbose: bool,
+    ) {
         if analysis.is_healthy() {
             self.healthy_tenant_shards.insert(id.tenant_shard_id);
         } else {
@@ -61,11 +72,17 @@ impl MetadataSummary {
         }
 
         if !analysis.errors.is_empty() {
-            self.with_errors.insert(*id);
+            let entry = self.with_errors.entry(id.to_string()).or_default();
+            if verbose {
+                entry.extend(analysis.errors.iter().cloned());
+            }
         }
 
         if !analysis.warnings.is_empty() {
-            self.with_warnings.insert(*id);
+            let entry = self.with_warnings.entry(id.to_string()).or_default();
+            if verbose {
+                entry.extend(analysis.warnings.iter().cloned());
+            }
         }
     }
 
@@ -120,6 +137,7 @@ Index versions: {version_summary}
 pub async fn scan_pageserver_metadata(
     bucket_config: BucketConfig,
     tenant_ids: Vec<TenantShardId>,
+    verbose: bool,
 ) -> anyhow::Result<MetadataSummary> {
     let (remote_client, target) = init_remote(bucket_config, NodeKind::Pageserver).await?;
 
@@ -164,6 +182,7 @@ pub async fn scan_pageserver_metadata(
         mut tenant_objects: TenantObjectListing,
         timelines: Vec<(TenantShardTimelineId, RemoteTimelineBlobData)>,
         highest_shard_count: ShardCount,
+        verbose: bool,
     ) {
         summary.tenant_count += 1;
 
@@ -178,7 +197,9 @@ pub async fn scan_pageserver_metadata(
                     if let BlobDataParseResult::Parsed {
                         index_part,
                         index_part_generation,
-                        s3_layers: _s3_layers,
+                        s3_layers: _,
+                        index_part_last_modified_time: _,
+                        index_part_snapshot_time: _,
                     } = &data.blob_data
                     {
                         if index_part.deleted_at.is_some() {
@@ -203,7 +224,7 @@ pub async fn scan_pageserver_metadata(
                         Some(data),
                     )
                     .await;
-                    summary.update_analysis(&ttid, &analysis);
+                    summary.update_analysis(&ttid, &analysis, verbose);
 
                     timeline_ids.insert(ttid.timeline_id);
                 } else {
@@ -271,10 +292,6 @@ pub async fn scan_pageserver_metadata(
         summary.update_data(&data);
 
         match tenant_id {
-            None => {
-                tenant_id = Some(ttid.tenant_shard_id.tenant_id);
-                highest_shard_count = highest_shard_count.max(ttid.tenant_shard_id.shard_count);
-            }
             Some(prev_tenant_id) => {
                 if prev_tenant_id != ttid.tenant_shard_id.tenant_id {
                     // New tenant: analyze this tenant's timelines, clear accumulated tenant_timeline_results
@@ -287,6 +304,7 @@ pub async fn scan_pageserver_metadata(
                         tenant_objects,
                         timelines,
                         highest_shard_count,
+                        verbose,
                     )
                     .instrument(info_span!("analyze-tenant", tenant = %prev_tenant_id))
                     .await;
@@ -296,13 +314,19 @@ pub async fn scan_pageserver_metadata(
                     highest_shard_count = highest_shard_count.max(ttid.tenant_shard_id.shard_count);
                 }
             }
+            None => {
+                tenant_id = Some(ttid.tenant_shard_id.tenant_id);
+                highest_shard_count = highest_shard_count.max(ttid.tenant_shard_id.shard_count);
+            }
         }
 
         match &data.blob_data {
             BlobDataParseResult::Parsed {
-                index_part: _index_part,
+                index_part: _,
                 index_part_generation: _index_part_generation,
                 s3_layers,
+                index_part_last_modified_time: _,
+                index_part_snapshot_time: _,
             } => {
                 tenant_objects.push(ttid, s3_layers.clone());
             }
@@ -326,6 +350,7 @@ pub async fn scan_pageserver_metadata(
             tenant_objects,
             tenant_timeline_results,
             highest_shard_count,
+            verbose,
         )
         .instrument(info_span!("analyze-tenant", tenant = %tenant_id))
         .await;

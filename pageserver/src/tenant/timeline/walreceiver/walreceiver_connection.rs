@@ -319,27 +319,11 @@ pub(super) async fn handle_walreceiver_connection(
             return Ok(());
         }
 
-        async fn commit(
-            modification: &mut DatadirModification<'_>,
-            uncommitted: &mut u64,
-            filtered: &mut u64,
-            ctx: &RequestContext,
-        ) -> anyhow::Result<()> {
-            WAL_INGEST
-                .records_committed
-                .inc_by(*uncommitted - *filtered);
-            modification.commit(ctx).await?;
-            *uncommitted = 0;
-            *filtered = 0;
-            Ok(())
-        }
-
         let status_update = match replication_message {
             ReplicationMessage::RawInterpretedWalRecords(raw) => {
                 WAL_INGEST.bytes_received.inc_by(raw.data().len() as u64);
 
                 let mut uncommitted_records = 0;
-                let mut filtered_records = 0;
 
                 // This is the end LSN of the raw WAL from which the records
                 // were interpreted.
@@ -380,30 +364,22 @@ pub(super) async fn handle_walreceiver_connection(
                     if matches!(interpreted.flush_uncommitted, FlushUncommittedRecords::Yes)
                         && uncommitted_records > 0
                     {
-                        commit(
-                            &mut modification,
-                            &mut uncommitted_records,
-                            &mut filtered_records,
-                            &ctx,
-                        )
-                        .await?;
+                        modification.commit(&ctx).await?;
+                        uncommitted_records = 0;
                     }
 
                     let local_next_record_lsn = interpreted.next_record_lsn;
-                    let ingested = walingest
+
+                    if interpreted.is_observed() {
+                        WAL_INGEST.records_observed.inc();
+                    }
+
+                    walingest
                         .ingest_record(interpreted, &mut modification, &ctx)
                         .await
                         .with_context(|| {
                             format!("could not ingest record at {local_next_record_lsn}")
                         })?;
-
-                    if !ingested {
-                        tracing::debug!(
-                            "ingest: filtered out record @ LSN {local_next_record_lsn}"
-                        );
-                        WAL_INGEST.records_filtered.inc();
-                        filtered_records += 1;
-                    }
 
                     uncommitted_records += 1;
 
@@ -418,13 +394,8 @@ pub(super) async fn handle_walreceiver_connection(
                         || modification.approx_pending_bytes()
                             > DatadirModification::MAX_PENDING_BYTES
                     {
-                        commit(
-                            &mut modification,
-                            &mut uncommitted_records,
-                            &mut filtered_records,
-                            &ctx,
-                        )
-                        .await?;
+                        modification.commit(&ctx).await?;
+                        uncommitted_records = 0;
                     }
                 }
 
@@ -442,13 +413,7 @@ pub(super) async fn handle_walreceiver_connection(
 
                 if uncommitted_records > 0 || needs_last_record_lsn_advance {
                     // Commit any uncommitted records
-                    commit(
-                        &mut modification,
-                        &mut uncommitted_records,
-                        &mut filtered_records,
-                        &ctx,
-                    )
-                    .await?;
+                    modification.commit(&ctx).await?;
                 }
 
                 if !caught_up && streaming_lsn >= end_of_wal {
@@ -469,6 +434,21 @@ pub(super) async fn handle_walreceiver_connection(
             }
 
             ReplicationMessage::XLogData(xlog_data) => {
+                async fn commit(
+                    modification: &mut DatadirModification<'_>,
+                    uncommitted: &mut u64,
+                    filtered: &mut u64,
+                    ctx: &RequestContext,
+                ) -> anyhow::Result<()> {
+                    WAL_INGEST
+                        .records_committed
+                        .inc_by(*uncommitted - *filtered);
+                    modification.commit(ctx).await?;
+                    *uncommitted = 0;
+                    *filtered = 0;
+                    Ok(())
+                }
+
                 // Pass the WAL data to the decoder, and see if we can decode
                 // more records as a result.
                 let data = xlog_data.data();

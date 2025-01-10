@@ -3,7 +3,7 @@ use crate::metrics::{
     HttpRequestLatencyLabelGroup, HttpRequestStatusLabelGroup, PageserverRequestLabelGroup,
     METRICS_REGISTRY,
 };
-use crate::persistence::SafekeeperPersistence;
+use crate::persistence::SafekeeperUpsert;
 use crate::reconciler::ReconcileError;
 use crate::service::{LeadershipStatus, Service, RECONCILE_TIMEOUT, STARTUP_RECONCILE_TIMEOUT};
 use anyhow::Context;
@@ -18,8 +18,9 @@ use pageserver_api::controller_api::{
     ShardsPreferredAzsRequest, TenantCreateRequest,
 };
 use pageserver_api::models::{
-    TenantConfigRequest, TenantLocationConfigRequest, TenantShardSplitRequest,
-    TenantTimeTravelRequest, TimelineArchivalConfigRequest, TimelineCreateRequest,
+    TenantConfigPatchRequest, TenantConfigRequest, TenantLocationConfigRequest,
+    TenantShardSplitRequest, TenantTimeTravelRequest, TimelineArchivalConfigRequest,
+    TimelineCreateRequest,
 };
 use pageserver_api::shard::TenantShardId;
 use pageserver_client::{mgmt_api, BlockUnblock};
@@ -205,6 +206,27 @@ async fn handle_tenant_location_config(
         service
             .tenant_location_config(tenant_shard_id, config_req)
             .await?,
+    )
+}
+
+async fn handle_tenant_config_patch(
+    service: Arc<Service>,
+    req: Request<Body>,
+) -> Result<Response<Body>, ApiError> {
+    check_permissions(&req, Scope::PageServerApi)?;
+
+    let mut req = match maybe_forward(req).await {
+        ForwardOutcome::Forwarded(res) => {
+            return res;
+        }
+        ForwardOutcome::NotForwarded(req) => req,
+    };
+
+    let config_req = json_request::<TenantConfigPatchRequest>(&mut req).await?;
+
+    json_response(
+        StatusCode::OK,
+        service.tenant_config_patch(config_req).await?,
     )
 }
 
@@ -857,6 +879,21 @@ async fn handle_cancel_node_fill(req: Request<Body>) -> Result<Response<Body>, A
     json_response(StatusCode::ACCEPTED, ())
 }
 
+async fn handle_safekeeper_list(req: Request<Body>) -> Result<Response<Body>, ApiError> {
+    check_permissions(&req, Scope::Infra)?;
+
+    let req = match maybe_forward(req).await {
+        ForwardOutcome::Forwarded(res) => {
+            return res;
+        }
+        ForwardOutcome::NotForwarded(req) => req,
+    };
+
+    let state = get_state(&req);
+    let safekeepers = state.service.safekeepers_list().await?;
+    json_response(StatusCode::OK, safekeepers)
+}
+
 async fn handle_metadata_health_update(req: Request<Body>) -> Result<Response<Body>, ApiError> {
     check_permissions(&req, Scope::Scrubber)?;
 
@@ -1181,7 +1218,7 @@ impl From<ReconcileError> for ApiError {
 ///
 /// Not used by anything except manual testing.
 async fn handle_get_safekeeper(req: Request<Body>) -> Result<Response<Body>, ApiError> {
-    check_permissions(&req, Scope::Admin)?;
+    check_permissions(&req, Scope::Infra)?;
 
     let id = parse_request_param::<i64>(&req, "id")?;
 
@@ -1199,7 +1236,7 @@ async fn handle_get_safekeeper(req: Request<Body>) -> Result<Response<Body>, Api
     match res {
         Ok(b) => json_response(StatusCode::OK, b),
         Err(crate::persistence::DatabaseError::Query(diesel::result::Error::NotFound)) => {
-            Err(ApiError::NotFound("unknown instance_id".into()))
+            Err(ApiError::NotFound("unknown instance id".into()))
         }
         Err(other) => Err(other.into()),
     }
@@ -1212,7 +1249,7 @@ async fn handle_get_safekeeper(req: Request<Body>) -> Result<Response<Body>, Api
 async fn handle_upsert_safekeeper(mut req: Request<Body>) -> Result<Response<Body>, ApiError> {
     check_permissions(&req, Scope::Infra)?;
 
-    let body = json_request::<SafekeeperPersistence>(&mut req).await?;
+    let body = json_request::<SafekeeperUpsert>(&mut req).await?;
     let id = parse_request_param::<i64>(&req, "id")?;
 
     if id != body.id {
@@ -1795,6 +1832,21 @@ pub fn make_router(
                 RequestName("control_v1_metadata_health_list_outdated"),
             )
         })
+        // Safekeepers
+        .get("/control/v1/safekeeper", |r| {
+            named_request_span(
+                r,
+                handle_safekeeper_list,
+                RequestName("control_v1_safekeeper_list"),
+            )
+        })
+        .get("/control/v1/safekeeper/:id", |r| {
+            named_request_span(r, handle_get_safekeeper, RequestName("v1_safekeeper"))
+        })
+        .post("/control/v1/safekeeper/:id", |r| {
+            // id is in the body
+            named_request_span(r, handle_upsert_safekeeper, RequestName("v1_safekeeper"))
+        })
         // Tenant Shard operations
         .put("/control/v1/tenant/:tenant_shard_id/migrate", |r| {
             tenant_service_handler(
@@ -1847,13 +1899,6 @@ pub fn make_router(
         .put("/control/v1/step_down", |r| {
             named_request_span(r, handle_step_down, RequestName("control_v1_step_down"))
         })
-        .get("/control/v1/safekeeper/:id", |r| {
-            named_request_span(r, handle_get_safekeeper, RequestName("v1_safekeeper"))
-        })
-        .post("/control/v1/safekeeper/:id", |r| {
-            // id is in the body
-            named_request_span(r, handle_upsert_safekeeper, RequestName("v1_safekeeper"))
-        })
         // Tenant operations
         // The ^/v1/ endpoints act as a "Virtual Pageserver", enabling shard-naive clients to call into
         // this service to manage tenants that actually consist of many tenant shards, as if they are a single entity.
@@ -1862,6 +1907,13 @@ pub fn make_router(
         })
         .delete("/v1/tenant/:tenant_id", |r| {
             tenant_service_handler(r, handle_tenant_delete, RequestName("v1_tenant"))
+        })
+        .patch("/v1/tenant/config", |r| {
+            tenant_service_handler(
+                r,
+                handle_tenant_config_patch,
+                RequestName("v1_tenant_config"),
+            )
         })
         .put("/v1/tenant/config", |r| {
             tenant_service_handler(r, handle_tenant_config_set, RequestName("v1_tenant_config"))

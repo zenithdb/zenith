@@ -1,15 +1,22 @@
 use crate::auth::{AuthError, Claims, SwappableJwtAuth};
 use crate::http::error::{api_error_handler, route_error_handler, ApiError};
 use crate::http::request::{get_query_param, parse_query_param};
+use crate::pprof;
+use ::pprof::protos::Message as _;
+use ::pprof::ProfilerGuardBuilder;
 use anyhow::{anyhow, Context};
+use bytes::{Bytes, BytesMut};
 use hyper::header::{HeaderName, AUTHORIZATION, CONTENT_DISPOSITION};
 use hyper::http::HeaderValue;
 use hyper::Method;
 use hyper::{header::CONTENT_TYPE, Body, Request, Response};
 use metrics::{register_int_counter, Encoder, IntCounter, TextEncoder};
 use once_cell::sync::Lazy;
+use regex::Regex;
 use routerify::ext::RequestExt;
 use routerify::{Middleware, RequestInfo, Router, RouterBuilder};
+use tokio::sync::{mpsc, Mutex};
+use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::io::ReaderStream;
 use tracing::{debug, info, info_span, warn, Instrument};
 
@@ -17,11 +24,6 @@ use std::future::Future;
 use std::io::Write as _;
 use std::str::FromStr;
 use std::time::Duration;
-
-use bytes::{Bytes, BytesMut};
-use pprof::protos::Message as _;
-use tokio::sync::{mpsc, Mutex};
-use tokio_stream::wrappers::ReceiverStream;
 
 static SERVE_METRICS_COUNT: Lazy<IntCounter> = Lazy::new(|| {
     register_int_counter!(
@@ -365,7 +367,7 @@ pub async fn profile_cpu_handler(req: Request<Body>) -> Result<Response<Body>, A
 
     // Take the profile.
     let report = tokio::task::spawn_blocking(move || {
-        let guard = pprof::ProfilerGuardBuilder::default()
+        let guard = ProfilerGuardBuilder::default()
             .frequency(frequency_hz)
             .blocklist(&["libc", "libgcc", "pthread", "vdso"])
             .build()?;
@@ -415,6 +417,7 @@ pub async fn profile_heap_handler(req: Request<Body>) -> Result<Response<Body>, 
     enum Format {
         Jemalloc,
         Pprof,
+        Svg,
     }
 
     // Parameters.
@@ -422,8 +425,23 @@ pub async fn profile_heap_handler(req: Request<Body>) -> Result<Response<Body>, 
         None => Format::Pprof,
         Some("jemalloc") => Format::Jemalloc,
         Some("pprof") => Format::Pprof,
+        Some("svg") => Format::Svg,
         Some(format) => return Err(ApiError::BadRequest(anyhow!("invalid format {format}"))),
     };
+
+    // Functions and mappings to strip when symbolizing pprof profiles. If true,
+    // also remove child frames.
+    static STRIP_FUNCTIONS: Lazy<Vec<(Regex, bool)>> = Lazy::new(|| {
+        vec![
+            (Regex::new("^__rust").unwrap(), false),
+            (Regex::new("^_start$").unwrap(), false),
+            (Regex::new("^irallocx_prof").unwrap(), true),
+            (Regex::new("^prof_alloc_prep").unwrap(), true),
+            (Regex::new("^std::rt::lang_start").unwrap(), false),
+            (Regex::new("^std::sys::backtrace::__rust").unwrap(), false),
+        ]
+    });
+    const STRIP_MAPPINGS: &[&str] = &["libc", "libgcc", "pthread", "vdso"];
 
     // Obtain profiler handle.
     let mut prof_ctl = jemalloc_pprof::PROF_CTL
@@ -457,15 +475,45 @@ pub async fn profile_heap_handler(req: Request<Body>) -> Result<Response<Body>, 
         }
 
         Format::Pprof => {
-            let data = tokio::task::spawn_blocking(move || prof_ctl.dump_pprof())
-                .await
-                .map_err(|join_err| ApiError::InternalServerError(join_err.into()))?
-                .map_err(ApiError::InternalServerError)?;
+            let data = tokio::task::spawn_blocking(move || {
+                let bytes = prof_ctl.dump_pprof()?;
+                // Symbolize the profile.
+                // TODO: consider moving this upstream to jemalloc_pprof and avoiding the
+                // serialization roundtrip.
+                let profile = pprof::decode(&bytes)?;
+                let profile = pprof::symbolize(profile)?;
+                let profile = pprof::strip_locations(profile, STRIP_MAPPINGS, &STRIP_FUNCTIONS);
+                pprof::encode(&profile)
+            })
+            .await
+            .map_err(|join_err| ApiError::InternalServerError(join_err.into()))?
+            .map_err(ApiError::InternalServerError)?;
             Response::builder()
                 .status(200)
                 .header(CONTENT_TYPE, "application/octet-stream")
                 .header(CONTENT_DISPOSITION, "attachment; filename=\"heap.pb\"")
                 .body(Body::from(data))
+                .map_err(|err| ApiError::InternalServerError(err.into()))
+        }
+
+        Format::Svg => {
+            let body = tokio::task::spawn_blocking(move || {
+                let bytes = prof_ctl.dump_pprof()?;
+                let profile = pprof::decode(&bytes)?;
+                let profile = pprof::symbolize(profile)?;
+                let profile = pprof::strip_locations(profile, STRIP_MAPPINGS, &STRIP_FUNCTIONS);
+                let mut opts = inferno::flamegraph::Options::default();
+                opts.title = "Heap inuse".to_string();
+                opts.count_name = "bytes".to_string();
+                pprof::flamegraph(profile, &mut opts)
+            })
+            .await
+            .map_err(|join_err| ApiError::InternalServerError(join_err.into()))?
+            .map_err(ApiError::InternalServerError)?;
+            Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, "image/svg+xml")
+                .body(Body::from(body))
                 .map_err(|err| ApiError::InternalServerError(err.into()))
         }
     }

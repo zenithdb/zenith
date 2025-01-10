@@ -4,6 +4,8 @@
 use anyhow::Context;
 use pageserver_api::models::ShardParameters;
 use pageserver_api::shard::{ShardIdentity, ShardStripeSize};
+use safekeeper_api::models::ConnectionId;
+use safekeeper_api::Term;
 use std::future::Future;
 use std::str::{self, FromStr};
 use std::sync::Arc;
@@ -16,9 +18,7 @@ use crate::auth::check_permission;
 use crate::json_ctrl::{handle_json_ctrl, AppendLogicalMessage};
 
 use crate::metrics::{TrafficMetrics, PG_QUERIES_GAUGE};
-use crate::safekeeper::Term;
 use crate::timeline::TimelineError;
-use crate::wal_service::ConnectionId;
 use crate::{GlobalTimelines, SafeKeeperConf};
 use postgres_backend::PostgresBackend;
 use postgres_backend::QueryError;
@@ -33,7 +33,7 @@ use utils::{
 
 /// Safekeeper handler of postgres commands
 pub struct SafekeeperPostgresHandler {
-    pub conf: SafeKeeperConf,
+    pub conf: Arc<SafeKeeperConf>,
     /// assigned application name
     pub appname: Option<String>,
     pub tenant_id: Option<TenantId>,
@@ -43,6 +43,7 @@ pub struct SafekeeperPostgresHandler {
     pub protocol: Option<PostgresClientProtocol>,
     /// Unique connection id is logged in spans for observability.
     pub conn_id: ConnectionId,
+    pub global_timelines: Arc<GlobalTimelines>,
     /// Auth scope allowed on the connections and public key used to check auth tokens. None if auth is not configured.
     auth: Option<(Scope, Arc<JwtAuth>)>,
     claims: Option<Claims>,
@@ -314,10 +315,11 @@ impl<IO: AsyncRead + AsyncWrite + Unpin + Send> postgres_backend::Handler<IO>
 
 impl SafekeeperPostgresHandler {
     pub fn new(
-        conf: SafeKeeperConf,
+        conf: Arc<SafeKeeperConf>,
         conn_id: u32,
         io_metrics: Option<TrafficMetrics>,
         auth: Option<(Scope, Arc<JwtAuth>)>,
+        global_timelines: Arc<GlobalTimelines>,
     ) -> Self {
         SafekeeperPostgresHandler {
             conf,
@@ -331,6 +333,7 @@ impl SafekeeperPostgresHandler {
             claims: None,
             auth,
             io_metrics,
+            global_timelines,
         }
     }
 
@@ -360,7 +363,7 @@ impl SafekeeperPostgresHandler {
         pgb: &mut PostgresBackend<IO>,
     ) -> Result<(), QueryError> {
         // Get timeline, handling "not found" error
-        let tli = match GlobalTimelines::get(self.ttid) {
+        let tli = match self.global_timelines.get(self.ttid) {
             Ok(tli) => Ok(Some(tli)),
             Err(TimelineError::NotFound(_)) => Ok(None),
             Err(e) => Err(QueryError::Other(e.into())),
@@ -394,7 +397,10 @@ impl SafekeeperPostgresHandler {
         &mut self,
         pgb: &mut PostgresBackend<IO>,
     ) -> Result<(), QueryError> {
-        let tli = GlobalTimelines::get(self.ttid).map_err(|e| QueryError::Other(e.into()))?;
+        let tli = self
+            .global_timelines
+            .get(self.ttid)
+            .map_err(|e| QueryError::Other(e.into()))?;
 
         let lsn = if self.is_walproposer_recovery() {
             // walproposer should get all local WAL until flush_lsn

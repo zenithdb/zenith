@@ -95,6 +95,14 @@ impl InterpretedWalRecord {
             && self.metadata_record.is_none()
             && matches!(self.flush_uncommitted, FlushUncommittedRecords::No)
     }
+
+    /// Checks if the WAL record is observed (i.e. contains only metadata
+    /// for observed values)
+    pub fn is_observed(&self) -> bool {
+        self.batch.is_observed()
+            && self.metadata_record.is_none()
+            && matches!(self.flush_uncommitted, FlushUncommittedRecords::No)
+    }
 }
 
 /// The interpreted part of the Postgres WAL record which requires metadata

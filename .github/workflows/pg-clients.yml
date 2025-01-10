@@ -25,11 +25,13 @@ defaults:
   run:
     shell: bash -euxo pipefail {0}
 
+permissions:
+  id-token: write # aws-actions/configure-aws-credentials
+  statuses: write # require for posting a status update
+
 env:
   DEFAULT_PG_VERSION: 16
   PLATFORM: neon-captest-new
-  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_DEV }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_KEY_DEV }}
   AWS_DEFAULT_REGION: eu-central-1
 
 jobs:
@@ -94,6 +96,7 @@ jobs:
           name: neon-${{ runner.os }}-${{ runner.arch }}-release-artifact
           path: /tmp/neon/
           prefix: latest
+          aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
 
       - name: Create Neon Project
         id: create-neon-project
@@ -110,6 +113,7 @@ jobs:
           run_in_parallel: false
           extra_params: -m remote_cluster
           pg_version: ${{ env.DEFAULT_PG_VERSION }}
+          aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
         env:
           BENCHMARK_CONNSTR: ${{ steps.create-neon-project.outputs.dsn }}
 
@@ -126,6 +130,7 @@ jobs:
         uses: ./.github/actions/allure-report-generate
         with:
           store-test-results-into-db: true
+          aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
         env:
           REGRESS_TEST_RESULT_CONNSTR_NEW: ${{ secrets.REGRESS_TEST_RESULT_CONNSTR_NEW }}
 
@@ -159,6 +164,7 @@ jobs:
         name: neon-${{ runner.os }}-${{ runner.arch }}-release-artifact
         path: /tmp/neon/
         prefix: latest
+        aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
 
     - name: Create Neon Project
       id: create-neon-project
@@ -175,6 +181,7 @@ jobs:
         run_in_parallel: false
         extra_params: -m remote_cluster
         pg_version: ${{ env.DEFAULT_PG_VERSION }}
+        aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
       env:
         BENCHMARK_CONNSTR: ${{ steps.create-neon-project.outputs.dsn }}
 
@@ -191,6 +198,7 @@ jobs:
       uses: ./.github/actions/allure-report-generate
       with:
         store-test-results-into-db: true
+        aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
       env:
         REGRESS_TEST_RESULT_CONNSTR_NEW: ${{ secrets.REGRESS_TEST_RESULT_CONNSTR_NEW }}
 

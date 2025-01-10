@@ -27,6 +27,11 @@ concurrency:
 
 jobs:
   trigger_bench_on_ec2_machine_in_eu_central_1:
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: write
+      pull-requests: write
     runs-on: [ self-hosted, small ]
     container:
       image: neondatabase/build-tools:pinned-bookworm
@@ -38,8 +43,6 @@ jobs:
     env:
       API_KEY: ${{ secrets.PERIODIC_PAGEBENCH_EC2_RUNNER_API_KEY }}
       RUN_ID: ${{ github.run_id }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_EC2_US_TEST_RUNNER_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY : ${{ secrets.AWS_EC2_US_TEST_RUNNER_ACCESS_KEY_SECRET }}
       AWS_DEFAULT_REGION : "eu-central-1"
       AWS_INSTANCE_ID : "i-02a59a3bf86bc7e74"
     steps:
@@ -49,6 +52,13 @@ jobs:
 
     - name: Show my own (github runner) external IP address - usefull for IP allowlisting
       run: curl https://ifconfig.me
+
+    - name: Assume AWS OIDC role that allows to manage (start/stop/describe... EC machine)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: eu-central-1
+        role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_MANAGE_BENCHMARK_EC2_VMS_ARN }}
+        role-duration-seconds: 3600
 
     - name: Start EC2 instance and wait for the instance to boot up
       run: |
@@ -124,11 +134,10 @@ jobs:
         cat "test_log_${GITHUB_RUN_ID}"
 
     - name: Create Allure report
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_DEV }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_KEY_DEV }}
       if: ${{ !cancelled() }}
       uses: ./.github/actions/allure-report-generate
+      with:
+        aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
 
     - name: Post to a Slack channel
       if: ${{ github.event.schedule && failure() }}
@@ -147,6 +156,14 @@ jobs:
         -H 'accept: application/json' \
         -H "Authorization: Bearer $API_KEY" \
         -d ''
+
+    - name: Assume AWS OIDC role that allows to manage (start/stop/describe... EC machine)
+      if: always() && steps.poll_step.outputs.too_many_runs != 'true'
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: eu-central-1
+        role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_MANAGE_BENCHMARK_EC2_VMS_ARN }}
+        role-duration-seconds: 3600
 
     - name: Stop EC2 instance and wait for the instance to be stopped
       if: always() && steps.poll_step.outputs.too_many_runs != 'true'

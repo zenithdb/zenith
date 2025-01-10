@@ -573,17 +573,18 @@ def test_subscriber_synchronous_commit(neon_simple_env: NeonEnv, vanilla_pg: Van
     vanilla_pg.safe_psql("create extension neon;")
 
     env.create_branch("subscriber")
-    # We want all data to fit into shared_buffers because later we stop
-    # safekeeper and insert more; this shouldn't cause page requests as they
-    # will be stuck.
+    # We want all data to fit into shared_buffers or LFC cache because later we
+    # stop safekeeper and insert more; this shouldn't cause page requests as
+    # they will be stuck.
+    if USE_LFC:
+        config_lines = ["neon.max_file_cache_size = 32MB", "neon.file_cache_size_limit = 32MB"]
+    else:
+        config_lines = [
+            "shared_buffers = 32MB",
+        ]
     sub = env.endpoints.create(
         "subscriber",
-        config_lines=[
-            "neon.max_file_cache_size = 32MB",
-            "neon.file_cache_size_limit = 32MB",
-        ]
-        if USE_LFC
-        else [],
+        config_lines=config_lines,
     )
     sub.start()
 

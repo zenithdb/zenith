@@ -1486,7 +1486,7 @@ pub struct ValueRef<'a> {
     layer: &'a DeltaLayerInner,
 }
 
-impl<'a> ValueRef<'a> {
+impl ValueRef<'_> {
     /// Loads the value from disk
     pub async fn load(&self, ctx: &RequestContext) -> Result<Value> {
         let buf = self.load_raw(ctx).await?;
@@ -1543,7 +1543,7 @@ pub struct DeltaLayerIterator<'a> {
     is_end: bool,
 }
 
-impl<'a> DeltaLayerIterator<'a> {
+impl DeltaLayerIterator<'_> {
     pub(crate) fn layer_dbg_info(&self) -> String {
         self.delta_layer.layer_dbg_info()
     }

@@ -62,7 +62,7 @@ use crate::local_env::LocalEnv;
 use crate::postgresql_conf::PostgresConf;
 use crate::storage_controller::StorageController;
 
-use compute_api::responses::{ComputeState, ComputeStatus};
+use compute_api::responses::{ComputeStatus, ComputeStatusResponse};
 use compute_api::spec::{Cluster, ComputeFeature, ComputeMode, ComputeSpec};
 
 // contents of a endpoint.json file
@@ -316,6 +316,10 @@ impl Endpoint {
         // and can cause errors like 'no unpinned buffers available', see
         // <https://github.com/neondatabase/neon/issues/9956>
         conf.append("shared_buffers", "1MB");
+        // Postgres defaults to effective_io_concurrency=1, which does not exercise the pageserver's
+        // batching logic.  Set this to 2 so that we exercise the code a bit without letting
+        // individual tests do a lot of concurrent work on underpowered test machines
+        conf.append("effective_io_concurrency", "2");
         conf.append("fsync", "off");
         conf.append("max_connections", "100");
         conf.append("wal_level", "logical");
@@ -581,6 +585,7 @@ impl Endpoint {
             features: self.features.clone(),
             swap_size_bytes: None,
             disk_quota_bytes: None,
+            disable_lfc_resizing: None,
             cluster: Cluster {
                 cluster_id: None, // project ID: not used
                 name: None,       // project name: not used
@@ -734,7 +739,7 @@ impl Endpoint {
     }
 
     // Call the /status HTTP API
-    pub async fn get_status(&self) -> Result<ComputeState> {
+    pub async fn get_status(&self) -> Result<ComputeStatusResponse> {
         let client = reqwest::Client::new();
 
         let response = client
@@ -810,7 +815,7 @@ impl Endpoint {
         }
 
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(120))
             .build()
             .unwrap();
         let response = client

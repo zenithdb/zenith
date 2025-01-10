@@ -1,5 +1,5 @@
 //! An asynchronous, pipelined, PostgreSQL client.
-#![warn(rust_2018_idioms, clippy::all)]
+#![warn(clippy::all)]
 
 pub use crate::cancel_token::CancelToken;
 pub use crate::client::{Client, SocketConfig};

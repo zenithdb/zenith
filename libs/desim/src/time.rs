@@ -91,7 +91,7 @@ impl Timing {
 
     /// Return true if there is a ready event.
     fn is_event_ready(&self, queue: &mut BinaryHeap<Pending>) -> bool {
-        queue.peek().map_or(false, |x| x.time <= self.now())
+        queue.peek().is_some_and(|x| x.time <= self.now())
     }
 
     /// Clear all pending events.

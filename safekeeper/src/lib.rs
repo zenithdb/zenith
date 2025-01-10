@@ -43,6 +43,9 @@ pub mod wal_reader_stream;
 pub mod wal_service;
 pub mod wal_storage;
 
+#[cfg(any(test, feature = "benchmarking"))]
+pub mod test_utils;
+
 mod timelines_global_map;
 use std::sync::Arc;
 pub use timelines_global_map::GlobalTimelines;

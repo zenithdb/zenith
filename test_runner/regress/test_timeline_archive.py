@@ -398,6 +398,7 @@ def test_timeline_archival_chaos(neon_env_builder: NeonEnvBuilder):
 
     # Offloading is off by default at time of writing: remove this line when it's on by default
     neon_env_builder.pageserver_config_override = "timeline_offloading = true"
+    neon_env_builder.storage_controller_config = {"heartbeat_interval": "100msec"}
     neon_env_builder.enable_pageserver_remote_storage(s3_storage())
 
     # We will exercise migrations, so need multiple pageservers
@@ -426,6 +427,7 @@ def test_timeline_archival_chaos(neon_env_builder: NeonEnvBuilder):
             [
                 ".*removing local file.*because it has unexpected length.*",
                 ".*__temp.*",
+                ".*method=POST path=\\S+/timeline .*: Not activating a Stopping timeline.*",
                 # FIXME: there are still anyhow::Error paths in timeline creation/deletion which
                 # generate 500 results when called during shutdown (https://github.com/neondatabase/neon/issues/9768)
                 ".*InternalServerError.*",
@@ -434,6 +436,14 @@ def test_timeline_archival_chaos(neon_env_builder: NeonEnvBuilder):
                 ".*delete_timeline.*Error",
             ]
         )
+
+    env.storage_scrubber.allowed_errors.extend(
+        [
+            # Unclcean shutdowns of pageserver can legitimately result in orphan layers
+            # (https://github.com/neondatabase/neon/issues/9988#issuecomment-2520558211)
+            f".*Orphan layer detected: tenants/{tenant_id}/.*"
+        ]
+    )
 
     class TimelineState:
         def __init__(self):
@@ -949,3 +959,103 @@ def test_timeline_offload_generations(neon_env_builder: NeonEnvBuilder):
     assert gc_summary["remote_storage_errors"] == 0
     assert gc_summary["indices_deleted"] > 0
     assert gc_summary["tenant_manifests_deleted"] > 0
+
+
+@pytest.mark.parametrize("end_with_offloaded", [False, True])
+def test_timeline_offload_race_unarchive(
+    neon_env_builder: NeonEnvBuilder, end_with_offloaded: bool
+):
+    """
+    Ensure that unarchive and timeline offload don't race each other
+    """
+    # Regression test for issue https://github.com/neondatabase/neon/issues/10220
+    # (automatic) timeline offloading defaults to false for now
+    neon_env_builder.pageserver_config_override = "timeline_offloading = true"
+
+    failpoint = "before-timeline-auto-offload"
+
+    env = neon_env_builder.init_start()
+    ps_http = env.pageserver.http_client()
+
+    # Turn off gc and compaction loops: we want to issue them manually for better reliability
+    tenant_id, initial_timeline_id = env.create_tenant(
+        conf={
+            "gc_period": "0s",
+            "compaction_period": "1s",
+        }
+    )
+
+    # Create a branch
+    leaf_timeline_id = env.create_branch("test_ancestor_branch_archive", tenant_id)
+
+    # write some stuff to the leaf
+    with env.endpoints.create_start(
+        "test_ancestor_branch_archive", tenant_id=tenant_id
+    ) as endpoint:
+        endpoint.safe_psql_many(
+            [
+                "CREATE TABLE foo(key serial primary key, t text default 'data_content')",
+                "INSERT INTO foo SELECT FROM generate_series(1,1000)",
+            ]
+        )
+        sum = endpoint.safe_psql("SELECT sum(key) from foo where key % 7 = 1")
+
+    ps_http.configure_failpoints((failpoint, "pause"))
+
+    ps_http.timeline_archival_config(
+        tenant_id,
+        leaf_timeline_id,
+        state=TimelineArchivalState.ARCHIVED,
+    )
+    leaf_detail = ps_http.timeline_detail(
+        tenant_id,
+        leaf_timeline_id,
+    )
+    assert leaf_detail["is_archived"] is True
+
+    # The actual race: get the compaction task to right before
+    # offloading the timeline and attempt to unarchive it
+    wait_until(lambda: env.pageserver.assert_log_contains(f"at failpoint {failpoint}"))
+
+    # This unarchival should go through
+    ps_http.timeline_archival_config(
+        tenant_id,
+        leaf_timeline_id,
+        state=TimelineArchivalState.UNARCHIVED,
+    )
+
+    def timeline_offloaded_api(timeline_id: TimelineId) -> bool:
+        # TODO add a proper API to check if a timeline has been offloaded or not
+        return not any(
+            timeline["timeline_id"] == str(timeline_id)
+            for timeline in ps_http.timeline_list(tenant_id=tenant_id)
+        )
+
+    def leaf_offloaded():
+        assert timeline_offloaded_api(leaf_timeline_id)
+
+    # Ensure that we've hit the failed offload attempt
+    ps_http.configure_failpoints((failpoint, "off"))
+    wait_until(
+        lambda: env.pageserver.assert_log_contains(
+            f".*compaction_loop.*offload_timeline.*{leaf_timeline_id}.*can't shut down timeline.*"
+        )
+    )
+
+    with env.endpoints.create_start(
+        "test_ancestor_branch_archive", tenant_id=tenant_id
+    ) as endpoint:
+        sum_again = endpoint.safe_psql("SELECT sum(key) from foo where key % 7 = 1")
+        assert sum == sum_again
+
+    if end_with_offloaded:
+        # Ensure that offloading still works after all of this
+        ps_http.timeline_archival_config(
+            tenant_id,
+            leaf_timeline_id,
+            state=TimelineArchivalState.ARCHIVED,
+        )
+        wait_until(leaf_offloaded)
+    else:
+        # Test that deletion of leaf timeline works
+        ps_http.timeline_delete(tenant_id, leaf_timeline_id)

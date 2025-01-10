@@ -1,0 +1,65 @@
+git revision: 9e386917a
+Platform: Linux neon-dev-arm64-1 6.8.0-49-generic #49-Ubuntu SMP PREEMPT_DYNAMIC Sun Nov  3 21:21:58 UTC 2024 aarch64 aarch64 aarch64 GNU/Linux
+CPU Info Linux: Neoverse-N1
+CPU Cores Linux: 80
+CPU Info Mac: 
+CPU Cores Mac: 
+Spec: MCProposerAcceptorReconfig.tla
+Config: models/MCProposerAcceptorReconfig_p2_a2_t2_l2_c3.cfg
+----
+CONSTANTS
+NULL = NULL
+proposers = {p1, p2}
+acceptors = {a1, a2}
+max_term = 2
+max_entries = 2
+max_generation = 3
+SPECIFICATION Spec
+CONSTRAINT StateConstraint
+INVARIANT
+TypeOk
+ElectionSafetyFull
+LogIsMonotonic
+LogSafety
+\* CommittedNotTruncated
+SYMMETRY ProposerAcceptorSymmetry
+CHECK_DEADLOCK FALSE
+ALIAS Alias
+
+----
+
+TLC2 Version 2.20 of Day Month 20?? (rev: f68cb71)
+Running breadth-first search Model-Checking with fp 99 and seed -9189733667206762985 with 35 workers on 80 cores with 27307MB heap and 30720MB offheap memory [pid: 391272] (Linux 6.8.0-49-generic aarch64, Ubuntu 21.0.5 x86_64, OffHeapDiskFPSet, DiskStateQueue).
+Parsing file /home/arseny/neon2/safekeeper/spec/MCProposerAcceptorReconfig.tla
+Parsing file /tmp/tlc-3211535543066978921/TLC.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /home/arseny/neon2/safekeeper/spec/ProposerAcceptorReconfig.tla
+Parsing file /tmp/tlc-3211535543066978921/_TLCTrace.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/_TLCTrace.tla)
+Parsing file /tmp/tlc-3211535543066978921/Integers.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Parsing file /tmp/tlc-3211535543066978921/Sequences.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /tmp/tlc-3211535543066978921/FiniteSets.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /tmp/tlc-3211535543066978921/Naturals.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /home/arseny/neon2/safekeeper/spec/ProposerAcceptorStatic.tla
+Parsing file /tmp/tlc-3211535543066978921/TLCExt.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/TLCExt.tla)
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module Integers
+Semantic processing of module ProposerAcceptorStatic
+Semantic processing of module ProposerAcceptorReconfig
+Semantic processing of module TLCExt
+Semantic processing of module _TLCTrace
+Semantic processing of module MCProposerAcceptorReconfig
+Starting... (2024-12-11 04:24:13)
+Computing initial states...
+Finished computing initial states: 2 states generated, with 1 of them distinct at 2024-12-11 04:24:15.
+Progress(16) at 2024-12-11 04:24:18: 1,427,589 states generated (1,427,589 s/min), 142,472 distinct states found (142,472 ds/min), 47,162 states left on queue.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 1.0E-6
+  based on the actual fingerprints:  val = 4.2E-8
+17746857 states generated, 1121659 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 37.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 9 and the 95th percentile is 3).
+Finished in 33s at (2024-12-11 04:24:46)

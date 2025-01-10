@@ -94,6 +94,10 @@ pub mod toml_edit_ext;
 
 pub mod circuit_breaker;
 
+pub mod try_rcu;
+
+pub mod pprof;
+
 // Re-export used in macro. Avoids adding git-version as dep in target crates.
 #[doc(hidden)]
 pub use git_version;

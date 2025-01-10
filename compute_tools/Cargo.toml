@@ -7,7 +7,7 @@ license.workspace = true
 [features]
 default = []
 # Enables test specific features.
-testing = []
+testing = ["fail/failpoints"]
 
 [dependencies]
 base64.workspace = true
@@ -15,13 +15,15 @@ aws-config.workspace = true
 aws-sdk-s3.workspace = true
 aws-sdk-kms.workspace = true
 anyhow.workspace = true
+axum = { workspace = true, features = [] }
 camino.workspace = true
 chrono.workspace = true
 cfg-if.workspace = true
 clap.workspace = true
+fail.workspace = true
 flate2.workspace = true
 futures.workspace = true
-hyper0 = { workspace = true, features = ["full"] }
+http.workspace = true
 metrics.workspace = true
 nix.workspace = true
 notify.workspace = true
@@ -36,6 +38,8 @@ serde_with.workspace = true
 serde_json.workspace = true
 signal-hook.workspace = true
 tar.workspace = true
+tower.workspace = true
+tower-http.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
 tokio-postgres.workspace = true

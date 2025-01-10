@@ -6,11 +6,13 @@ use pq_proto::CancelKeyData;
 use redis::aio::PubSub;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use super::connection_with_credentials_provider::ConnectionWithCredentialsProvider;
 use crate::cache::project_info::ProjectInfoCache;
 use crate::cancellation::{CancelMap, CancellationHandler};
+use crate::config::ProxyConfig;
 use crate::intern::{ProjectIdInt, RoleNameInt};
 use crate::metrics::{Metrics, RedisErrors, RedisEventsCount};
 
@@ -28,6 +30,11 @@ async fn try_connect(client: &ConnectionWithCredentialsProvider) -> anyhow::Resu
     Ok(conn)
 }
 
+#[derive(Debug, Deserialize)]
+struct NotificationHeader<'a> {
+    topic: &'a str,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(tag = "topic", content = "data")]
 pub(crate) enum Notification {
@@ -39,22 +46,70 @@ pub(crate) enum Notification {
         allowed_ips_update: AllowedIpsUpdate,
     },
     #[serde(
+        rename = "/block_public_or_vpc_access_updated",
+        deserialize_with = "deserialize_json_string"
+    )]
+    BlockPublicOrVpcAccessUpdated {
+        block_public_or_vpc_access_updated: BlockPublicOrVpcAccessUpdated,
+    },
+    #[serde(
+        rename = "/allowed_vpc_endpoints_updated_for_org",
+        deserialize_with = "deserialize_json_string"
+    )]
+    AllowedVpcEndpointsUpdatedForOrg {
+        allowed_vpc_endpoints_updated_for_org: AllowedVpcEndpointsUpdatedForOrg,
+    },
+    #[serde(
+        rename = "/allowed_vpc_endpoints_updated_for_projects",
+        deserialize_with = "deserialize_json_string"
+    )]
+    AllowedVpcEndpointsUpdatedForProjects {
+        allowed_vpc_endpoints_updated_for_projects: AllowedVpcEndpointsUpdatedForProjects,
+    },
+    #[serde(
         rename = "/password_updated",
         deserialize_with = "deserialize_json_string"
     )]
     PasswordUpdate { password_update: PasswordUpdate },
     #[serde(rename = "/cancel_session")]
     Cancel(CancelSession),
+
+    #[serde(
+        other,
+        deserialize_with = "deserialize_unknown_topic",
+        skip_serializing
+    )]
+    UnknownTopic,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub(crate) struct AllowedIpsUpdate {
     project_id: ProjectIdInt,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub(crate) struct BlockPublicOrVpcAccessUpdated {
+    project_id: ProjectIdInt,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub(crate) struct AllowedVpcEndpointsUpdatedForOrg {
+    // TODO: change type once the implementation is more fully fledged.
+    // See e.g. https://github.com/neondatabase/neon/pull/10073.
+    account_id: ProjectIdInt,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub(crate) struct AllowedVpcEndpointsUpdatedForProjects {
+    project_ids: Vec<ProjectIdInt>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub(crate) struct PasswordUpdate {
     project_id: ProjectIdInt,
     role_name: RoleNameInt,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub(crate) struct CancelSession {
     pub(crate) region_id: Option<String>,
@@ -70,6 +125,15 @@ where
 {
     let s = String::deserialize(deserializer)?;
     serde_json::from_str(&s).map_err(<D::Error as serde::de::Error>::custom)
+}
+
+// https://github.com/serde-rs/serde/issues/1714
+fn deserialize_unknown_topic<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_any(serde::de::IgnoredAny)?;
+    Ok(())
 }
 
 struct MessageHandler<C: ProjectInfoCache + Send + Sync + 'static> {
@@ -100,27 +164,47 @@ impl<C: ProjectInfoCache + Send + Sync + 'static> MessageHandler<C> {
             region_id,
         }
     }
+
     pub(crate) async fn increment_active_listeners(&self) {
         self.cache.increment_active_listeners().await;
     }
+
     pub(crate) async fn decrement_active_listeners(&self) {
         self.cache.decrement_active_listeners().await;
     }
+
     #[tracing::instrument(skip(self, msg), fields(session_id = tracing::field::Empty))]
     async fn handle_message(&self, msg: redis::Msg) -> anyhow::Result<()> {
         let payload: String = msg.get_payload()?;
         tracing::debug!(?payload, "received a message payload");
 
         let msg: Notification = match serde_json::from_str(&payload) {
+            Ok(Notification::UnknownTopic) => {
+                match serde_json::from_str::<NotificationHeader>(&payload) {
+                    // don't update the metric for redis errors if it's just a topic we don't know about.
+                    Ok(header) => tracing::warn!(topic = header.topic, "unknown topic"),
+                    Err(e) => {
+                        Metrics::get().proxy.redis_errors_total.inc(RedisErrors {
+                            channel: msg.get_channel_name(),
+                        });
+                        tracing::error!("broken message: {e}");
+                    }
+                };
+                return Ok(());
+            }
             Ok(msg) => msg,
             Err(e) => {
                 Metrics::get().proxy.redis_errors_total.inc(RedisErrors {
                     channel: msg.get_channel_name(),
                 });
-                tracing::error!("broken message: {e}");
+                match serde_json::from_str::<NotificationHeader>(&payload) {
+                    Ok(header) => tracing::error!(topic = header.topic, "broken message: {e}"),
+                    Err(_) => tracing::error!("broken message: {e}"),
+                };
                 return Ok(());
             }
         };
+
         tracing::debug!(?msg, "received a message");
         match msg {
             Notification::Cancel(cancel_session) => {
@@ -143,6 +227,8 @@ impl<C: ProjectInfoCache + Send + Sync + 'static> MessageHandler<C> {
                 let peer_addr = cancel_session
                     .peer_addr
                     .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+                let cancel_span = tracing::span!(parent: None, tracing::Level::INFO, "cancel_session", session_id = ?cancel_session.session_id);
+                cancel_span.follows_from(tracing::Span::current());
                 // This instance of cancellation_handler doesn't have a RedisPublisherClient so it can't publish the message.
                 match self
                     .cancellation_handler
@@ -152,6 +238,7 @@ impl<C: ProjectInfoCache + Send + Sync + 'static> MessageHandler<C> {
                         peer_addr,
                         cancel_session.peer_addr.is_some(),
                     )
+                    .instrument(cancel_span)
                     .await
                 {
                     Ok(()) => {}
@@ -160,7 +247,11 @@ impl<C: ProjectInfoCache + Send + Sync + 'static> MessageHandler<C> {
                     }
                 }
             }
-            Notification::AllowedIpsUpdate { .. } | Notification::PasswordUpdate { .. } => {
+            Notification::AllowedIpsUpdate { .. }
+            | Notification::PasswordUpdate { .. }
+            | Notification::BlockPublicOrVpcAccessUpdated { .. }
+            | Notification::AllowedVpcEndpointsUpdatedForOrg { .. }
+            | Notification::AllowedVpcEndpointsUpdatedForProjects { .. } => {
                 invalidate_cache(self.cache.clone(), msg.clone());
                 if matches!(msg, Notification::AllowedIpsUpdate { .. }) {
                     Metrics::get()
@@ -173,6 +264,8 @@ impl<C: ProjectInfoCache + Send + Sync + 'static> MessageHandler<C> {
                         .redis_events_count
                         .inc(RedisEventsCount::PasswordUpdate);
                 }
+                // TODO: add additional metrics for the other event types.
+
                 // It might happen that the invalid entry is on the way to be cached.
                 // To make sure that the entry is invalidated, let's repeat the invalidation in INVALIDATION_LAG seconds.
                 // TODO: include the version (or the timestamp) in the message and invalidate only if the entry is cached before the message.
@@ -182,6 +275,8 @@ impl<C: ProjectInfoCache + Send + Sync + 'static> MessageHandler<C> {
                     invalidate_cache(cache, msg);
                 });
             }
+
+            Notification::UnknownTopic => unreachable!(),
         }
 
         Ok(())
@@ -199,6 +294,16 @@ fn invalidate_cache<C: ProjectInfoCache>(cache: Arc<C>, msg: Notification) {
                 password_update.role_name,
             ),
         Notification::Cancel(_) => unreachable!("cancel message should be handled separately"),
+        Notification::BlockPublicOrVpcAccessUpdated { .. } => {
+            // https://github.com/neondatabase/neon/pull/10073
+        }
+        Notification::AllowedVpcEndpointsUpdatedForOrg { .. } => {
+            // https://github.com/neondatabase/neon/pull/10073
+        }
+        Notification::AllowedVpcEndpointsUpdatedForProjects { .. } => {
+            // https://github.com/neondatabase/neon/pull/10073
+        }
+        Notification::UnknownTopic => unreachable!(),
     }
 }
 
@@ -245,6 +350,7 @@ async fn handle_messages<C: ProjectInfoCache + Send + Sync + 'static>(
 /// Handle console's invalidation messages.
 #[tracing::instrument(name = "redis_notifications", skip_all)]
 pub async fn task_main<C>(
+    config: &'static ProxyConfig,
     redis: ConnectionWithCredentialsProvider,
     cache: Arc<C>,
     cancel_map: CancelMap,
@@ -254,6 +360,7 @@ where
     C: ProjectInfoCache + Send + Sync + 'static,
 {
     let cancellation_handler = Arc::new(CancellationHandler::<()>::new(
+        &config.connect_to_compute,
         cancel_map,
         crate::metrics::CancellationSource::FromRedis,
     ));
@@ -361,6 +468,32 @@ mod tests {
         let text = serde_json::to_string(&msg)?;
         let result: Notification = serde_json::from_str(&text)?;
         assert_eq!(msg, result,);
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_unknown_topic() -> anyhow::Result<()> {
+        let with_data = json!({
+            "type": "message",
+            "topic": "/doesnotexist",
+            "data": {
+                "payload": "ignored"
+            },
+            "extra_fields": "something"
+        })
+        .to_string();
+        let result: Notification = serde_json::from_str(&with_data)?;
+        assert_eq!(result, Notification::UnknownTopic);
+
+        let without_data = json!({
+            "type": "message",
+            "topic": "/doesnotexist",
+            "extra_fields": "something"
+        })
+        .to_string();
+        let result: Notification = serde_json::from_str(&without_data)?;
+        assert_eq!(result, Notification::UnknownTopic);
 
         Ok(())
     }

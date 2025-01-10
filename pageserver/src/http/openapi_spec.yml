@@ -767,7 +767,27 @@ paths:
   /v1/tenant/config:
     put:
       description: |
-        Update tenant's config.
+        Update tenant's config by setting it to the provided value
+
+        Invalid fields in the tenant config will cause the request to be rejected with status 400.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantConfigRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TenantInfo"
+    patch:
+      description: |
+        Update tenant's config additively by patching the updated fields provided.
+        Null values unset the field and non-null values upsert it.
 
         Invalid fields in the tenant config will cause the request to be rejected with status 400.
       requestBody:

@@ -50,6 +50,7 @@ impl std::fmt::Display for ApiUrl {
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

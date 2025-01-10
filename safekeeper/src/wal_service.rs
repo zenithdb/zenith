@@ -4,6 +4,8 @@
 //!
 use anyhow::{Context, Result};
 use postgres_backend::QueryError;
+use safekeeper_api::models::ConnectionId;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_io_timeout::TimeoutReader;
@@ -11,9 +13,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::*;
 use utils::{auth::Scope, measured_stream::MeasuredStream};
 
-use crate::handler::SafekeeperPostgresHandler;
 use crate::metrics::TrafficMetrics;
 use crate::SafeKeeperConf;
+use crate::{handler::SafekeeperPostgresHandler, GlobalTimelines};
 use postgres_backend::{AuthType, PostgresBackend};
 
 /// Accept incoming TCP connections and spawn them into a background thread.
@@ -22,9 +24,10 @@ use postgres_backend::{AuthType, PostgresBackend};
 /// to any tenant are allowed) or Tenant (only tokens giving access to specific
 /// tenant are allowed). Doesn't matter if auth is disabled in conf.
 pub async fn task_main(
-    conf: SafeKeeperConf,
+    conf: Arc<SafeKeeperConf>,
     pg_listener: std::net::TcpListener,
     allowed_auth_scope: Scope,
+    global_timelines: Arc<GlobalTimelines>,
 ) -> anyhow::Result<()> {
     // Tokio's from_std won't do this for us, per its comment.
     pg_listener.set_nonblocking(true)?;
@@ -37,10 +40,10 @@ pub async fn task_main(
         debug!("accepted connection from {}", peer_addr);
         let conf = conf.clone();
         let conn_id = issue_connection_id(&mut connection_count);
-
+        let global_timelines = global_timelines.clone();
         tokio::spawn(
             async move {
-                if let Err(err) = handle_socket(socket, conf, conn_id, allowed_auth_scope).await {
+                if let Err(err) = handle_socket(socket, conf, conn_id, allowed_auth_scope, global_timelines).await {
                     error!("connection handler exited: {}", err);
                 }
             }
@@ -53,9 +56,10 @@ pub async fn task_main(
 ///
 async fn handle_socket(
     socket: TcpStream,
-    conf: SafeKeeperConf,
+    conf: Arc<SafeKeeperConf>,
     conn_id: ConnectionId,
     allowed_auth_scope: Scope,
+    global_timelines: Arc<GlobalTimelines>,
 ) -> Result<(), QueryError> {
     socket.set_nodelay(true)?;
     let peer_addr = socket.peer_addr()?;
@@ -96,8 +100,13 @@ async fn handle_socket(
         Some(_) => AuthType::NeonJWT,
     };
     let auth_pair = auth_key.map(|key| (allowed_auth_scope, key));
-    let mut conn_handler =
-        SafekeeperPostgresHandler::new(conf, conn_id, Some(traffic_metrics.clone()), auth_pair);
+    let mut conn_handler = SafekeeperPostgresHandler::new(
+        conf,
+        conn_id,
+        Some(traffic_metrics.clone()),
+        auth_pair,
+        global_timelines,
+    );
     let pgbackend = PostgresBackend::new_from_io(socket, peer_addr, auth_type, None)?;
     // libpq protocol between safekeeper and walproposer / pageserver
     // We don't use shutdown.
@@ -106,8 +115,6 @@ async fn handle_socket(
         .await
 }
 
-/// Unique WAL service connection ids are logged in spans for observability.
-pub type ConnectionId = u32;
 pub type ConnectionCount = u32;
 
 pub fn issue_connection_id(count: &mut ConnectionCount) -> ConnectionId {

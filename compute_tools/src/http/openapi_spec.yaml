@@ -37,7 +37,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ComputeMetrics"
 
-  /metrics
+  /metrics:
     get:
       tags:
       - Info
@@ -537,11 +537,13 @@ components:
             properties:
               extname:
                 type: string
-              versions:
-                type: array
+              version:
+                type: string
                 items:
                   type: string
               n_databases:
+                type: integer
+              owned_by_superuser:
                 type: integer
 
     SetRoleGrantsRequest:

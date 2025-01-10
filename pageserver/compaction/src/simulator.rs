@@ -143,7 +143,7 @@ impl interface::CompactionLayer<Key> for Arc<MockDeltaLayer> {
 impl interface::CompactionDeltaLayer<MockTimeline> for Arc<MockDeltaLayer> {
     type DeltaEntry<'a> = MockRecord;
 
-    async fn load_keys<'a>(&self, _ctx: &MockRequestContext) -> anyhow::Result<Vec<MockRecord>> {
+    async fn load_keys(&self, _ctx: &MockRequestContext) -> anyhow::Result<Vec<MockRecord>> {
         Ok(self.records.clone())
     }
 }

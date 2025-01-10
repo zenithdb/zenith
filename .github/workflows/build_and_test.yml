@@ -21,8 +21,6 @@ concurrency:
 env:
   RUST_BACKTRACE: 1
   COPT: '-Werror'
-  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_DEV }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_KEY_DEV }}
   # A concurrency group that we use for e2e-tests runs, matches `concurrency.group` above with `github.repository` as a prefix
   E2E_CONCURRENCY_GROUP: ${{ github.repository }}-e2e-tests-${{ github.ref_name }}-${{ github.ref_name == 'main' && github.sha || 'anysha' }}
 
@@ -214,7 +212,7 @@ jobs:
           fi
           echo "CLIPPY_COMMON_ARGS=${CLIPPY_COMMON_ARGS}" >> $GITHUB_ENV
       - name: Run cargo clippy (debug)
-        run: cargo hack --feature-powerset clippy $CLIPPY_COMMON_ARGS
+        run: cargo hack --features default --ignore-unknown-features --feature-powerset clippy $CLIPPY_COMMON_ARGS
 
       - name: Check documentation generation
         run: cargo doc --workspace --no-deps --document-private-items
@@ -255,15 +253,15 @@ jobs:
       build-tools-image: ${{ needs.build-build-tools-image.outputs.image }}-bookworm
       build-tag: ${{ needs.tag.outputs.build-tag }}
       build-type: ${{ matrix.build-type }}
-      # Run tests on all Postgres versions in release builds and only on the latest version in debug builds
-      # run without LFC on v17 release only
+      # Run tests on all Postgres versions in release builds and only on the latest version in debug builds.
+      # Run without LFC on v17 release and debug builds only. For all the other cases LFC is enabled.
       test-cfg: |
-        ${{ matrix.build-type == 'release' && '[{"pg_version":"v14", "lfc_state": "without-lfc"},
-                                                {"pg_version":"v15", "lfc_state": "without-lfc"},
-                                                {"pg_version":"v16", "lfc_state": "without-lfc"},
-                                                {"pg_version":"v17", "lfc_state": "without-lfc"},
-                                                {"pg_version":"v17", "lfc_state": "with-lfc"}]'
-                                           || '[{"pg_version":"v17", "lfc_state": "without-lfc"}]' }}
+        ${{ matrix.build-type == 'release' && '[{"pg_version":"v14", "lfc_state": "with-lfc"},
+                                                {"pg_version":"v15", "lfc_state": "with-lfc"},
+                                                {"pg_version":"v16", "lfc_state": "with-lfc"},
+                                                {"pg_version":"v17", "lfc_state": "with-lfc"},
+                                                {"pg_version":"v17", "lfc_state": "without-lfc"}]'
+                                           || '[{"pg_version":"v17", "lfc_state": "without-lfc" }]' }}
     secrets: inherit
 
   # Keep `benchmarks` job outside of `build-and-test-locally` workflow to make job failures non-blocking
@@ -305,6 +303,11 @@ jobs:
   benchmarks:
     if: github.ref_name == 'main' || contains(github.event.pull_request.labels.*.name, 'run-benchmarks')
     needs: [ check-permissions, build-and-test-locally, build-build-tools-image, get-benchmarks-durations ]
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: write
+      pull-requests: write
     runs-on: [ self-hosted, small ]
     container:
       image: ${{ needs.build-build-tools-image.outputs.image }}-bookworm
@@ -333,6 +336,7 @@ jobs:
           extra_params: --splits 5 --group ${{ matrix.pytest_split_group }}
           benchmark_durations: ${{ needs.get-benchmarks-durations.outputs.json }}
           pg_version: v16
+          aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
         env:
           VIP_VAP_ACCESS_TOKEN: "${{ secrets.VIP_VAP_ACCESS_TOKEN }}"
           PERF_TEST_RESULT_CONNSTR: "${{ secrets.PERF_TEST_RESULT_CONNSTR }}"
@@ -345,6 +349,11 @@ jobs:
   report-benchmarks-failures:
     needs: [ benchmarks, create-test-report ]
     if: github.ref_name == 'main' && failure() && needs.benchmarks.result == 'failure'
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: write
+      pull-requests: write
     runs-on: ubuntu-22.04
 
     steps:
@@ -360,6 +369,11 @@ jobs:
   create-test-report:
     needs: [ check-permissions, build-and-test-locally, coverage-report, build-build-tools-image, benchmarks ]
     if: ${{ !cancelled() && contains(fromJSON('["skipped", "success"]'), needs.check-permissions.result) }}
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: write
+      pull-requests: write
     outputs:
       report-url: ${{ steps.create-allure-report.outputs.report-url }}
 
@@ -380,6 +394,7 @@ jobs:
         uses: ./.github/actions/allure-report-generate
         with:
           store-test-results-into-db: true
+          aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
         env:
           REGRESS_TEST_RESULT_CONNSTR_NEW: ${{ secrets.REGRESS_TEST_RESULT_CONNSTR_NEW }}
 
@@ -411,6 +426,10 @@ jobs:
   coverage-report:
     if: ${{ !startsWith(github.ref_name, 'release') }}
     needs: [ check-permissions, build-build-tools-image, build-and-test-locally ]
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: write
     runs-on: [ self-hosted, small ]
     container:
       image: ${{ needs.build-build-tools-image.outputs.image }}-bookworm
@@ -437,12 +456,14 @@ jobs:
         with:
           name: neon-${{ runner.os }}-${{ runner.arch }}-${{ matrix.build_type }}-artifact
           path: /tmp/neon
+          aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
 
       - name: Get coverage artifact
         uses: ./.github/actions/download
         with:
           name: coverage-data-artifact
           path: /tmp/coverage
+          aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
 
       - name: Merge coverage data
         run: scripts/coverage "--profraw-prefix=$GITHUB_JOB" --dir=/tmp/coverage merge
@@ -517,7 +538,7 @@ jobs:
 
   trigger-e2e-tests:
     if: ${{ !github.event.pull_request.draft || contains( github.event.pull_request.labels.*.name, 'run-e2e-tests-in-draft') || github.ref_name == 'main' || github.ref_name == 'release' || github.ref_name == 'release-proxy' || github.ref_name == 'release-compute' }}
-    needs: [ check-permissions, promote-images, tag ]
+    needs: [ check-permissions, promote-images-dev, tag ]
     uses: ./.github/workflows/trigger-e2e-tests.yml
     secrets: inherit
 
@@ -573,6 +594,10 @@ jobs:
   neon-image:
     needs: [ neon-image-arch, tag ]
     runs-on: ubuntu-22.04
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: read
 
     steps:
       - uses: docker/login-action@v3
@@ -587,11 +612,15 @@ jobs:
                                              neondatabase/neon:${{ needs.tag.outputs.build-tag }}-bookworm-x64 \
                                              neondatabase/neon:${{ needs.tag.outputs.build-tag }}-bookworm-arm64
 
-      - uses: docker/login-action@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          registry: 369495373322.dkr.ecr.eu-central-1.amazonaws.com
-          username: ${{ secrets.AWS_ACCESS_KEY_DEV }}
-          password: ${{ secrets.AWS_SECRET_KEY_DEV }}
+          aws-region: eu-central-1
+          role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
+          role-duration-seconds: 3600
+
+      - name: Login to Amazon Dev ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Push multi-arch image to ECR
         run: |
@@ -600,6 +629,10 @@ jobs:
 
   compute-node-image-arch:
     needs: [ check-permissions, build-build-tools-image, tag ]
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -640,11 +673,15 @@ jobs:
           username: ${{ secrets.NEON_DOCKERHUB_USERNAME }}
           password: ${{ secrets.NEON_DOCKERHUB_PASSWORD }}
 
-      - uses: docker/login-action@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          registry: 369495373322.dkr.ecr.eu-central-1.amazonaws.com
-          username: ${{ secrets.AWS_ACCESS_KEY_DEV }}
-          password: ${{ secrets.AWS_SECRET_KEY_DEV }}
+          aws-region: eu-central-1
+          role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
+          role-duration-seconds: 3600
+
+      - name: Login to Amazon Dev ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
       - uses: docker/login-action@v3
         with:
@@ -717,6 +754,10 @@ jobs:
 
   compute-node-image:
     needs: [ compute-node-image-arch, tag ]
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: read
     runs-on: ubuntu-22.04
 
     strategy:
@@ -761,11 +802,15 @@ jobs:
                                              neondatabase/compute-tools:${{ needs.tag.outputs.build-tag }}-${{ matrix.version.debian }}-x64 \
                                              neondatabase/compute-tools:${{ needs.tag.outputs.build-tag }}-${{ matrix.version.debian }}-arm64
 
-      - uses: docker/login-action@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          registry: 369495373322.dkr.ecr.eu-central-1.amazonaws.com
-          username: ${{ secrets.AWS_ACCESS_KEY_DEV }}
-          password: ${{ secrets.AWS_SECRET_KEY_DEV }}
+          aws-region: eu-central-1
+          role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
+          role-duration-seconds: 3600
+
+      - name: Login to Amazon Dev ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Push multi-arch compute-node-${{ matrix.version.pg }} image to ECR
         run: |
@@ -795,7 +840,7 @@ jobs:
           - pg: v17
             debian: bookworm
     env:
-      VM_BUILDER_VERSION: v0.35.0
+      VM_BUILDER_VERSION: v0.37.1
 
     steps:
       - uses: actions/checkout@v4
@@ -885,12 +930,14 @@ jobs:
           docker compose -f ./docker-compose/docker-compose.yml logs || 0
           docker compose -f ./docker-compose/docker-compose.yml down
 
-  promote-images:
-    needs: [ check-permissions, tag, test-images, vm-compute-node-image ]
+  promote-images-dev:
+    needs: [ check-permissions, tag, vm-compute-node-image ]
     runs-on: ubuntu-22.04
 
     permissions:
-      id-token: write # for `aws-actions/configure-aws-credentials`
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: read
 
     env:
       VERSIONS: v14 v15 v16 v17
@@ -901,12 +948,15 @@ jobs:
           username: ${{ secrets.NEON_DOCKERHUB_USERNAME }}
           password: ${{ secrets.NEON_DOCKERHUB_PASSWORD }}
 
-      - name: Login to dev ECR
-        uses: docker/login-action@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          registry: 369495373322.dkr.ecr.eu-central-1.amazonaws.com
-          username: ${{ secrets.AWS_ACCESS_KEY_DEV }}
-          password: ${{ secrets.AWS_SECRET_KEY_DEV }}
+          aws-region: eu-central-1
+          role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
+          role-duration-seconds: 3600
+
+      - name: Login to Amazon Dev ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Copy vm-compute-node images to ECR
         run: |
@@ -914,6 +964,35 @@ jobs:
             docker buildx imagetools create -t 369495373322.dkr.ecr.eu-central-1.amazonaws.com/vm-compute-node-${version}:${{ needs.tag.outputs.build-tag }} \
                                                neondatabase/vm-compute-node-${version}:${{ needs.tag.outputs.build-tag }}
           done
+
+  promote-images-prod:
+    needs: [ check-permissions, tag, test-images, vm-compute-node-image ]
+    runs-on: ubuntu-22.04
+    if: github.ref_name == 'main' || github.ref_name == 'release' || github.ref_name == 'release-proxy' || github.ref_name == 'release-compute'
+
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: read
+
+    env:
+      VERSIONS: v14 v15 v16 v17
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: eu-central-1
+          role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
+          role-duration-seconds: 3600
+
+      - name: Login to Amazon Dev ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.NEON_DOCKERHUB_USERNAME }}
+          password: ${{ secrets.NEON_DOCKERHUB_PASSWORD }}
 
       - name: Add latest tag to images
         if: github.ref_name == 'main'
@@ -960,7 +1039,7 @@ jobs:
 
   push-to-acr-dev:
     if: github.ref_name == 'main'
-    needs: [ tag, promote-images ]
+    needs: [ tag, promote-images-dev ]
     uses: ./.github/workflows/_push-to-acr.yml
     with:
       client_id: ${{ vars.AZURE_DEV_CLIENT_ID }}
@@ -972,7 +1051,7 @@ jobs:
 
   push-to-acr-prod:
     if: github.ref_name == 'release' || github.ref_name == 'release-proxy' || github.ref_name == 'release-compute'
-    needs: [ tag, promote-images ]
+    needs: [ tag, promote-images-prod ]
     uses: ./.github/workflows/_push-to-acr.yml
     with:
       client_id: ${{ vars.AZURE_PROD_CLIENT_ID }}
@@ -985,6 +1064,11 @@ jobs:
   trigger-custom-extensions-build-and-wait:
     needs: [ check-permissions, tag ]
     runs-on: ubuntu-22.04
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: write
+      pull-requests: write
     steps:
       - name: Set PR's status to pending and request a remote CI test
         run: |
@@ -1057,14 +1141,81 @@ jobs:
           exit 1
 
   deploy:
-    needs: [ check-permissions, promote-images, tag, build-and-test-locally, trigger-custom-extensions-build-and-wait, push-to-acr-dev, push-to-acr-prod ]
+    needs: [ check-permissions, promote-images-prod, tag, build-and-test-locally, trigger-custom-extensions-build-and-wait, push-to-acr-dev, push-to-acr-prod ]
     # `!failure() && !cancelled()` is required because the workflow depends on the job that can be skipped: `push-to-acr-dev` and `push-to-acr-prod`
     if: (github.ref_name == 'main' || github.ref_name == 'release' || github.ref_name == 'release-proxy' || github.ref_name == 'release-compute') && !failure() && !cancelled()
-
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: write
     runs-on: [ self-hosted, small ]
     container: 369495373322.dkr.ecr.eu-central-1.amazonaws.com/ansible:latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Create git tag and GitHub release
+        if: github.ref_name == 'release' || github.ref_name == 'release-proxy' || github.ref_name == 'release-compute'
+        uses: actions/github-script@v7
+        with:
+          retries: 5
+          script: |
+            const tag = "${{ needs.tag.outputs.build-tag }}";
+
+            try {
+              const existingRef = await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/${tag}`,
+              });
+
+              if (existingRef.data.object.sha !== context.sha) {
+                throw new Error(`Tag ${tag} already exists but points to a different commit (expected: ${context.sha}, actual: ${existingRef.data.object.sha}).`);
+              }
+
+              console.log(`Tag ${tag} already exists and points to ${context.sha} as expected.`);
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+
+              console.log(`Tag ${tag} does not exist. Creating it...`);
+              await github.rest.git.createRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `refs/tags/${tag}`,
+                sha: context.sha,
+              });
+              console.log(`Tag ${tag} created successfully.`);
+            }
+
+            // TODO: check how GitHub releases looks for proxy/compute releases and enable them if they're ok
+            if (context.ref !== 'refs/heads/release') {
+              console.log(`GitHub release skipped for ${context.ref}.`);
+              return;
+            }
+
+            try {
+              const existingRelease = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: tag,
+              });
+
+              console.log(`Release for tag ${tag} already exists (ID: ${existingRelease.data.id}).`);
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+
+              console.log(`Release for tag ${tag} does not exist. Creating it...`);
+              await github.rest.repos.createRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag_name: tag,
+                generate_release_notes: true,
+              });
+              console.log(`Release for tag ${tag} created successfully.`);
+            }
 
       - name: Trigger deploy workflow
         env:
@@ -1115,38 +1266,13 @@ jobs:
             exit 1
           fi
 
-      - name: Create git tag
-        if: github.ref_name == 'release' || github.ref_name == 'release-proxy' || github.ref_name == 'release-compute'
-        uses: actions/github-script@v7
-        with:
-          # Retry script for 5XX server errors: https://github.com/actions/github-script#retries
-          retries: 5
-          script: |
-            await github.rest.git.createRef({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: "refs/tags/${{ needs.tag.outputs.build-tag }}",
-              sha: context.sha,
-            })
-
-      # TODO: check how GitHub releases looks for proxy releases and enable it if it's ok
-      - name: Create GitHub release
-        if: github.ref_name == 'release'
-        uses: actions/github-script@v7
-        with:
-          # Retry script for 5XX server errors: https://github.com/actions/github-script#retries
-          retries: 5
-          script: |
-            await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: "${{ needs.tag.outputs.build-tag }}",
-              generate_release_notes: true,
-            })
-
   # The job runs on `release` branch and copies compatibility data and Neon artifact from the last *release PR* to the latest directory
   promote-compatibility-data:
     needs: [ deploy ]
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: read
     # `!failure() && !cancelled()` is required because the workflow transitively depends on the job that can be skipped: `push-to-acr-dev` and `push-to-acr-prod`
     if: github.ref_name == 'release' && !failure() && !cancelled()
 
@@ -1182,6 +1308,12 @@ jobs:
 
           echo "run-id=${run_id}" | tee -a ${GITHUB_OUTPUT}
           echo "commit-sha=${last_commit_sha}" | tee -a ${GITHUB_OUTPUT}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: eu-central-1
+          role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
+          role-duration-seconds: 3600
 
       - name: Promote compatibility snapshot and Neon artifact
         env:
@@ -1230,7 +1362,7 @@ jobs:
           done
 
   pin-build-tools-image:
-    needs: [ build-build-tools-image, promote-images, build-and-test-locally ]
+    needs: [ build-build-tools-image, promote-images-prod, build-and-test-locally ]
     if: github.ref_name == 'main'
     uses: ./.github/workflows/pin-build-tools-image.yml
     with:
@@ -1253,7 +1385,7 @@ jobs:
       - build-and-test-locally
       - check-codestyle-python
       - check-codestyle-rust
-      - promote-images
+      - promote-images-dev
       - test-images
       - trigger-custom-extensions-build-and-wait
     runs-on: ubuntu-22.04

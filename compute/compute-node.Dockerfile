@@ -35,10 +35,12 @@ RUN case $DEBIAN_VERSION in \
       ;; \
     esac && \
     apt update &&  \
-    apt install --no-install-recommends -y git autoconf automake libtool build-essential bison flex libreadline-dev \
+    apt install --no-install-recommends --no-install-suggests -y \
+    ninja-build git autoconf automake libtool build-essential bison flex libreadline-dev \
     zlib1g-dev libxml2-dev libcurl4-openssl-dev libossp-uuid-dev wget ca-certificates pkg-config libssl-dev \
     libicu-dev libxslt1-dev liblz4-dev libzstd-dev zstd \
-    $VERSION_INSTALLS
+    $VERSION_INSTALLS \
+    && apt clean && rm -rf /var/lib/apt/lists/*
 
 #########################################################################################
 #
@@ -113,10 +115,12 @@ ARG DEBIAN_VERSION
 ARG PG_VERSION
 COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 RUN apt update && \
-    apt install --no-install-recommends -y gdal-bin libboost-dev libboost-thread-dev libboost-filesystem-dev \
+    apt install --no-install-recommends --no-install-suggests -y \
+    gdal-bin libboost-dev libboost-thread-dev libboost-filesystem-dev \
     libboost-system-dev libboost-iostreams-dev libboost-program-options-dev libboost-timer-dev \
     libcgal-dev libgdal-dev libgmp-dev libmpfr-dev libopenscenegraph-dev libprotobuf-c-dev \
-    protobuf-c-compiler xsltproc
+    protobuf-c-compiler xsltproc \
+    && apt clean && rm -rf /var/lib/apt/lists/*
 
 
 # Postgis 3.5.0 requires SFCGAL 1.4+
@@ -143,9 +147,9 @@ RUN case "${DEBIAN_VERSION}" in \
     wget https://gitlab.com/sfcgal/SFCGAL/-/archive/v${SFCGAL_VERSION}/SFCGAL-v${SFCGAL_VERSION}.tar.gz -O SFCGAL.tar.gz && \
     echo "${SFCGAL_CHECKSUM} SFCGAL.tar.gz" | sha256sum --check && \
     mkdir sfcgal-src && cd sfcgal-src && tar xzf ../SFCGAL.tar.gz --strip-components=1 -C . && \
-    cmake -DCMAKE_BUILD_TYPE=Release . && make -j $(getconf _NPROCESSORS_ONLN) && \
-    DESTDIR=/sfcgal make install -j $(getconf _NPROCESSORS_ONLN) && \
-    make clean && cp -R /sfcgal/* /
+    cmake -DCMAKE_BUILD_TYPE=Release -GNinja . && ninja -j $(getconf _NPROCESSORS_ONLN) && \
+    DESTDIR=/sfcgal ninja install -j $(getconf _NPROCESSORS_ONLN) && \
+    ninja clean && cp -R /sfcgal/* /
 
 ENV PATH="/usr/local/pgsql/bin:$PATH"
 
@@ -213,9 +217,9 @@ RUN case "${PG_VERSION}" in \
     echo "${PGROUTING_CHECKSUM} pgrouting.tar.gz" | sha256sum --check && \
     mkdir pgrouting-src && cd pgrouting-src && tar xzf ../pgrouting.tar.gz --strip-components=1 -C . && \
     mkdir build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release .. && \
-    make -j $(getconf _NPROCESSORS_ONLN) && \
-    make -j $(getconf _NPROCESSORS_ONLN) install && \
+    cmake -GNinja -DCMAKE_BUILD_TYPE=Release .. && \
+    ninja -j $(getconf _NPROCESSORS_ONLN) && \
+    ninja -j $(getconf _NPROCESSORS_ONLN) install && \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/pgrouting.control && \
     find /usr/local/pgsql -type f | sed 's|^/usr/local/pgsql/||' > /after.txt &&\
     cp /usr/local/pgsql/share/extension/pgrouting.control /extensions/postgis && \
@@ -235,7 +239,9 @@ COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY compute/patches/plv8-3.1.10.patch /plv8-3.1.10.patch
 
 RUN apt update && \
-    apt install --no-install-recommends -y ninja-build python3-dev libncurses5 binutils clang
+    apt install --no-install-recommends --no-install-suggests -y \
+    ninja-build python3-dev libncurses5 binutils clang \
+    && apt clean && rm -rf /var/lib/apt/lists/*
 
 # plv8 3.2.3 supports v17
 # last release v3.2.3 - Sep 7, 2024
@@ -301,9 +307,10 @@ RUN mkdir -p /h3/usr/ && \
     echo "ec99f1f5974846bde64f4513cf8d2ea1b8d172d2218ab41803bf6a63532272bc h3.tar.gz" | sha256sum --check && \
     mkdir h3-src && cd h3-src && tar xzf ../h3.tar.gz --strip-components=1 -C . && \
     mkdir build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release && \
-    make -j $(getconf _NPROCESSORS_ONLN) && \
-    DESTDIR=/h3 make install && \
+    cmake .. -GNinja -DBUILD_BENCHMARKS=0 -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_FUZZERS=0 -DBUILD_FILTERS=0 -DBUILD_GENERATORS=0 -DBUILD_TESTING=0 \
+    && ninja -j $(getconf _NPROCESSORS_ONLN) && \
+    DESTDIR=/h3 ninja install && \
     cp -R /h3/usr / && \
     rm -rf build
 
@@ -650,14 +657,15 @@ FROM build-deps AS rdkit-pg-build
 ARG PG_VERSION
 COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
-RUN apt-get update && \
-    apt-get install --no-install-recommends -y \
+RUN apt update && \
+    apt install --no-install-recommends --no-install-suggests -y \
         libboost-iostreams1.74-dev \
         libboost-regex1.74-dev \
         libboost-serialization1.74-dev \
         libboost-system1.74-dev \
         libeigen3-dev \
-        libboost-all-dev
+        libboost-all-dev \
+    && apt clean && rm -rf /var/lib/apt/lists/*
 
 # rdkit Release_2024_09_1 supports v17
 # last release Release_2024_09_1 - Sep 27, 2024
@@ -693,6 +701,8 @@ RUN case "${PG_VERSION}" in \
         -D RDK_BUILD_MOLINTERCHANGE_SUPPORT=OFF \
         -D RDK_BUILD_YAEHMOP_SUPPORT=OFF \
         -D RDK_BUILD_STRUCTCHECKER_SUPPORT=OFF \
+        -D RDK_TEST_MULTITHREADED=OFF \
+        -D RDK_BUILD_CPP_TESTS=OFF \
         -D RDK_USE_URF=OFF \
         -D RDK_BUILD_PGSQL=ON \
         -D RDK_PGSQL_STATIC=ON \
@@ -704,9 +714,10 @@ RUN case "${PG_VERSION}" in \
         -D RDK_INSTALL_COMIC_FONTS=OFF \
         -D RDK_BUILD_FREETYPE_SUPPORT=OFF \
         -D CMAKE_BUILD_TYPE=Release \
+        -GNinja \
         . && \
-    make -j $(getconf _NPROCESSORS_ONLN) && \
-    make -j $(getconf _NPROCESSORS_ONLN) install && \
+    ninja -j $(getconf _NPROCESSORS_ONLN) && \
+    ninja -j $(getconf _NPROCESSORS_ONLN) install && \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/rdkit.control
 
 #########################################################################################
@@ -849,8 +860,9 @@ FROM build-deps AS rust-extensions-build
 ARG PG_VERSION
 COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
-RUN apt-get update && \
-    apt-get install --no-install-recommends -y curl libclang-dev && \
+RUN apt update && \
+    apt install --no-install-recommends --no-install-suggests -y curl libclang-dev && \
+    apt clean && rm -rf /var/lib/apt/lists/* && \
     useradd -ms /bin/bash nonroot -b /home
 
 ENV HOME=/home/nonroot
@@ -885,8 +897,9 @@ FROM build-deps AS rust-extensions-build-pgrx12
 ARG PG_VERSION
 COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
-RUN apt-get update && \
-    apt-get install --no-install-recommends -y curl libclang-dev && \
+RUN apt update && \
+    apt install --no-install-recommends --no-install-suggests -y curl libclang-dev && \
+    apt clean && rm -rf /var/lib/apt/lists/* && \
     useradd -ms /bin/bash nonroot -b /home
 
 ENV HOME=/home/nonroot
@@ -914,18 +927,22 @@ FROM rust-extensions-build-pgrx12 AS pg-onnx-build
 
 # cmake 3.26 or higher is required, so installing it using pip (bullseye-backports has cmake 3.25).
 # Install it using virtual environment, because Python 3.11 (the default version on Debian 12 (Bookworm)) complains otherwise
-RUN apt-get update && apt-get install -y python3 python3-pip python3-venv && \
+RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
+    python3 python3-pip python3-venv && \
+    apt clean && rm -rf /var/lib/apt/lists/* && \
     python3 -m venv venv && \
     . venv/bin/activate && \
     python3 -m pip install cmake==3.30.5 && \
     wget https://github.com/microsoft/onnxruntime/archive/refs/tags/v1.18.1.tar.gz -O onnxruntime.tar.gz && \
     mkdir onnxruntime-src && cd onnxruntime-src && tar xzf ../onnxruntime.tar.gz --strip-components=1 -C . && \
-    ./build.sh --config Release --parallel --skip_submodule_sync --skip_tests --allow_running_as_root
+    ./build.sh --config Release --parallel --cmake_generator Ninja \
+    --skip_submodule_sync --skip_tests --allow_running_as_root
 
 
 FROM pg-onnx-build AS pgrag-pg-build
 
-RUN apt-get install -y protobuf-compiler && \
+RUN apt update && apt install --no-install-recommends --no-install-suggests -y protobuf-compiler \
+    && apt clean && rm -rf /var/lib/apt/lists/* && \
     wget https://github.com/neondatabase-labs/pgrag/archive/refs/tags/v0.0.0.tar.gz -O pgrag.tar.gz &&  \
     echo "2cbe394c1e74fc8bcad9b52d5fbbfb783aef834ca3ce44626cfd770573700bb4 pgrag.tar.gz" | sha256sum --check && \
     mkdir pgrag-src && cd pgrag-src && tar xzf ../pgrag.tar.gz --strip-components=1 -C . && \
@@ -1150,23 +1167,33 @@ FROM rust-extensions-build AS pg-mooncake-build
 ARG PG_VERSION
 COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
-# The topmost commit in the `neon` branch at the time of writing this
-# https://github.com/Mooncake-Labs/pg_mooncake/commits/neon/
-# https://github.com/Mooncake-Labs/pg_mooncake/commit/077c92c452bb6896a7b7776ee95f039984f076af
-ENV PG_MOONCAKE_VERSION=077c92c452bb6896a7b7776ee95f039984f076af
 ENV PATH="/usr/local/pgsql/bin/:$PATH"
 
-RUN case "${PG_VERSION}" in \
-        'v14') \
-            echo "pg_mooncake is not supported on Postgres ${PG_VERSION}" && exit 0;; \
-    esac && \
-    git clone --depth 1 --branch neon https://github.com/Mooncake-Labs/pg_mooncake.git pg_mooncake-src && \
-    cd pg_mooncake-src && \
-    git checkout "${PG_MOONCAKE_VERSION}" && \
-    git submodule update --init --depth 1 --recursive && \
-    make BUILD_TYPE=release -j $(getconf _NPROCESSORS_ONLN) && \
-    make BUILD_TYPE=release -j $(getconf _NPROCESSORS_ONLN) install && \
+RUN wget https://github.com/Mooncake-Labs/pg_mooncake/releases/download/v0.1.0/pg_mooncake-0.1.0.tar.gz -O pg_mooncake.tar.gz && \
+    echo "eafd059b77f541f11525eb8affcd66a176968cbd8fe7c0d436e733f2aa4da59f pg_mooncake.tar.gz" | sha256sum --check && \
+    mkdir pg_mooncake-src && cd pg_mooncake-src && tar xzf ../pg_mooncake.tar.gz --strip-components=1 -C . && \
+    make release -j $(getconf _NPROCESSORS_ONLN) && \
+    make install -j $(getconf _NPROCESSORS_ONLN) && \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/pg_mooncake.control
+
+#########################################################################################
+#
+# Layer "pg_repack"
+# compile pg_repack extension
+#
+#########################################################################################
+
+FROM build-deps AS pg-repack-build
+ARG PG_VERSION
+COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
+
+ENV PATH="/usr/local/pgsql/bin/:$PATH"
+
+RUN wget https://github.com/reorg/pg_repack/archive/refs/tags/ver_1.5.2.tar.gz -O pg_repack.tar.gz && \
+    echo '4516cad42251ed3ad53ff619733004db47d5755acac83f75924cd94d1c4fb681 pg_repack.tar.gz' | sha256sum --check && \
+    mkdir pg_repack-src && cd pg_repack-src && tar xzf ../pg_repack.tar.gz --strip-components=1 -C . && \
+    make -j $(getconf _NPROCESSORS_ONLN) && \
+    make -j $(getconf _NPROCESSORS_ONLN) install
 
 #########################################################################################
 #
@@ -1213,6 +1240,7 @@ COPY --from=pg-anon-pg-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-ivm-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-partman-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-mooncake-build /usr/local/pgsql/ /usr/local/pgsql/
+COPY --from=pg-repack-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY pgxn/ pgxn/
 
 RUN make -j $(getconf _NPROCESSORS_ONLN) \
@@ -1248,7 +1276,7 @@ RUN make -j $(getconf _NPROCESSORS_ONLN) \
 
 #########################################################################################
 #
-# Compile and run the Neon-specific `compute_ctl` and `fast_import` binaries
+# Compile the Neon-specific `compute_ctl`, `fast_import`, and `local_proxy` binaries
 #
 #########################################################################################
 FROM $REPOSITORY/$IMAGE:$TAG AS compute-tools
@@ -1258,7 +1286,7 @@ ENV BUILD_TAG=$BUILD_TAG
 USER nonroot
 # Copy entire project to get Cargo.* files with proper dependencies for the whole project
 COPY --chown=nonroot . .
-RUN cd compute_tools && mold -run cargo build --locked --profile release-line-debug-size-lto
+RUN mold -run cargo build --locked --profile release-line-debug-size-lto --bin compute_ctl --bin fast_import --bin local_proxy
 
 #########################################################################################
 #
@@ -1279,8 +1307,8 @@ COPY --from=compute-tools /home/nonroot/target/release-line-debug-size-lto/fast_
 
 FROM debian:$DEBIAN_FLAVOR AS pgbouncer
 RUN set -e \
-    && apt-get update \
-    && apt-get install --no-install-recommends -y \
+    && apt update \
+    && apt install --no-install-suggests --no-install-recommends -y \
         build-essential \
         git \
         ca-certificates \
@@ -1288,7 +1316,8 @@ RUN set -e \
         automake \
         libevent-dev \
         libtool \
-        pkg-config
+        pkg-config \
+    && apt clean && rm -rf /var/lib/apt/lists/*
 
 # Use `dist_man_MANS=` to skip manpage generation (which requires python3/pandoc)
 ENV PGBOUNCER_TAG=pgbouncer_1_22_1
@@ -1299,20 +1328,6 @@ RUN set -e \
     && LDFLAGS=-static ./configure --prefix=/usr/local/pgbouncer --without-openssl \
     && make -j $(nproc) dist_man_MANS= \
     && make install dist_man_MANS=
-
-#########################################################################################
-#
-# Compile the Neon-specific `local_proxy` binary
-#
-#########################################################################################
-FROM $REPOSITORY/$IMAGE:$TAG AS local_proxy
-ARG BUILD_TAG
-ENV BUILD_TAG=$BUILD_TAG
-
-USER nonroot
-# Copy entire project to get Cargo.* files with proper dependencies for the whole project
-COPY --chown=nonroot . .
-RUN mold -run cargo build --locked --profile release-line-debug-size-lto --bin local_proxy
 
 #########################################################################################
 #
@@ -1453,7 +1468,7 @@ COPY --from=pgbouncer         /usr/local/pgbouncer/bin/pgbouncer /usr/local/bin/
 COPY --chmod=0666 --chown=postgres compute/etc/pgbouncer.ini /etc/pgbouncer.ini
 
 # local_proxy and its config
-COPY --from=local_proxy --chown=postgres /home/nonroot/target/release-line-debug-size-lto/local_proxy /usr/local/bin/local_proxy
+COPY --from=compute-tools --chown=postgres /home/nonroot/target/release-line-debug-size-lto/local_proxy /usr/local/bin/local_proxy
 RUN mkdir -p /etc/local_proxy && chown postgres:postgres /etc/local_proxy
 
 # Metrics exporter binaries and  configuration files
@@ -1518,28 +1533,30 @@ RUN apt update && \
         locales \
         procps \
         ca-certificates \
+        curl \
+        unzip \
         $VERSION_INSTALLS && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
+    apt clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
     localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
 
-# s5cmd 2.2.2 from https://github.com/peak/s5cmd/releases/tag/v2.2.2
-# used by fast_import
+# aws cli is used by fast_import (curl and unzip above are at this time only used for this installation step)
 ARG TARGETARCH
-ADD https://github.com/peak/s5cmd/releases/download/v2.2.2/s5cmd_2.2.2_linux_$TARGETARCH.deb /tmp/s5cmd.deb
 RUN set -ex; \
-    \
-    # Determine the expected checksum based on TARGETARCH
     if [ "${TARGETARCH}" = "amd64" ]; then \
-        CHECKSUM="392c385320cd5ffa435759a95af77c215553d967e4b1c0fffe52e4f14c29cf85"; \
+        TARGETARCH_ALT="x86_64"; \
+        CHECKSUM="c9a9df3770a3ff9259cb469b6179e02829687a464e0824d5c32d378820b53a00"; \
     elif [ "${TARGETARCH}" = "arm64" ]; then \
-        CHECKSUM="939bee3cf4b5604ddb00e67f8c157b91d7c7a5b553d1fbb6890fad32894b7b46"; \
+        TARGETARCH_ALT="aarch64"; \
+        CHECKSUM="8181730be7891582b38b028112e81b4899ca817e8c616aad807c9e9d1289223a"; \
     else \
         echo "Unsupported architecture: ${TARGETARCH}"; exit 1; \
     fi; \
-    \
-    # Compute and validate the checksum
-    echo "${CHECKSUM}  /tmp/s5cmd.deb" | sha256sum -c -
-RUN dpkg -i /tmp/s5cmd.deb && rm /tmp/s5cmd.deb
+    curl -L "https://awscli.amazonaws.com/awscli-exe-linux-${TARGETARCH_ALT}-2.17.5.zip" -o /tmp/awscliv2.zip; \
+    echo "${CHECKSUM}  /tmp/awscliv2.zip" | sha256sum -c -; \
+    unzip /tmp/awscliv2.zip -d /tmp/awscliv2; \
+    /tmp/awscliv2/aws/install; \
+    rm -rf /tmp/awscliv2.zip /tmp/awscliv2; \
+    true
 
 ENV LANG=en_US.utf8
 USER postgres

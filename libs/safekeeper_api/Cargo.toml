@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-serde.workspace = true
 const_format.workspace = true
+serde.workspace = true
+postgres_ffi.workspace = true
+pq_proto.workspace = true
+tokio.workspace = true
 utils.workspace = true

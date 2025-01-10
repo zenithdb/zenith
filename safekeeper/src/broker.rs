@@ -39,14 +39,17 @@ const RETRY_INTERVAL_MSEC: u64 = 1000;
 const PUSH_INTERVAL_MSEC: u64 = 1000;
 
 /// Push once in a while data about all active timelines to the broker.
-async fn push_loop(conf: SafeKeeperConf) -> anyhow::Result<()> {
+async fn push_loop(
+    conf: Arc<SafeKeeperConf>,
+    global_timelines: Arc<GlobalTimelines>,
+) -> anyhow::Result<()> {
     if conf.disable_periodic_broker_push {
         info!("broker push_loop is disabled, doing nothing...");
         futures::future::pending::<()>().await; // sleep forever
         return Ok(());
     }
 
-    let active_timelines_set = GlobalTimelines::get_global_broker_active_set();
+    let active_timelines_set = global_timelines.get_global_broker_active_set();
 
     let mut client =
         storage_broker::connect(conf.broker_endpoint.clone(), conf.broker_keepalive_interval)?;
@@ -87,8 +90,13 @@ async fn push_loop(conf: SafeKeeperConf) -> anyhow::Result<()> {
 
 /// Subscribe and fetch all the interesting data from the broker.
 #[instrument(name = "broker_pull", skip_all)]
-async fn pull_loop(conf: SafeKeeperConf, stats: Arc<BrokerStats>) -> Result<()> {
-    let mut client = storage_broker::connect(conf.broker_endpoint, conf.broker_keepalive_interval)?;
+async fn pull_loop(
+    conf: Arc<SafeKeeperConf>,
+    global_timelines: Arc<GlobalTimelines>,
+    stats: Arc<BrokerStats>,
+) -> Result<()> {
+    let mut client =
+        storage_broker::connect(conf.broker_endpoint.clone(), conf.broker_keepalive_interval)?;
 
     // TODO: subscribe only to local timelines instead of all
     let request = SubscribeSafekeeperInfoRequest {
@@ -113,7 +121,7 @@ async fn pull_loop(conf: SafeKeeperConf, stats: Arc<BrokerStats>) -> Result<()> 
             .as_ref()
             .ok_or_else(|| anyhow!("missing tenant_timeline_id"))?;
         let ttid = parse_proto_ttid(proto_ttid)?;
-        if let Ok(tli) = GlobalTimelines::get(ttid) {
+        if let Ok(tli) = global_timelines.get(ttid) {
             // Note that we also receive *our own* info. That's
             // important, as it is used as an indication of live
             // connection to the broker.
@@ -135,7 +143,11 @@ async fn pull_loop(conf: SafeKeeperConf, stats: Arc<BrokerStats>) -> Result<()> 
 
 /// Process incoming discover requests. This is done in a separate task to avoid
 /// interfering with the normal pull/push loops.
-async fn discover_loop(conf: SafeKeeperConf, stats: Arc<BrokerStats>) -> Result<()> {
+async fn discover_loop(
+    conf: Arc<SafeKeeperConf>,
+    global_timelines: Arc<GlobalTimelines>,
+    stats: Arc<BrokerStats>,
+) -> Result<()> {
     let mut client =
         storage_broker::connect(conf.broker_endpoint.clone(), conf.broker_keepalive_interval)?;
 
@@ -171,7 +183,7 @@ async fn discover_loop(conf: SafeKeeperConf, stats: Arc<BrokerStats>) -> Result<
                     .as_ref()
                     .ok_or_else(|| anyhow!("missing tenant_timeline_id"))?;
                 let ttid = parse_proto_ttid(proto_ttid)?;
-                if let Ok(tli) = GlobalTimelines::get(ttid) {
+                if let Ok(tli) = global_timelines.get(ttid) {
                     // we received a discovery request for a timeline we know about
                     discover_counter.inc();
 
@@ -210,7 +222,10 @@ async fn discover_loop(conf: SafeKeeperConf, stats: Arc<BrokerStats>) -> Result<
     bail!("end of stream");
 }
 
-pub async fn task_main(conf: SafeKeeperConf) -> anyhow::Result<()> {
+pub async fn task_main(
+    conf: Arc<SafeKeeperConf>,
+    global_timelines: Arc<GlobalTimelines>,
+) -> anyhow::Result<()> {
     info!("started, broker endpoint {:?}", conf.broker_endpoint);
 
     let mut ticker = tokio::time::interval(Duration::from_millis(RETRY_INTERVAL_MSEC));
@@ -261,13 +276,13 @@ pub async fn task_main(conf: SafeKeeperConf) -> anyhow::Result<()> {
                 },
                 _ = ticker.tick() => {
                     if push_handle.is_none() {
-                        push_handle = Some(tokio::spawn(push_loop(conf.clone())));
+                        push_handle = Some(tokio::spawn(push_loop(conf.clone(), global_timelines.clone())));
                     }
                     if pull_handle.is_none() {
-                        pull_handle = Some(tokio::spawn(pull_loop(conf.clone(), stats.clone())));
+                        pull_handle = Some(tokio::spawn(pull_loop(conf.clone(), global_timelines.clone(), stats.clone())));
                     }
                     if discover_handle.is_none() {
-                        discover_handle = Some(tokio::spawn(discover_loop(conf.clone(), stats.clone())));
+                        discover_handle = Some(tokio::spawn(discover_loop(conf.clone(), global_timelines.clone(), stats.clone())));
                     }
                 },
                 _ = &mut stats_task => {}

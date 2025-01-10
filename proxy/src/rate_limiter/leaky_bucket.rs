@@ -83,7 +83,7 @@ impl From<LeakyBucketConfig> for utils::leaky_bucket::LeakyBucketConfig {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)]
+#[allow(clippy::float_cmp, clippy::unwrap_used)]
 mod tests {
     use std::time::Duration;
 

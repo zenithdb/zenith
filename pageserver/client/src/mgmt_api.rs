@@ -270,9 +270,15 @@ impl Client {
         Ok(body)
     }
 
-    pub async fn tenant_config(&self, req: &TenantConfigRequest) -> Result<()> {
+    pub async fn set_tenant_config(&self, req: &TenantConfigRequest) -> Result<()> {
         let uri = format!("{}/v1/tenant/config", self.mgmt_api_endpoint);
         self.request(Method::PUT, &uri, req).await?;
+        Ok(())
+    }
+
+    pub async fn patch_tenant_config(&self, req: &TenantConfigPatchRequest) -> Result<()> {
+        let uri = format!("{}/v1/tenant/config", self.mgmt_api_endpoint);
+        self.request(Method::PATCH, &uri, req).await?;
         Ok(())
     }
 

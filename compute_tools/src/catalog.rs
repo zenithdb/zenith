@@ -36,11 +36,11 @@ pub async fn get_dbs_and_roles(compute: &Arc<ComputeNode>) -> anyhow::Result<Cat
 
 #[derive(Debug, thiserror::Error)]
 pub enum SchemaDumpError {
-    #[error("Database does not exist.")]
+    #[error("database does not exist")]
     DatabaseDoesNotExist,
-    #[error("Failed to execute pg_dump.")]
+    #[error("failed to execute pg_dump")]
     IO(#[from] std::io::Error),
-    #[error("Unexpected error.")]
+    #[error("unexpected I/O error")]
     Unexpected,
 }
 

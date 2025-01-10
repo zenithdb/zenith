@@ -18,7 +18,7 @@ use crate::{
     background_node_operations::{
         Drain, Fill, Operation, OperationError, OperationHandler, MAX_RECONCILES_PER_OPERATION,
     },
-    compute_hook::NotifyError,
+    compute_hook::{self, NotifyError},
     drain_utils::{self, TenantShardDrain, TenantShardIterator},
     id_lock_map::{trace_exclusive_lock, trace_shared_lock, IdLockMap, TracingExclusiveGuard},
     leadership::Leadership,
@@ -46,14 +46,15 @@ use pageserver_api::{
     controller_api::{
         AvailabilityZone, MetadataHealthRecord, MetadataHealthUpdateRequest, NodeAvailability,
         NodeRegisterRequest, NodeSchedulingPolicy, NodeShard, NodeShardResponse, PlacementPolicy,
-        ShardSchedulingPolicy, ShardsPreferredAzsRequest, ShardsPreferredAzsResponse,
-        TenantCreateRequest, TenantCreateResponse, TenantCreateResponseShard,
-        TenantDescribeResponse, TenantDescribeResponseShard, TenantLocateResponse,
-        TenantPolicyRequest, TenantShardMigrateRequest, TenantShardMigrateResponse,
+        SafekeeperDescribeResponse, ShardSchedulingPolicy, ShardsPreferredAzsRequest,
+        ShardsPreferredAzsResponse, TenantCreateRequest, TenantCreateResponse,
+        TenantCreateResponseShard, TenantDescribeResponse, TenantDescribeResponseShard,
+        TenantLocateResponse, TenantPolicyRequest, TenantShardMigrateRequest,
+        TenantShardMigrateResponse,
     },
     models::{
-        SecondaryProgress, TenantConfigRequest, TimelineArchivalConfigRequest,
-        TopTenantShardsRequest,
+        SecondaryProgress, TenantConfigPatchRequest, TenantConfigRequest,
+        TimelineArchivalConfigRequest, TopTenantShardsRequest,
     },
 };
 use reqwest::StatusCode;
@@ -82,6 +83,7 @@ use utils::{
     generation::Generation,
     http::error::ApiError,
     id::{NodeId, TenantId, TimelineId},
+    pausable_failpoint,
     sync::gate::Gate,
 };
 
@@ -99,6 +101,8 @@ use crate::{
 };
 
 use context_iterator::TenantShardContextIterator;
+
+const WAITER_FILL_DRAIN_POLL_TIMEOUT: Duration = Duration::from_millis(500);
 
 // For operations that should be quick, like attaching a new tenant
 const SHORT_RECONCILE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -139,6 +143,7 @@ enum TenantOperations {
     Create,
     LocationConfig,
     ConfigSet,
+    ConfigPatch,
     TimeTravelRemoteStorage,
     Delete,
     UpdatePolicy,
@@ -150,6 +155,7 @@ enum TenantOperations {
     TimelineArchivalConfig,
     TimelineDetachAncestor,
     TimelineGcBlockUnblock,
+    DropDetached,
 }
 
 #[derive(Clone, strum_macros::Display)]
@@ -411,8 +417,8 @@ pub struct Service {
     /// Queue of tenants who are waiting for concurrency limits to permit them to reconcile
     /// Send into this queue to promptly attempt to reconcile this shard next time units are available.
     ///
-    /// Note that this state logically lives inside ServiceInner, but carrying Sender here makes the code simpler
-    /// by avoiding needing a &mut ref to something inside the ServiceInner.  This could be optimized to
+    /// Note that this state logically lives inside ServiceState, but carrying Sender here makes the code simpler
+    /// by avoiding needing a &mut ref to something inside the ServiceState.  This could be optimized to
     /// use a VecDeque instead of a channel to reduce synchronization overhead, at the cost of some code complexity.
     delayed_reconcile_tx: tokio::sync::mpsc::Sender<TenantShardId>,
 
@@ -653,11 +659,14 @@ impl Service {
                     // emit a compute notification for this. In the case where our observed state does not
                     // yet match our intent, we will eventually reconcile, and that will emit a compute notification.
                     if let Some(attached_at) = tenant_shard.stably_attached() {
-                        compute_notifications.push((
-                            *tenant_shard_id,
-                            attached_at,
-                            tenant_shard.shard.stripe_size,
-                        ));
+                        compute_notifications.push(compute_hook::ShardUpdate {
+                            tenant_shard_id: *tenant_shard_id,
+                            node_id: attached_at,
+                            stripe_size: tenant_shard.shard.stripe_size,
+                            preferred_az: tenant_shard
+                                .preferred_az()
+                                .map(|az| Cow::Owned(az.clone())),
+                        });
                     }
                 }
             }
@@ -1017,6 +1026,8 @@ impl Service {
                     )
                     .await;
 
+                    pausable_failpoint!("heartbeat-pre-node-state-configure");
+
                     // This is the code path for geniune availability transitions (i.e node
                     // goes unavailable and/or comes back online).
                     let res = self
@@ -1035,6 +1046,9 @@ impl Service {
                             // This should be rare, but legitimate since the heartbeats are done
                             // on a snapshot of the nodes.
                             tracing::info!("Node {} was not found after heartbeat round", node_id);
+                        }
+                        Err(ApiError::ShuttingDown) => {
+                            // No-op: we're shutting down, no need to try and update any nodes' statuses
                         }
                         Err(err) => {
                             // Transition to active involves reconciling: if a node responds to a heartbeat then
@@ -1152,6 +1166,20 @@ impl Service {
                 let upsert_deltas =
                     deltas.filter(|delta| matches!(delta, ObservedStateDelta::Upsert(_)));
                 tenant.apply_observed_deltas(upsert_deltas);
+            }
+        }
+
+        // If we just finished detaching all shards for a tenant, it might be time to drop it from memory.
+        if tenant.policy == PlacementPolicy::Detached {
+            // We may only drop a tenant from memory while holding the exclusive lock on the tenant ID: this protects us
+            // from concurrent execution wrt a request handler that might expect the tenant to remain in memory for the
+            // duration of the request.
+            let guard = self.tenant_op_locks.try_exclusive(
+                tenant.tenant_shard_id.tenant_id,
+                TenantOperations::DropDetached,
+            );
+            if let Some(guard) = guard {
+                self.maybe_drop_tenant(tenant.tenant_shard_id.tenant_id, &mut locked, &guard);
             }
         }
 
@@ -1284,7 +1312,7 @@ impl Service {
             .set(nodes.len() as i64);
 
         tracing::info!("Loading shards from database...");
-        let mut tenant_shard_persistence = persistence.list_tenant_shards().await?;
+        let mut tenant_shard_persistence = persistence.load_active_tenant_shards().await?;
         tracing::info!(
             "Loaded {} shards from database.",
             tenant_shard_persistence.len()
@@ -1536,8 +1564,14 @@ impl Service {
         // the pageserver API (not via this service), we will auto-create any missing tenant
         // shards with default state.
         let insert = {
-            let locked = self.inner.write().unwrap();
-            !locked.tenants.contains_key(&attach_req.tenant_shard_id)
+            match self
+                .maybe_load_tenant(attach_req.tenant_shard_id.tenant_id, &_tenant_lock)
+                .await
+            {
+                Ok(_) => false,
+                Err(ApiError::NotFound(_)) => true,
+                Err(e) => return Err(e.into()),
+            }
         };
 
         if insert {
@@ -1579,6 +1613,7 @@ impl Service {
                             attach_req.tenant_shard_id,
                             ShardIdentity::unsharded(),
                             PlacementPolicy::Attached(0),
+                            None,
                         ),
                     );
                     tracing::info!("Inserted shard {} in memory", attach_req.tenant_shard_id);
@@ -2106,6 +2141,16 @@ impl Service {
             )
         };
 
+        let preferred_az_id = {
+            let locked = self.inner.read().unwrap();
+            // Idempotency: take the existing value if the tenant already exists
+            if let Some(shard) = locked.tenants.get(create_ids.first().unwrap()) {
+                shard.preferred_az().cloned()
+            } else {
+                locked.scheduler.get_az_for_new_tenant()
+            }
+        };
+
         // Ordering: we persist tenant shards before creating them on the pageserver.  This enables a caller
         // to clean up after themselves by issuing a tenant deletion if something goes wrong and we restart
         // during the creation, rather than risking leaving orphan objects in S3.
@@ -2125,7 +2170,7 @@ impl Service {
                 splitting: SplitState::default(),
                 scheduling_policy: serde_json::to_string(&ShardSchedulingPolicy::default())
                     .unwrap(),
-                preferred_az_id: None,
+                preferred_az_id: preferred_az_id.as_ref().map(|az| az.to_string()),
             })
             .collect();
 
@@ -2161,6 +2206,7 @@ impl Service {
                     &create_req.shard_parameters,
                     create_req.config.clone(),
                     placement_policy.clone(),
+                    preferred_az_id.as_ref(),
                     &mut schedule_context,
                 )
                 .await;
@@ -2170,44 +2216,6 @@ impl Service {
                 InitialShardScheduleOutcome::NotScheduled => {}
                 InitialShardScheduleOutcome::ShardScheduleError(err) => {
                     schedule_error = Some(err);
-                }
-            }
-        }
-
-        let preferred_azs = {
-            let locked = self.inner.read().unwrap();
-            response_shards
-                .iter()
-                .filter_map(|resp| {
-                    let az_id = locked
-                        .nodes
-                        .get(&resp.node_id)
-                        .map(|n| n.get_availability_zone_id().clone())?;
-
-                    Some((resp.shard_id, az_id))
-                })
-                .collect::<Vec<_>>()
-        };
-
-        // Note that we persist the preferred AZ for the new shards separately.
-        // In theory, we could "peek" the scheduler to determine where the shard will
-        // land, but the subsequent "real" call into the scheduler might select a different
-        // node. Hence, we do this awkward update to keep things consistent.
-        let updated = self
-            .persistence
-            .set_tenant_shard_preferred_azs(preferred_azs)
-            .await
-            .map_err(|err| {
-                ApiError::InternalServerError(anyhow::anyhow!(
-                    "Failed to persist preferred az ids: {err}"
-                ))
-            })?;
-
-        {
-            let mut locked = self.inner.write().unwrap();
-            for (tid, az_id) in updated {
-                if let Some(shard) = locked.tenants.get_mut(&tid) {
-                    shard.set_preferred_az(az_id);
                 }
             }
         }
@@ -2242,6 +2250,7 @@ impl Service {
 
     /// Helper for tenant creation that does the scheduling for an individual shard. Covers both the
     /// case of a new tenant and a pre-existing one.
+    #[allow(clippy::too_many_arguments)]
     async fn do_initial_shard_scheduling(
         &self,
         tenant_shard_id: TenantShardId,
@@ -2249,6 +2258,7 @@ impl Service {
         shard_params: &ShardParameters,
         config: TenantConfig,
         placement_policy: PlacementPolicy,
+        preferred_az_id: Option<&AvailabilityZone>,
         schedule_context: &mut ScheduleContext,
     ) -> InitialShardScheduleOutcome {
         let mut locked = self.inner.write().unwrap();
@@ -2258,10 +2268,6 @@ impl Service {
         match tenants.entry(tenant_shard_id) {
             Entry::Occupied(mut entry) => {
                 tracing::info!("Tenant shard {tenant_shard_id} already exists while creating");
-
-                // TODO: schedule() should take an anti-affinity expression that pushes
-                // attached and secondary locations (independently) away frorm those
-                // pageservers also holding a shard for this tenant.
 
                 if let Err(err) = entry.get_mut().schedule(scheduler, schedule_context) {
                     return InitialShardScheduleOutcome::ShardScheduleError(err);
@@ -2286,6 +2292,7 @@ impl Service {
                     tenant_shard_id,
                     ShardIdentity::from_params(tenant_shard_id.shard_number, shard_params),
                     placement_policy,
+                    preferred_az_id.cloned(),
                 ));
 
                 state.generation = initial_generation;
@@ -2456,6 +2463,99 @@ impl Service {
         }
     }
 
+    /// For APIs that might act on tenants with [`PlacementPolicy::Detached`], first check if
+    /// the tenant is present in memory. If not, load it from the database.  If it is found
+    /// in neither location, return a NotFound error.
+    ///
+    /// Caller must demonstrate they hold a lock guard, as otherwise two callers might try and load
+    /// it at the same time, or we might race with [`Self::maybe_drop_tenant`]
+    async fn maybe_load_tenant(
+        &self,
+        tenant_id: TenantId,
+        _guard: &TracingExclusiveGuard<TenantOperations>,
+    ) -> Result<(), ApiError> {
+        let present_in_memory = {
+            let locked = self.inner.read().unwrap();
+            locked
+                .tenants
+                .range(TenantShardId::tenant_range(tenant_id))
+                .next()
+                .is_some()
+        };
+
+        if present_in_memory {
+            return Ok(());
+        }
+
+        let tenant_shards = self.persistence.load_tenant(tenant_id).await?;
+        if tenant_shards.is_empty() {
+            return Err(ApiError::NotFound(
+                anyhow::anyhow!("Tenant {} not found", tenant_id).into(),
+            ));
+        }
+
+        // TODO: choose a fresh AZ to use for this tenant when un-detaching: there definitely isn't a running
+        // compute, so no benefit to making AZ sticky across detaches.
+
+        let mut locked = self.inner.write().unwrap();
+        tracing::info!(
+            "Loaded {} shards for tenant {}",
+            tenant_shards.len(),
+            tenant_id
+        );
+
+        locked.tenants.extend(tenant_shards.into_iter().map(|p| {
+            let intent = IntentState::new();
+            let shard =
+                TenantShard::from_persistent(p, intent).expect("Corrupt shard row in database");
+
+            // Sanity check: when loading on-demand, we should always be loaded something Detached
+            debug_assert!(shard.policy == PlacementPolicy::Detached);
+            if shard.policy != PlacementPolicy::Detached {
+                tracing::error!(
+                    "Tenant shard {} loaded on-demand, but has non-Detached policy {:?}",
+                    shard.tenant_shard_id,
+                    shard.policy
+                );
+            }
+
+            (shard.tenant_shard_id, shard)
+        }));
+
+        Ok(())
+    }
+
+    /// If all shards for a tenant are detached, and in a fully quiescent state (no observed locations on pageservers),
+    /// and have no reconciler running, then we can drop the tenant from memory.  It will be reloaded on-demand
+    /// if we are asked to attach it again (see [`Self::maybe_load_tenant`]).
+    ///
+    /// Caller must demonstrate they hold a lock guard, as otherwise it is unsafe to drop a tenant from
+    /// memory while some other function might assume it continues to exist while not holding the lock on Self::inner.
+    fn maybe_drop_tenant(
+        &self,
+        tenant_id: TenantId,
+        locked: &mut std::sync::RwLockWriteGuard<ServiceState>,
+        _guard: &TracingExclusiveGuard<TenantOperations>,
+    ) {
+        let mut tenant_shards = locked.tenants.range(TenantShardId::tenant_range(tenant_id));
+        if tenant_shards.all(|(_id, shard)| {
+            shard.policy == PlacementPolicy::Detached
+                && shard.reconciler.is_none()
+                && shard.observed.is_empty()
+        }) {
+            let keys = locked
+                .tenants
+                .range(TenantShardId::tenant_range(tenant_id))
+                .map(|(id, _)| id)
+                .copied()
+                .collect::<Vec<_>>();
+            for key in keys {
+                tracing::info!("Dropping detached tenant shard {} from memory", key);
+                locked.tenants.remove(&key);
+            }
+        }
+    }
+
     /// This API is used by the cloud control plane to migrate unsharded tenants that it created
     /// directly with pageservers into this service.
     ///
@@ -2482,14 +2582,26 @@ impl Service {
         )
         .await;
 
-        if !tenant_shard_id.is_unsharded() {
+        let tenant_id = if !tenant_shard_id.is_unsharded() {
             return Err(ApiError::BadRequest(anyhow::anyhow!(
                 "This API is for importing single-sharded or unsharded tenants"
             )));
-        }
+        } else {
+            tenant_shard_id.tenant_id
+        };
+
+        // In case we are waking up a Detached tenant
+        match self.maybe_load_tenant(tenant_id, &_tenant_lock).await {
+            Ok(()) | Err(ApiError::NotFound(_)) => {
+                // This is a creation or an update
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        };
 
         // First check if this is a creation or an update
-        let create_or_update = self.tenant_location_config_prepare(tenant_shard_id.tenant_id, req);
+        let create_or_update = self.tenant_location_config_prepare(tenant_id, req);
 
         let mut result = TenantLocationConfigResponse {
             shards: Vec::new(),
@@ -2512,6 +2624,7 @@ impl Service {
                 // Persist updates
                 // Ordering: write to the database before applying changes in-memory, so that
                 // we will not appear time-travel backwards on a restart.
+
                 let mut schedule_context = ScheduleContext::default();
                 for ShardUpdate {
                     tenant_shard_id,
@@ -2602,6 +2715,57 @@ impl Service {
         Ok(result)
     }
 
+    pub(crate) async fn tenant_config_patch(
+        &self,
+        req: TenantConfigPatchRequest,
+    ) -> Result<(), ApiError> {
+        let _tenant_lock = trace_exclusive_lock(
+            &self.tenant_op_locks,
+            req.tenant_id,
+            TenantOperations::ConfigPatch,
+        )
+        .await;
+
+        let tenant_id = req.tenant_id;
+        let patch = req.config;
+
+        self.maybe_load_tenant(tenant_id, &_tenant_lock).await?;
+
+        let base = {
+            let locked = self.inner.read().unwrap();
+            let shards = locked
+                .tenants
+                .range(TenantShardId::tenant_range(req.tenant_id));
+
+            let mut configs = shards.map(|(_sid, shard)| &shard.config).peekable();
+
+            let first = match configs.peek() {
+                Some(first) => (*first).clone(),
+                None => {
+                    return Err(ApiError::NotFound(
+                        anyhow::anyhow!("Tenant {} not found", req.tenant_id).into(),
+                    ));
+                }
+            };
+
+            if !configs.all_equal() {
+                tracing::error!("Tenant configs for {} are mismatched. ", req.tenant_id);
+                // This can't happen because we atomically update the database records
+                // of all shards to the new value in [`Self::set_tenant_config_and_reconcile`].
+                return Err(ApiError::InternalServerError(anyhow::anyhow!(
+                    "Tenant configs for {} are mismatched",
+                    req.tenant_id
+                )));
+            }
+
+            first
+        };
+
+        let updated_config = base.apply_patch(patch);
+        self.set_tenant_config_and_reconcile(tenant_id, updated_config)
+            .await
+    }
+
     pub(crate) async fn tenant_config_set(&self, req: TenantConfigRequest) -> Result<(), ApiError> {
         // We require an exclusive lock, because we are updating persistent and in-memory state
         let _tenant_lock = trace_exclusive_lock(
@@ -2611,12 +2775,20 @@ impl Service {
         )
         .await;
 
-        let tenant_id = req.tenant_id;
-        let config = req.config;
+        self.maybe_load_tenant(req.tenant_id, &_tenant_lock).await?;
 
+        self.set_tenant_config_and_reconcile(req.tenant_id, req.config)
+            .await
+    }
+
+    async fn set_tenant_config_and_reconcile(
+        &self,
+        tenant_id: TenantId,
+        config: TenantConfig,
+    ) -> Result<(), ApiError> {
         self.persistence
             .update_tenant_shard(
-                TenantFilter::Tenant(req.tenant_id),
+                TenantFilter::Tenant(tenant_id),
                 None,
                 Some(config.clone()),
                 None,
@@ -2896,6 +3068,8 @@ impl Service {
         let _tenant_lock =
             trace_exclusive_lock(&self.tenant_op_locks, tenant_id, TenantOperations::Delete).await;
 
+        self.maybe_load_tenant(tenant_id, &_tenant_lock).await?;
+
         // Detach all shards. This also deletes local pageserver shard data.
         let (detach_waiters, node) = {
             let mut detach_waiters = Vec::new();
@@ -3014,6 +3188,8 @@ impl Service {
             TenantOperations::UpdatePolicy,
         )
         .await;
+
+        self.maybe_load_tenant(tenant_id, &_tenant_lock).await?;
 
         failpoint_support::sleep_millis_async!("tenant-update-policy-exclusive-lock");
 
@@ -3523,6 +3699,11 @@ impl Service {
                 .iter()
                 .any(|i| i.generation.is_none() || i.generation_pageserver.is_none())
             {
+                let shard_generations = generations
+                    .into_iter()
+                    .map(|i| (i.tenant_shard_id, (i.generation, i.generation_pageserver)))
+                    .collect::<HashMap<_, _>>();
+
                 // One or more shards has not been attached to a pageserver.  Check if this is because it's configured
                 // to be detached (409: caller should give up), or because it's meant to be attached but isn't yet (503: caller should retry)
                 let locked = self.inner.read().unwrap();
@@ -3533,6 +3714,28 @@ impl Service {
                         PlacementPolicy::Attached(_) => {
                             // This shard is meant to be attached: the caller is not wrong to try and
                             // use this function, but we can't service the request right now.
+                            let Some(generation) = shard_generations.get(shard_id) else {
+                                // This can only happen if there is a split brain controller modifying the database.  This should
+                                // never happen when testing, and if it happens in production we can only log the issue.
+                                debug_assert!(false);
+                                tracing::error!("Shard {shard_id} not found in generation state!  Is another rogue controller running?");
+                                continue;
+                            };
+                            let (generation, generation_pageserver) = generation;
+                            if let Some(generation) = generation {
+                                if generation_pageserver.is_none() {
+                                    // This is legitimate only in a very narrow window where the shard was only just configured into
+                                    // Attached mode after being created in Secondary or Detached mode, and it has had its generation
+                                    // set but not yet had a Reconciler run (reconciler is the only thing that sets generation_pageserver).
+                                    tracing::warn!("Shard {shard_id} generation is set ({generation:?}) but generation_pageserver is None, reconciler not run yet?");
+                                }
+                            } else {
+                                // This should never happen: a shard with no generation is only permitted when it was created in some state
+                                // other than PlacementPolicy::Attached (and generation is always written to DB before setting Attached in memory)
+                                debug_assert!(false);
+                                tracing::error!("Shard {shard_id} generation is None, but it is in PlacementPolicy::Attached mode!");
+                                continue;
+                            }
                         }
                         PlacementPolicy::Secondary | PlacementPolicy::Detached => {
                             return Err(ApiError::Conflict(format!(
@@ -4184,7 +4387,8 @@ impl Service {
                         },
                     );
 
-                    let mut child_state = TenantShard::new(child, child_shard, policy.clone());
+                    let mut child_state =
+                        TenantShard::new(child, child_shard, policy.clone(), preferred_az.clone());
                     child_state.intent = IntentState::single(scheduler, Some(pageserver));
                     child_state.observed = ObservedState {
                         locations: child_observed,
@@ -4740,7 +4944,15 @@ impl Service {
         for (child_id, child_ps, stripe_size) in child_locations {
             if let Err(e) = self
                 .compute_hook
-                .notify(child_id, child_ps, stripe_size, &self.cancel)
+                .notify(
+                    compute_hook::ShardUpdate {
+                        tenant_shard_id: child_id,
+                        node_id: child_ps,
+                        stripe_size,
+                        preferred_az: preferred_az_id.as_ref().map(Cow::Borrowed),
+                    },
+                    &self.cancel,
+                )
                 .await
             {
                 tracing::warn!("Failed to update compute of {}->{} during split, proceeding anyway to complete split ({e})",
@@ -5061,11 +5273,13 @@ impl Service {
             )));
         }
 
-        let mut shards = self.persistence.list_tenant_shards().await?;
-        shards.sort_by_key(|tsp| (tsp.tenant_id.clone(), tsp.shard_number, tsp.shard_count));
+        let mut persistent_shards = self.persistence.load_active_tenant_shards().await?;
+        persistent_shards
+            .sort_by_key(|tsp| (tsp.tenant_id.clone(), tsp.shard_number, tsp.shard_count));
+
         expect_shards.sort_by_key(|tsp| (tsp.tenant_id.clone(), tsp.shard_number, tsp.shard_count));
 
-        if shards != expect_shards {
+        if persistent_shards != expect_shards {
             tracing::error!("Consistency check failed on shards.");
             tracing::error!(
                 "Shards in memory: {}",
@@ -5074,7 +5288,7 @@ impl Service {
             );
             tracing::error!(
                 "Shards in database: {}",
-                serde_json::to_string(&shards)
+                serde_json::to_string(&persistent_shards)
                     .map_err(|e| ApiError::InternalServerError(e.into()))?
             );
             return Err(ApiError::InternalServerError(anyhow::anyhow!(
@@ -6030,6 +6244,10 @@ impl Service {
         let mut pending_reconciles = 0;
         let mut az_violations = 0;
 
+        // If we find any tenants to drop from memory, stash them to offload after
+        // we're done traversing the map of tenants.
+        let mut drop_detached_tenants = Vec::new();
+
         let mut reconciles_spawned = 0;
         for shard in tenants.values_mut() {
             // Accumulate scheduling statistics
@@ -6063,6 +6281,25 @@ impl Service {
                 // Shard wanted to reconcile but for some reason couldn't.
                 pending_reconciles += 1;
             }
+
+            // If this tenant is detached, try dropping it from memory. This is usually done
+            // proactively in [`Self::process_results`], but we do it here to handle the edge
+            // case where a reconcile completes while someone else is holding an op lock for the tenant.
+            if shard.tenant_shard_id.shard_number == ShardNumber(0)
+                && shard.policy == PlacementPolicy::Detached
+            {
+                if let Some(guard) = self.tenant_op_locks.try_exclusive(
+                    shard.tenant_shard_id.tenant_id,
+                    TenantOperations::DropDetached,
+                ) {
+                    drop_detached_tenants.push((shard.tenant_shard_id.tenant_id, guard));
+                }
+            }
+        }
+
+        // Process any deferred tenant drops
+        for (tenant_id, guard) in drop_detached_tenants {
+            self.maybe_drop_tenant(tenant_id, &mut locked, &guard);
         }
 
         metrics::METRICS_REGISTRY
@@ -6728,7 +6965,7 @@ impl Service {
             }
 
             waiters = self
-                .await_waiters_remainder(waiters, SHORT_RECONCILE_TIMEOUT)
+                .await_waiters_remainder(waiters, WAITER_FILL_DRAIN_POLL_TIMEOUT)
                 .await;
 
             failpoint_support::sleep_millis_async!("sleepy-drain-loop", &cancel);
@@ -6827,10 +7064,7 @@ impl Service {
         let mut plan = Vec::new();
 
         for (node_id, attached) in nodes_by_load {
-            let available = locked
-                .nodes
-                .get(&node_id)
-                .map_or(false, |n| n.is_available());
+            let available = locked.nodes.get(&node_id).is_some_and(|n| n.is_available());
             if !available {
                 continue;
             }
@@ -6981,7 +7215,7 @@ impl Service {
             }
 
             waiters = self
-                .await_waiters_remainder(waiters, SHORT_RECONCILE_TIMEOUT)
+                .await_waiters_remainder(waiters, WAITER_FILL_DRAIN_POLL_TIMEOUT)
                 .await;
         }
 
@@ -7113,16 +7347,30 @@ impl Service {
         global_observed
     }
 
+    pub(crate) async fn safekeepers_list(
+        &self,
+    ) -> Result<Vec<SafekeeperDescribeResponse>, DatabaseError> {
+        self.persistence
+            .list_safekeepers()
+            .await?
+            .into_iter()
+            .map(|v| v.as_describe_response())
+            .collect::<Result<Vec<_>, _>>()
+    }
+
     pub(crate) async fn get_safekeeper(
         &self,
         id: i64,
-    ) -> Result<crate::persistence::SafekeeperPersistence, DatabaseError> {
-        self.persistence.safekeeper_get(id).await
+    ) -> Result<SafekeeperDescribeResponse, DatabaseError> {
+        self.persistence
+            .safekeeper_get(id)
+            .await
+            .and_then(|v| v.as_describe_response())
     }
 
     pub(crate) async fn upsert_safekeeper(
         &self,
-        record: crate::persistence::SafekeeperPersistence,
+        record: crate::persistence::SafekeeperUpsert,
     ) -> Result<(), DatabaseError> {
         self.persistence.safekeeper_upsert(record).await
     }

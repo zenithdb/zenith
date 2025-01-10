@@ -70,7 +70,14 @@ pub const DEFAULT_REMOTE_STORAGE_AZURE_CONCURRENCY_LIMIT: usize = 100;
 pub const DEFAULT_MAX_KEYS_PER_LIST_RESPONSE: Option<i32> = None;
 
 /// As defined in S3 docs
-pub const MAX_KEYS_PER_DELETE: usize = 1000;
+///
+/// <https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObjects.html>
+pub const MAX_KEYS_PER_DELETE_S3: usize = 1000;
+
+/// As defined in Azure docs
+///
+/// <https://learn.microsoft.com/en-us/rest/api/storageservices/blob-batch>
+pub const MAX_KEYS_PER_DELETE_AZURE: usize = 256;
 
 const REMOTE_STORAGE_PREFIX_SEPARATOR: char = '/';
 
@@ -334,11 +341,19 @@ pub trait RemoteStorage: Send + Sync + 'static {
     /// If the operation fails because of timeout or cancellation, the root cause of the error will be
     /// set to `TimeoutOrCancel`. In such situation it is unknown which deletions, if any, went
     /// through.
-    async fn delete_objects<'a>(
+    async fn delete_objects(
         &self,
-        paths: &'a [RemotePath],
+        paths: &[RemotePath],
         cancel: &CancellationToken,
     ) -> anyhow::Result<()>;
+
+    /// Returns the maximum number of keys that a call to [`Self::delete_objects`] can delete without chunking
+    ///
+    /// The value returned is only an optimization hint, One can pass larger number of objects to
+    /// `delete_objects` as well.
+    ///
+    /// The value is guaranteed to be >= 1.
+    fn max_keys_per_delete(&self) -> usize;
 
     /// Deletes all objects matching the given prefix.
     ///
@@ -530,6 +545,16 @@ impl<Other: RemoteStorage> GenericRemoteStorage<Arc<Other>> {
             Self::AwsS3(s) => s.delete_objects(paths, cancel).await,
             Self::AzureBlob(s) => s.delete_objects(paths, cancel).await,
             Self::Unreliable(s) => s.delete_objects(paths, cancel).await,
+        }
+    }
+
+    /// [`RemoteStorage::max_keys_per_delete`]
+    pub fn max_keys_per_delete(&self) -> usize {
+        match self {
+            Self::LocalFs(s) => s.max_keys_per_delete(),
+            Self::AwsS3(s) => s.max_keys_per_delete(),
+            Self::AzureBlob(s) => s.max_keys_per_delete(),
+            Self::Unreliable(s) => s.max_keys_per_delete(),
         }
     }
 

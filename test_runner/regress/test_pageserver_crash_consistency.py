@@ -46,7 +46,7 @@ def test_local_only_layers_after_crash(neon_env_builder: NeonEnvBuilder, pg_bin:
     for sk in env.safekeepers:
         sk.stop()
 
-    env.storage_controller.pageserver_api().patch_tenant_config_client_side(
+    env.storage_controller.pageserver_api().update_tenant_config(
         tenant_id, {"compaction_threshold": 3}
     )
     # hit the exit failpoint

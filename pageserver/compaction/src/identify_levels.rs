@@ -224,9 +224,8 @@ impl<L> Level<L> {
             }
 
             // recalculate depth if this was the last event at this point
-            let more_events_at_this_key = events_iter
-                .peek()
-                .map_or(false, |next_e| next_e.key == e.key);
+            let more_events_at_this_key =
+                events_iter.peek().is_some_and(|next_e| next_e.key == e.key);
             if !more_events_at_this_key {
                 let mut active_depth = 0;
                 for (_end_lsn, is_image, _idx) in active_set.iter().rev() {

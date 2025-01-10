@@ -48,10 +48,9 @@ inputs:
     description: 'benchmark durations JSON'
     required: false
     default: '{}'
-  aws_oicd_role_arn:
-    description: 'the OIDC role arn to (re-)acquire for allure report upload - if not set call must acquire OIDC role'
-    required: false
-    default: ''
+  aws-oicd-role-arn:
+    description: 'OIDC role arn to interract with S3'
+    required: true
 
 runs:
   using: "composite"
@@ -62,6 +61,7 @@ runs:
       with:
         name: neon-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build_type }}-artifact
         path: /tmp/neon
+        aws-oicd-role-arn: ${{ inputs.aws-oicd-role-arn }}
 
     - name: Download Neon binaries for the previous release
       if: inputs.build_type != 'remote'
@@ -70,6 +70,7 @@ runs:
         name: neon-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build_type }}-artifact
         path: /tmp/neon-previous
         prefix: latest
+        aws-oicd-role-arn: ${{ inputs.aws-oicd-role-arn }}
 
     - name: Download compatibility snapshot
       if: inputs.build_type != 'remote'
@@ -81,6 +82,7 @@ runs:
         # The lack of compatibility snapshot (for example, for the new Postgres version)
         # shouldn't fail the whole job. Only relevant test should fail.
         skip-if-does-not-exist: true
+        aws-oicd-role-arn: ${{ inputs.aws-oicd-role-arn }}
 
     - name: Checkout
       if: inputs.needs_postgres_source == 'true'
@@ -218,17 +220,19 @@ runs:
         # The lack of compatibility snapshot shouldn't fail the job
         # (for example if we didn't run the test for non build-and-test workflow)
         skip-if-does-not-exist: true
+        aws-oicd-role-arn: ${{ inputs.aws-oicd-role-arn }}
 
-    - name: (Re-)configure AWS credentials # necessary to upload reports to S3 after a long-running test
-      if: ${{ !cancelled() && (inputs.aws_oicd_role_arn != '') }}
-      uses: aws-actions/configure-aws-credentials@v4
+    - uses: aws-actions/configure-aws-credentials@v4
+      if: ${{ !cancelled() }}
       with:
         aws-region: eu-central-1
-        role-to-assume: ${{ inputs.aws_oicd_role_arn }}
+        role-to-assume: ${{ inputs.aws-oicd-role-arn }}
         role-duration-seconds: 3600 # 1 hour should be more than enough to upload report
+
     - name: Upload test results
       if: ${{ !cancelled() }}
       uses: ./.github/actions/allure-report-store
       with:
         report-dir: /tmp/test_output/allure/results
         unique-key: ${{ inputs.build_type }}-${{ inputs.pg_version }}
+        aws-oicd-role-arn: ${{ inputs.aws-oicd-role-arn }}

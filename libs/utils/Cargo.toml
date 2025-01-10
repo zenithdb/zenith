@@ -15,17 +15,21 @@ arc-swap.workspace = true
 sentry.workspace = true
 async-compression.workspace = true
 anyhow.workspace = true
+backtrace.workspace = true
 bincode.workspace = true
 bytes.workspace = true
 camino.workspace = true
 chrono.workspace = true
 diatomic-waker.workspace = true
+flate2.workspace = true
 git-version.workspace = true
 hex = { workspace = true, features = ["serde"] }
 humantime.workspace = true
 hyper0 = { workspace = true, features = ["full"] }
+inferno.workspace = true
+itertools.workspace = true
 fail.workspace = true
-futures = { workspace = true}
+futures = { workspace = true }
 jemalloc_pprof.workspace = true
 jsonwebtoken.workspace = true
 nix.workspace = true

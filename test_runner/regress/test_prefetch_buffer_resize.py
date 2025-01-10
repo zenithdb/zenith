@@ -7,7 +7,6 @@ from fixtures.neon_fixtures import NeonEnvBuilder
 
 
 @pytest.mark.parametrize("shard_count", [None, 4])
-@pytest.mark.timeout(600)
 def test_prefetch(neon_env_builder: NeonEnvBuilder, shard_count: int | None):
     if shard_count is not None:
         neon_env_builder.num_pageservers = shard_count

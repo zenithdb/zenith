@@ -31,19 +31,15 @@ jobs:
     uses: ./.github/workflows/build-build-tools-image.yml
     secrets: inherit
 
-  check-macos-build:
-    needs: [ check-permissions ]
-    if: |
-      contains(github.event.pull_request.labels.*.name, 'run-extra-build-macos')  ||
-      contains(github.event.pull_request.labels.*.name, 'run-extra-build-*') ||
-      github.ref_name == 'main'
-    timeout-minutes: 90
-    runs-on: macos-15
-
-    env:
-      # Use release build only, to have less debug info around
-      # Hence keeping target/ (and general cache size) smaller
-      BUILD_TYPE: release
+  files-changed:
+    name: Detect what files changed
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    outputs:
+      v17: ${{ steps.files_changed.outputs.v17 }}
+      postgres_changes: ${{ steps.postgres_changes.outputs.changes }}
+      rebuild_rust_code: ${{ steps.files_changed.outputs.rust_code }}
+      rebuild_everything: ${{ steps.files_changed.outputs.rebuild_neon_extra || steps.files_changed.outputs.rebuild_macos }}
 
     steps:
       - name: Checkout
@@ -51,102 +47,45 @@ jobs:
         with:
           submodules: true
 
-      - name: Install macOS postgres dependencies
-        run: brew install flex bison openssl protobuf icu4c
-
-      - name: Set pg 14 revision for caching
-        id: pg_v14_rev
-        run: echo pg_rev=$(git rev-parse HEAD:vendor/postgres-v14) >> $GITHUB_OUTPUT
-
-      - name: Set pg 15 revision for caching
-        id: pg_v15_rev
-        run: echo pg_rev=$(git rev-parse HEAD:vendor/postgres-v15) >> $GITHUB_OUTPUT
-
-      - name: Set pg 16 revision for caching
-        id: pg_v16_rev
-        run: echo pg_rev=$(git rev-parse HEAD:vendor/postgres-v16) >> $GITHUB_OUTPUT
-
-      - name: Set pg 17 revision for caching
-        id: pg_v17_rev
-        run: echo pg_rev=$(git rev-parse HEAD:vendor/postgres-v17) >> $GITHUB_OUTPUT
-
-      - name: Cache postgres v14 build
-        id: cache_pg_14
-        uses: actions/cache@v4
+      - name: Check for Postgres changes
+        uses: dorny/paths-filter@1441771bbfdd59dcd748680ee64ebd8faab1a242  #v3
+        id: files_changed
         with:
-          path: pg_install/v14
-          key: v1-${{ runner.os }}-${{ runner.arch }}-${{ env.BUILD_TYPE }}-pg-${{ steps.pg_v14_rev.outputs.pg_rev }}-${{ hashFiles('Makefile') }}
+          token: ${{ github.token }}
+          filters: .github/file-filters.yaml
+          base: ${{ github.event_name != 'pull_request' && (github.event.merge_group.base_ref || github.ref_name) || '' }}
+          ref: ${{ github.event_name != 'pull_request' && (github.event.merge_group.head_ref || github.ref) || '' }}
 
-      - name: Cache postgres v15 build
-        id: cache_pg_15
-        uses: actions/cache@v4
-        with:
-          path: pg_install/v15
-          key: v1-${{ runner.os }}-${{ runner.arch }}-${{ env.BUILD_TYPE }}-pg-${{ steps.pg_v15_rev.outputs.pg_rev }}-${{ hashFiles('Makefile') }}
-
-      - name: Cache postgres v16 build
-        id: cache_pg_16
-        uses: actions/cache@v4
-        with:
-          path: pg_install/v16
-          key: v1-${{ runner.os }}-${{ runner.arch }}-${{ env.BUILD_TYPE }}-pg-${{ steps.pg_v16_rev.outputs.pg_rev }}-${{ hashFiles('Makefile') }}
-
-      - name: Cache postgres v17 build
-        id: cache_pg_17
-        uses: actions/cache@v4
-        with:
-          path: pg_install/v17
-          key: v1-${{ runner.os }}-${{ runner.arch }}-${{ env.BUILD_TYPE }}-pg-${{ steps.pg_v17_rev.outputs.pg_rev }}-${{ hashFiles('Makefile') }}
-
-      - name: Set extra env for macOS
+      - name: Filter out only v-string for build matrix
+        id: postgres_changes
         run: |
-          echo 'LDFLAGS=-L/usr/local/opt/openssl@3/lib' >> $GITHUB_ENV
-          echo 'CPPFLAGS=-I/usr/local/opt/openssl@3/include' >> $GITHUB_ENV
+          v_strings_only_as_json_array=$(echo ${{ steps.files_changed.outputs.chnages }} | jq '.[]|select(test("v\\d+"))' | jq --slurp -c)
+          echo "changes=${v_strings_only_as_json_array}" | tee -a "${GITHUB_OUTPUT}"
 
-      - name: Cache cargo deps
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            !~/.cargo/registry/src
-            ~/.cargo/git
-            target
-          key: v1-${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('./Cargo.lock') }}-${{ hashFiles('./rust-toolchain.toml') }}-rust
-
-      - name: Build postgres v14
-        if: steps.cache_pg_14.outputs.cache-hit != 'true'
-        run: make postgres-v14 -j$(sysctl -n hw.ncpu)
-
-      - name: Build postgres v15
-        if: steps.cache_pg_15.outputs.cache-hit != 'true'
-        run: make postgres-v15 -j$(sysctl -n hw.ncpu)
-
-      - name: Build postgres v16
-        if: steps.cache_pg_16.outputs.cache-hit != 'true'
-        run: make postgres-v16 -j$(sysctl -n hw.ncpu)
-
-      - name: Build postgres v17
-        if: steps.cache_pg_17.outputs.cache-hit != 'true'
-        run: make postgres-v17 -j$(sysctl -n hw.ncpu)
-
-      - name: Build neon extensions
-        run: make neon-pg-ext -j$(sysctl -n hw.ncpu)
-
-      - name: Build walproposer-lib
-        run: make walproposer-lib -j$(sysctl -n hw.ncpu)
-
-      - name: Run cargo build
-        run: PQ_LIB_DIR=$(pwd)/pg_install/v16/lib cargo build --all --release
-
-      - name: Check that no warnings are produced
-        run: ./run_clippy.sh
-
-  gather-rust-build-stats:
-    needs: [ check-permissions, build-build-tools-image ]
+  check-macos-build:
+    needs: [ check-permissions, files-changed ]
     if: |
-      contains(github.event.pull_request.labels.*.name, 'run-extra-build-stats') ||
+      contains(github.event.pull_request.labels.*.name, 'run-extra-build-macos')  ||
       contains(github.event.pull_request.labels.*.name, 'run-extra-build-*') ||
       github.ref_name == 'main'
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      pg_versions: ${{ needs.files-changed.outputs.postgres_changes }}
+      rebuild_rust_code: ${{ needs.files-changed.outputs.rebuild_rust_code }}
+      rebuild_everything: ${{ fromJson(needs.files-changed.outputs.rebuild_everything) }}
+
+  gather-rust-build-stats:
+    needs: [ check-permissions, build-build-tools-image, files-changed ]
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: write
+    if: |
+      (needs.files-changed.outputs.v17 == 'true' || needs.files-changed.outputs.rebuild_everything == 'true') && (
+        contains(github.event.pull_request.labels.*.name, 'run-extra-build-stats') ||
+        contains(github.event.pull_request.labels.*.name, 'run-extra-build-*') ||
+        github.ref_name == 'main'
+      )
     runs-on: [ self-hosted, large ]
     container:
       image: ${{ needs.build-build-tools-image.outputs.image }}-bookworm
@@ -177,13 +116,18 @@ jobs:
       - name: Produce the build stats
         run: PQ_LIB_DIR=$(pwd)/pg_install/v17/lib cargo build --all --release --timings -j$(nproc)
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: eu-central-1
+          role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
+          role-duration-seconds: 3600
+
       - name: Upload the build stats
         id: upload-stats
         env:
           BUCKET: neon-github-public-dev
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_DEV }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_KEY_DEV }}
         run: |
           REPORT_URL=https://${BUCKET}.s3.amazonaws.com/build-stats/${SHA}/${GITHUB_RUN_ID}/cargo-timing.html
           aws s3 cp --only-show-errors ./target/cargo-timings/cargo-timing.html "s3://${BUCKET}/build-stats/${SHA}/${GITHUB_RUN_ID}/"

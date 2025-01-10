@@ -338,7 +338,7 @@ impl StorageController {
                         .port(),
                 )
             } else {
-                let listen_url = self.env.control_plane_api.clone().unwrap();
+                let listen_url = self.env.control_plane_api.clone();
 
                 let listen = format!(
                     "{}:{}",
@@ -708,7 +708,7 @@ impl StorageController {
         } else {
             // The configured URL has the /upcall path prefix for pageservers to use: we will strip that out
             // for general purpose API access.
-            let listen_url = self.env.control_plane_api.clone().unwrap();
+            let listen_url = self.env.control_plane_api.clone();
             Url::from_str(&format!(
                 "http://{}:{}/{path}",
                 listen_url.host_str().unwrap(),

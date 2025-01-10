@@ -1,9 +1,7 @@
-use std::sync::Arc;
-
 use anyhow::{bail, Result};
 use camino::Utf8PathBuf;
-
 use postgres_ffi::{MAX_SEND_SIZE, WAL_SEGMENT_SIZE};
+use std::sync::Arc;
 use tokio::{
     fs::OpenOptions,
     io::{AsyncSeekExt, AsyncWriteExt},
@@ -14,7 +12,7 @@ use utils::{id::TenantTimelineId, lsn::Lsn};
 use crate::{
     control_file::FileStorage,
     state::TimelinePersistentState,
-    timeline::{Timeline, TimelineError, WalResidentTimeline},
+    timeline::{TimelineError, WalResidentTimeline},
     timelines_global_map::{create_temp_timeline_dir, validate_temp_timeline},
     wal_backup::copy_s3_segments,
     wal_storage::{wal_file_paths, WalReader},
@@ -25,16 +23,19 @@ use crate::{
 const MAX_BACKUP_LAG: u64 = 10 * WAL_SEGMENT_SIZE as u64;
 
 pub struct Request {
-    pub source: Arc<Timeline>,
+    pub source_ttid: TenantTimelineId,
     pub until_lsn: Lsn,
     pub destination_ttid: TenantTimelineId,
 }
 
-pub async fn handle_request(request: Request) -> Result<()> {
+pub async fn handle_request(
+    request: Request,
+    global_timelines: Arc<GlobalTimelines>,
+) -> Result<()> {
     // TODO: request.until_lsn MUST be a valid LSN, and we cannot check it :(
     //   if LSN will point to the middle of a WAL record, timeline will be in "broken" state
 
-    match GlobalTimelines::get(request.destination_ttid) {
+    match global_timelines.get(request.destination_ttid) {
         // timeline already exists. would be good to check that this timeline is the copy
         // of the source timeline, but it isn't obvious how to do that
         Ok(_) => return Ok(()),
@@ -46,9 +47,10 @@ pub async fn handle_request(request: Request) -> Result<()> {
         }
     }
 
-    let source_tli = request.source.wal_residence_guard().await?;
+    let source = global_timelines.get(request.source_ttid)?;
+    let source_tli = source.wal_residence_guard().await?;
 
-    let conf = &GlobalTimelines::get_global_config();
+    let conf = &global_timelines.get_global_config();
     let ttid = request.destination_ttid;
 
     let (_tmp_dir, tli_dir_path) = create_temp_timeline_dir(conf, ttid).await?;
@@ -127,7 +129,7 @@ pub async fn handle_request(request: Request) -> Result<()> {
 
     copy_s3_segments(
         wal_seg_size,
-        &request.source.ttid,
+        &request.source_ttid,
         &request.destination_ttid,
         first_segment,
         first_ondisk_segment,
@@ -158,7 +160,9 @@ pub async fn handle_request(request: Request) -> Result<()> {
 
     // now we have a ready timeline in a temp directory
     validate_temp_timeline(conf, request.destination_ttid, &tli_dir_path).await?;
-    GlobalTimelines::load_temp_timeline(request.destination_ttid, &tli_dir_path, true).await?;
+    global_timelines
+        .load_temp_timeline(request.destination_ttid, &tli_dir_path, true)
+        .await?;
 
     Ok(())
 }

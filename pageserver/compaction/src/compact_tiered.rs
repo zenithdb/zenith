@@ -272,7 +272,7 @@ struct CompactionJob<E: CompactionJobExecutor> {
     completed: bool,
 }
 
-impl<'a, E> LevelCompactionState<'a, E>
+impl<E> LevelCompactionState<'_, E>
 where
     E: CompactionJobExecutor,
 {

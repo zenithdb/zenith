@@ -2,7 +2,7 @@
 
 use pq_proto::{BeAuthenticationSaslMessage, BeMessage};
 
-use crate::parse::{split_at_const, split_cstr};
+use crate::parse::split_cstr;
 
 /// SASL-specific payload of [`PasswordMessage`](pq_proto::FeMessage::PasswordMessage).
 #[derive(Debug)]
@@ -19,7 +19,7 @@ impl<'a> FirstMessage<'a> {
         let (method_cstr, tail) = split_cstr(bytes)?;
         let method = method_cstr.to_str().ok()?;
 
-        let (len_bytes, bytes) = split_at_const(tail)?;
+        let (len_bytes, bytes) = tail.split_first_chunk()?;
         let len = u32::from_be_bytes(*len_bytes) as usize;
         if len != bytes.len() {
             return None;
@@ -51,6 +51,7 @@ impl<'a> ServerMessage<&'a str> {
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

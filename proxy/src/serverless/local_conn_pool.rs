@@ -179,7 +179,6 @@ pub(crate) fn poll_client<C: ClientInnerExt>(
         info!(cold_start_info = cold_start_info.as_str(), %conn_info, %session_id, "new connection");
     });
     let pool = Arc::downgrade(&global_pool);
-    let pool_clone = pool.clone();
 
     let db_user = conn_info.db_and_user();
     let idle = global_pool.get_idle_timeout();
@@ -273,11 +272,7 @@ pub(crate) fn poll_client<C: ClientInnerExt>(
         }),
     };
 
-    Client::new(
-        inner,
-        conn_info,
-        Arc::downgrade(&pool_clone.upgrade().unwrap().global_pool),
-    )
+    Client::new(inner, conn_info, Arc::downgrade(&global_pool.global_pool))
 }
 
 impl ClientInnerCommon<postgres_client::Client> {
@@ -321,7 +316,8 @@ fn resign_jwt(sk: &SigningKey, payload: &[u8], jti: u64) -> Result<String, HttpC
     let mut buffer = itoa::Buffer::new();
 
     // encode the jti integer to a json rawvalue
-    let jti = serde_json::from_str::<&RawValue>(buffer.format(jti)).unwrap();
+    let jti = serde_json::from_str::<&RawValue>(buffer.format(jti))
+        .expect("itoa formatted integer should be guaranteed valid json");
 
     // update the jti in-place
     let payload =
@@ -368,6 +364,7 @@ fn sign_jwt(sk: &SigningKey, payload: &[u8]) -> String {
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use p256::ecdsa::SigningKey;
     use typed_json::json;

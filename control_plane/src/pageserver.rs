@@ -95,21 +95,19 @@ impl PageServerNode {
 
         let mut overrides = vec![pg_distrib_dir_param, broker_endpoint_param];
 
-        if let Some(control_plane_api) = &self.env.control_plane_api {
-            overrides.push(format!(
-                "control_plane_api='{}'",
-                control_plane_api.as_str()
-            ));
+        overrides.push(format!(
+            "control_plane_api='{}'",
+            self.env.control_plane_api.as_str()
+        ));
 
-            // Storage controller uses the same auth as pageserver: if JWT is enabled
-            // for us, we will also need it to talk to them.
-            if matches!(conf.http_auth_type, AuthType::NeonJWT) {
-                let jwt_token = self
-                    .env
-                    .generate_auth_token(&Claims::new(None, Scope::GenerationsApi))
-                    .unwrap();
-                overrides.push(format!("control_plane_api_token='{}'", jwt_token));
-            }
+        // Storage controller uses the same auth as pageserver: if JWT is enabled
+        // for us, we will also need it to talk to them.
+        if matches!(conf.http_auth_type, AuthType::NeonJWT) {
+            let jwt_token = self
+                .env
+                .generate_auth_token(&Claims::new(None, Scope::GenerationsApi))
+                .unwrap();
+            overrides.push(format!("control_plane_api_token='{}'", jwt_token));
         }
 
         if !conf.other.contains_key("remote_storage") {
@@ -435,7 +433,7 @@ impl PageServerNode {
     ) -> anyhow::Result<()> {
         let config = Self::parse_config(settings)?;
         self.http_client
-            .tenant_config(&models::TenantConfigRequest { tenant_id, config })
+            .set_tenant_config(&models::TenantConfigRequest { tenant_id, config })
             .await?;
 
         Ok(())

@@ -22,6 +22,7 @@
 use camino::Utf8PathBuf;
 use postgres_ffi::{XLogFileName, XLogSegNo, PG_TLI};
 use remote_storage::RemotePath;
+use safekeeper_api::Term;
 use serde::{Deserialize, Serialize};
 
 use tokio_util::sync::CancellationToken;
@@ -31,7 +32,6 @@ use utils::{id::NodeId, lsn::Lsn};
 use crate::{
     metrics::{MISC_OPERATION_SECONDS, PARTIAL_BACKUP_UPLOADED_BYTES, PARTIAL_BACKUP_UPLOADS},
     rate_limit::{rand_duration, RateLimiter},
-    safekeeper::Term,
     timeline::WalResidentTimeline,
     timeline_manager::StateSnapshot,
     wal_backup::{self},

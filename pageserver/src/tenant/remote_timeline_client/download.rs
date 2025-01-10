@@ -145,8 +145,8 @@ pub async fn download_layer_file<'a>(
 ///
 /// If Err() is returned, there was some error. The file at `dst_path` has been unlinked.
 /// The unlinking has _not_ been made durable.
-async fn download_object<'a>(
-    storage: &'a GenericRemoteStorage,
+async fn download_object(
+    storage: &GenericRemoteStorage,
     src_path: &RemotePath,
     dst_path: &Utf8PathBuf,
     #[cfg_attr(target_os = "macos", allow(unused_variables))] gate: &utils::sync::gate::Gate,

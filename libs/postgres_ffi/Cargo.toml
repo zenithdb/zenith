@@ -9,9 +9,11 @@ regex.workspace = true
 bytes.workspace = true
 anyhow.workspace = true
 crc32c.workspace = true
+criterion.workspace = true
 once_cell.workspace = true
 log.workspace = true
 memoffset.workspace = true
+pprof.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 utils.workspace = true
@@ -24,3 +26,7 @@ postgres.workspace = true
 [build-dependencies]
 anyhow.workspace = true
 bindgen.workspace = true
+
+[[bench]]
+name = "waldecoder"
+harness = false

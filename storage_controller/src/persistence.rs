@@ -11,7 +11,9 @@ use diesel::Connection;
 use itertools::Itertools;
 use pageserver_api::controller_api::AvailabilityZone;
 use pageserver_api::controller_api::MetadataHealthRecord;
+use pageserver_api::controller_api::SafekeeperDescribeResponse;
 use pageserver_api::controller_api::ShardSchedulingPolicy;
+use pageserver_api::controller_api::SkSchedulingPolicy;
 use pageserver_api::controller_api::{NodeSchedulingPolicy, PlacementPolicy};
 use pageserver_api::models::TenantConfig;
 use pageserver_api::shard::ShardConfigError;
@@ -96,6 +98,7 @@ pub(crate) enum DatabaseOperation {
     TenantGenerations,
     ShardGenerations,
     ListTenantShards,
+    LoadTenant,
     InsertTenantShards,
     UpdateTenantShard,
     DeleteTenant,
@@ -104,6 +107,7 @@ pub(crate) enum DatabaseOperation {
     ListMetadataHealth,
     ListMetadataHealthUnhealthy,
     ListMetadataHealthOutdated,
+    ListSafekeepers,
     GetLeader,
     UpdateLeader,
     SetPreferredAzs,
@@ -328,11 +332,40 @@ impl Persistence {
 
     /// At startup, load the high level state for shards, such as their config + policy.  This will
     /// be enriched at runtime with state discovered on pageservers.
-    pub(crate) async fn list_tenant_shards(&self) -> DatabaseResult<Vec<TenantShardPersistence>> {
+    ///
+    /// We exclude shards configured to be detached.  During startup, if we see any attached locations
+    /// for such shards, they will automatically be detached as 'orphans'.
+    pub(crate) async fn load_active_tenant_shards(
+        &self,
+    ) -> DatabaseResult<Vec<TenantShardPersistence>> {
+        use crate::schema::tenant_shards::dsl::*;
         self.with_measured_conn(
             DatabaseOperation::ListTenantShards,
             move |conn| -> DatabaseResult<_> {
-                Ok(crate::schema::tenant_shards::table.load::<TenantShardPersistence>(conn)?)
+                let query = tenant_shards.filter(
+                    placement_policy.ne(serde_json::to_string(&PlacementPolicy::Detached).unwrap()),
+                );
+                let result = query.load::<TenantShardPersistence>(conn)?;
+
+                Ok(result)
+            },
+        )
+        .await
+    }
+
+    /// When restoring a previously detached tenant into memory, load it from the database
+    pub(crate) async fn load_tenant(
+        &self,
+        filter_tenant_id: TenantId,
+    ) -> DatabaseResult<Vec<TenantShardPersistence>> {
+        use crate::schema::tenant_shards::dsl::*;
+        self.with_measured_conn(
+            DatabaseOperation::LoadTenant,
+            move |conn| -> DatabaseResult<_> {
+                let query = tenant_shards.filter(tenant_id.eq(filter_tenant_id.to_string()));
+                let result = query.load::<TenantShardPersistence>(conn)?;
+
+                Ok(result)
             },
         )
         .await
@@ -1011,6 +1044,22 @@ impl Persistence {
         Ok(())
     }
 
+    /// At startup, populate the list of nodes which our shards may be placed on
+    pub(crate) async fn list_safekeepers(&self) -> DatabaseResult<Vec<SafekeeperPersistence>> {
+        let safekeepers: Vec<SafekeeperPersistence> = self
+            .with_measured_conn(
+                DatabaseOperation::ListNodes,
+                move |conn| -> DatabaseResult<_> {
+                    Ok(crate::schema::safekeepers::table.load::<SafekeeperPersistence>(conn)?)
+                },
+            )
+            .await?;
+
+        tracing::info!("list_safekeepers: loaded {} nodes", safekeepers.len());
+
+        Ok(safekeepers)
+    }
+
     pub(crate) async fn safekeeper_get(
         &self,
         id: i64,
@@ -1027,12 +1076,14 @@ impl Persistence {
 
     pub(crate) async fn safekeeper_upsert(
         &self,
-        record: SafekeeperPersistence,
+        record: SafekeeperUpsert,
     ) -> Result<(), DatabaseError> {
         use crate::schema::safekeepers::dsl::*;
 
         self.with_conn(move |conn| -> DatabaseResult<()> {
-            let bind = record.as_insert_or_update();
+            let bind = record
+                .as_insert_or_update()
+                .map_err(|e| DatabaseError::Logical(format!("{e}")))?;
 
             let inserted_updated = diesel::insert_into(safekeepers)
                 .values(&bind)
@@ -1195,6 +1246,7 @@ pub(crate) struct ControllerPersistence {
     pub(crate) started_at: chrono::DateTime<chrono::Utc>,
 }
 
+// What we store in the database
 #[derive(Serialize, Deserialize, Queryable, Selectable, Eq, PartialEq, Debug, Clone)]
 #[diesel(table_name = crate::schema::safekeepers)]
 pub(crate) struct SafekeeperPersistence {
@@ -1209,11 +1261,51 @@ pub(crate) struct SafekeeperPersistence {
     pub(crate) active: bool,
     pub(crate) http_port: i32,
     pub(crate) availability_zone_id: String,
+    pub(crate) scheduling_policy: String,
 }
 
 impl SafekeeperPersistence {
-    fn as_insert_or_update(&self) -> InsertUpdateSafekeeper<'_> {
-        InsertUpdateSafekeeper {
+    pub(crate) fn as_describe_response(&self) -> Result<SafekeeperDescribeResponse, DatabaseError> {
+        let scheduling_policy =
+            SkSchedulingPolicy::from_str(&self.scheduling_policy).map_err(|e| {
+                DatabaseError::Logical(format!("can't construct SkSchedulingPolicy: {e:?}"))
+            })?;
+        // omit the `active` flag on purpose: it is deprecated.
+        Ok(SafekeeperDescribeResponse {
+            id: NodeId(self.id as u64),
+            region_id: self.region_id.clone(),
+            version: self.version,
+            host: self.host.clone(),
+            port: self.port,
+            http_port: self.http_port,
+            availability_zone_id: self.availability_zone_id.clone(),
+            scheduling_policy,
+        })
+    }
+}
+
+/// What we expect from the upsert http api
+#[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone)]
+pub(crate) struct SafekeeperUpsert {
+    pub(crate) id: i64,
+    pub(crate) region_id: String,
+    /// 1 is special, it means just created (not currently posted to storcon).
+    /// Zero or negative is not really expected.
+    /// Otherwise the number from `release-$(number_of_commits_on_branch)` tag.
+    pub(crate) version: i64,
+    pub(crate) host: String,
+    pub(crate) port: i32,
+    pub(crate) active: bool,
+    pub(crate) http_port: i32,
+    pub(crate) availability_zone_id: String,
+}
+
+impl SafekeeperUpsert {
+    fn as_insert_or_update(&self) -> anyhow::Result<InsertUpdateSafekeeper<'_>> {
+        if self.version < 0 {
+            anyhow::bail!("negative version: {}", self.version);
+        }
+        Ok(InsertUpdateSafekeeper {
             id: self.id,
             region_id: &self.region_id,
             version: self.version,
@@ -1222,7 +1314,9 @@ impl SafekeeperPersistence {
             active: self.active,
             http_port: self.http_port,
             availability_zone_id: &self.availability_zone_id,
-        }
+            // None means a wish to not update this column. We expose abilities to update it via other means.
+            scheduling_policy: None,
+        })
     }
 }
 
@@ -1237,4 +1331,5 @@ struct InsertUpdateSafekeeper<'a> {
     active: bool,
     http_port: i32,
     availability_zone_id: &'a str,
+    scheduling_policy: Option<&'a str>,
 }

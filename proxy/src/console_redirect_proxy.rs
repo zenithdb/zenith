@@ -115,7 +115,7 @@ pub async fn task_main(
                 Ok(Some(p)) => {
                     ctx.set_success();
                     let _disconnect = ctx.log_connect();
-                    match p.proxy_pass().await {
+                    match p.proxy_pass(&config.connect_to_compute).await {
                         Ok(()) => {}
                         Err(ErrorSource::Client(e)) => {
                             error!(?session_id, "per-client task finished with an IO error from the client: {e:#}");
@@ -159,41 +159,43 @@ pub(crate) async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
     let request_gauge = metrics.connection_requests.guard(proto);
 
     let tls = config.tls_config.as_ref();
+
     let record_handshake_error = !ctx.has_private_peer_addr();
     let pause = ctx.latency_timer_pause(crate::metrics::Waiting::Client);
     let do_handshake = handshake(ctx, stream, tls, record_handshake_error);
 
-    let (mut stream, params) =
-        match tokio::time::timeout(config.handshake_timeout, do_handshake).await?? {
-            HandshakeData::Startup(stream, params) => (stream, params),
-            HandshakeData::Cancel(cancel_key_data) => {
-                // spawn a task to cancel the session, but don't wait for it
-                cancellations.spawn({
-                    let cancellation_handler_clone = Arc::clone(&cancellation_handler);
-                    let session_id = ctx.session_id();
-                    let peer_ip = ctx.peer_addr();
-                    async move {
-                        drop(
-                            cancellation_handler_clone
-                                .cancel_session(
-                                    cancel_key_data,
-                                    session_id,
-                                    peer_ip,
-                                    config.authentication_config.ip_allowlist_check_enabled,
-                                )
-                                .await,
-                        );
-                    }
-                });
+    let (mut stream, params) = match tokio::time::timeout(config.handshake_timeout, do_handshake)
+        .await??
+    {
+        HandshakeData::Startup(stream, params) => (stream, params),
+        HandshakeData::Cancel(cancel_key_data) => {
+            // spawn a task to cancel the session, but don't wait for it
+            cancellations.spawn({
+                let cancellation_handler_clone = Arc::clone(&cancellation_handler);
+                let ctx = ctx.clone();
+                let cancel_span = tracing::span!(parent: None, tracing::Level::INFO, "cancel_session", session_id = ?ctx.session_id());
+                cancel_span.follows_from(tracing::Span::current());
+                async move {
+                    cancellation_handler_clone
+                        .cancel_session_auth(
+                            cancel_key_data,
+                            ctx,
+                            config.authentication_config.ip_allowlist_check_enabled,
+                            backend,
+                        )
+                        .await
+                        .inspect_err(|e | debug!(error = ?e, "cancel_session failed")).ok();
+                }.instrument(cancel_span)
+            });
 
-                return Ok(None);
-            }
-        };
+            return Ok(None);
+        }
+    };
     drop(pause);
 
     ctx.set_db_options(params.clone());
 
-    let (user_info, ip_allowlist) = match backend
+    let (node_info, user_info, ip_allowlist) = match backend
         .authenticate(ctx, &config.authentication_config, &mut stream)
         .await
     {
@@ -206,14 +208,14 @@ pub(crate) async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
     let mut node = connect_to_compute(
         ctx,
         &TcpMechanism {
+            user_info,
             params_compat: true,
             params: &params,
             locks: &config.connect_compute_locks,
         },
-        &user_info,
-        config.allow_self_signed_compute,
+        &node_info,
         config.wake_compute_retry_config,
-        config.connect_to_compute_retry_config,
+        &config.connect_to_compute,
     )
     .or_else(|e| stream.throw_error(e))
     .await?;

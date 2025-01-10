@@ -15,6 +15,8 @@ from werkzeug.wrappers.response import Response
 if TYPE_CHECKING:
     from typing import Any, Self
 
+    from fixtures.httpserver import ListenAddress
+
 
 def handle_db(dbs, roles, operation):
     if operation["op"] == "set":
@@ -58,14 +60,12 @@ def ddl_forward_handler(
     if request.json is None:
         log.info("Received invalid JSON")
         return Response(status=400)
-    json = request.json
+    json: dict[str, list[str]] = request.json
     # Handle roles first
-    if "roles" in json:
-        for operation in json["roles"]:
-            handle_role(dbs, roles, operation)
-    if "dbs" in json:
-        for operation in json["dbs"]:
-            handle_db(dbs, roles, operation)
+    for operation in json.get("roles", []):
+        handle_role(dbs, roles, operation)
+    for operation in json.get("dbs", []):
+        handle_db(dbs, roles, operation)
     return Response(status=200)
 
 
@@ -120,7 +120,7 @@ class DdlForwardingContext:
 
 @pytest.fixture(scope="function")
 def ddl(
-    httpserver: HTTPServer, vanilla_pg: VanillaPostgres, httpserver_listen_address: tuple[str, int]
+    httpserver: HTTPServer, vanilla_pg: VanillaPostgres, httpserver_listen_address: ListenAddress
 ):
     (host, port) = httpserver_listen_address
     with DdlForwardingContext(httpserver, vanilla_pg, host, port) as ddl:
@@ -201,6 +201,23 @@ def test_ddl_forwarding(ddl: DdlForwardingContext):
     ddl.wait()
     assert ddl.roles == {"bork": "cork"}
 
+    cur.execute("DROP ROLE bork")
+    ddl.wait()
+    assert ddl.roles == {}
+
+    cur.execute("CREATE ROLE bork WITH PASSWORD 'newyork'")
+    cur.execute("BEGIN")
+    cur.execute("SAVEPOINT point")
+    cur.execute("DROP ROLE bork")
+    cur.execute("COMMIT")
+    ddl.wait()
+    assert ddl.roles == {}
+
+    cur.execute("CREATE ROLE bork WITH PASSWORD 'oldyork'")
+    cur.execute("BEGIN")
+    cur.execute("SAVEPOINT point")
+    cur.execute("ALTER ROLE bork PASSWORD NULL")
+    cur.execute("COMMIT")
     cur.execute("DROP ROLE bork")
     ddl.wait()
     assert ddl.roles == {}

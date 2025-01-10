@@ -5,12 +5,13 @@ use clap::{Parser, Subcommand};
 use pageserver_api::{
     controller_api::{
         AvailabilityZone, NodeAvailabilityWrapper, NodeDescribeResponse, NodeShardResponse,
-        ShardSchedulingPolicy, TenantCreateRequest, TenantDescribeResponse, TenantPolicyRequest,
+        SafekeeperDescribeResponse, ShardSchedulingPolicy, TenantCreateRequest,
+        TenantDescribeResponse, TenantPolicyRequest,
     },
     models::{
         EvictionPolicy, EvictionPolicyLayerAccessThreshold, LocationConfigSecondary,
-        ShardParameters, TenantConfig, TenantConfigRequest, TenantShardSplitRequest,
-        TenantShardSplitResponse,
+        ShardParameters, TenantConfig, TenantConfigPatchRequest, TenantConfigRequest,
+        TenantShardSplitRequest, TenantShardSplitResponse,
     },
     shard::{ShardStripeSize, TenantShardId},
 };
@@ -116,9 +117,19 @@ enum Command {
         #[arg(long)]
         tenant_shard_id: TenantShardId,
     },
-    /// Modify the pageserver tenant configuration of a tenant: this is the configuration structure
+    /// Set the pageserver tenant configuration of a tenant: this is the configuration structure
     /// that is passed through to pageservers, and does not affect storage controller behavior.
-    TenantConfig {
+    /// Any previous tenant configs are overwritten.
+    SetTenantConfig {
+        #[arg(long)]
+        tenant_id: TenantId,
+        #[arg(long)]
+        config: String,
+    },
+    /// Patch the pageserver tenant configuration of a tenant. Any fields with null values in the
+    /// provided JSON are unset from the tenant config and all fields with non-null values are set.
+    /// Unspecified fields are not changed.
+    PatchTenantConfig {
         #[arg(long)]
         tenant_id: TenantId,
         #[arg(long)]
@@ -201,6 +212,8 @@ enum Command {
         #[arg(long)]
         timeout: humantime::Duration,
     },
+    /// List safekeepers known to the storage controller
+    Safekeepers {},
 }
 
 #[derive(Parser)]
@@ -549,11 +562,21 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await?;
         }
-        Command::TenantConfig { tenant_id, config } => {
+        Command::SetTenantConfig { tenant_id, config } => {
             let tenant_conf = serde_json::from_str(&config)?;
 
             vps_client
-                .tenant_config(&TenantConfigRequest {
+                .set_tenant_config(&TenantConfigRequest {
+                    tenant_id,
+                    config: tenant_conf,
+                })
+                .await?;
+        }
+        Command::PatchTenantConfig { tenant_id, config } => {
+            let tenant_conf = serde_json::from_str(&config)?;
+
+            vps_client
+                .patch_tenant_config(&TenantConfigPatchRequest {
                     tenant_id,
                     config: tenant_conf,
                 })
@@ -736,7 +759,7 @@ async fn main() -> anyhow::Result<()> {
             threshold,
         } => {
             vps_client
-                .tenant_config(&TenantConfigRequest {
+                .set_tenant_config(&TenantConfigRequest {
                     tenant_id,
                     config: TenantConfig {
                         eviction_policy: Some(EvictionPolicy::LayerAccessThreshold(
@@ -999,6 +1022,40 @@ async fn main() -> anyhow::Result<()> {
             println!(
                 "Fill was cancelled for node {node_id}. Schedulling policy is now {final_policy:?}"
             );
+        }
+        Command::Safekeepers {} => {
+            let mut resp = storcon_client
+                .dispatch::<(), Vec<SafekeeperDescribeResponse>>(
+                    Method::GET,
+                    "control/v1/safekeeper".to_string(),
+                    None,
+                )
+                .await?;
+
+            resp.sort_by(|a, b| a.id.cmp(&b.id));
+
+            let mut table = comfy_table::Table::new();
+            table.set_header([
+                "Id",
+                "Version",
+                "Host",
+                "Port",
+                "Http Port",
+                "AZ Id",
+                "Scheduling",
+            ]);
+            for sk in resp {
+                table.add_row([
+                    format!("{}", sk.id),
+                    format!("{}", sk.version),
+                    sk.host,
+                    format!("{}", sk.port),
+                    format!("{}", sk.http_port),
+                    sk.availability_zone_id.clone(),
+                    String::from(sk.scheduling_policy),
+                ]);
+            }
+            println!("{table}");
         }
     }
 

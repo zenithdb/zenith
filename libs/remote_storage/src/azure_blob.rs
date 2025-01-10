@@ -13,10 +13,12 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use super::REMOTE_STORAGE_PREFIX_SEPARATOR;
+use anyhow::Context;
 use anyhow::Result;
 use azure_core::request_options::{IfMatchCondition, MaxResults, Metadata, Range};
+use azure_core::HttpClient;
+use azure_core::TransportOptions;
 use azure_core::{Continuable, RetryOptions};
-use azure_identity::DefaultAzureCredential;
 use azure_storage::StorageCredentials;
 use azure_storage_blobs::blob::CopyStatus;
 use azure_storage_blobs::prelude::ClientBuilder;
@@ -76,12 +78,18 @@ impl AzureBlobStorage {
         let credentials = if let Ok(access_key) = env::var("AZURE_STORAGE_ACCESS_KEY") {
             StorageCredentials::access_key(account.clone(), access_key)
         } else {
-            let token_credential = DefaultAzureCredential::default();
-            StorageCredentials::token_credential(Arc::new(token_credential))
+            let token_credential = azure_identity::create_default_credential()
+                .context("trying to obtain Azure default credentials")?;
+            StorageCredentials::token_credential(token_credential)
         };
 
-        // we have an outer retry
-        let builder = ClientBuilder::new(account, credentials).retry(RetryOptions::none());
+        let builder = ClientBuilder::new(account, credentials)
+            // we have an outer retry
+            .retry(RetryOptions::none())
+            // Customize transport to configure conneciton pooling
+            .transport(TransportOptions::new(Self::reqwest_client(
+                azure_config.conn_pool_size,
+            )));
 
         let client = builder.container_client(azure_config.container_name.to_owned());
 
@@ -104,6 +112,14 @@ impl AzureBlobStorage {
             timeout,
             small_timeout,
         })
+    }
+
+    fn reqwest_client(conn_pool_size: usize) -> Arc<dyn HttpClient> {
+        let client = reqwest::ClientBuilder::new()
+            .pool_max_idle_per_host(conn_pool_size)
+            .build()
+            .expect("failed to build `reqwest` client");
+        Arc::new(client)
     }
 
     pub fn relative_path_to_name(&self, path: &RemotePath) -> String {
@@ -544,9 +560,9 @@ impl RemoteStorage for AzureBlobStorage {
             .await
     }
 
-    async fn delete_objects<'a>(
+    async fn delete_objects(
         &self,
-        paths: &'a [RemotePath],
+        paths: &[RemotePath],
         cancel: &CancellationToken,
     ) -> anyhow::Result<()> {
         let kind = RequestKind::Delete;
@@ -622,6 +638,10 @@ impl RemoteStorage for AzureBlobStorage {
             .req_seconds
             .observe_elapsed(kind, &res, started_at);
         res
+    }
+
+    fn max_keys_per_delete(&self) -> usize {
+        super::MAX_KEYS_PER_DELETE_AZURE
     }
 
     async fn copy(

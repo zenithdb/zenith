@@ -37,7 +37,6 @@ impl LocalBackend {
                     branch_id: BranchIdTag::get_interner().get_or_intern("local"),
                     cold_start_info: ColdStartInfo::WarmCached,
                 },
-                allow_self_signed_compute: false,
             },
         }
     }

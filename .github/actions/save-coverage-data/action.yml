@@ -14,9 +14,11 @@ runs:
         name: coverage-data-artifact
         path: /tmp/coverage
         skip-if-does-not-exist: true # skip if there's no previous coverage to download
+        aws-oicd-role-arn: ${{ inputs.aws-oicd-role-arn }}
 
     - name: Upload coverage data
       uses: ./.github/actions/upload
       with:
         name: coverage-data-artifact
         path: /tmp/coverage
+        aws-oicd-role-arn: ${{ inputs.aws-oicd-role-arn }}

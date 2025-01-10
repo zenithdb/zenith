@@ -532,7 +532,7 @@ pub struct DiskBtreeIterator<'a> {
     >,
 }
 
-impl<'a> DiskBtreeIterator<'a> {
+impl DiskBtreeIterator<'_> {
     pub async fn next(&mut self) -> Option<std::result::Result<(Vec<u8>, u64), DiskBtreeError>> {
         self.stream.next().await
     }

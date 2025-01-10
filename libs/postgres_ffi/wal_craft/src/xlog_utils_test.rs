@@ -81,7 +81,7 @@ fn test_end_of_wal<C: crate::Crafter>(test_name: &str) {
                 continue;
             }
             let mut f = File::options().write(true).open(file.path()).unwrap();
-            const ZEROS: [u8; WAL_SEGMENT_SIZE] = [0u8; WAL_SEGMENT_SIZE];
+            static ZEROS: [u8; WAL_SEGMENT_SIZE] = [0u8; WAL_SEGMENT_SIZE];
             f.write_all(
                 &ZEROS[0..min(
                     WAL_SEGMENT_SIZE,

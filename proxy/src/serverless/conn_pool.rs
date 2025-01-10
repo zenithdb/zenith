@@ -186,8 +186,8 @@ impl ClientDataRemote {
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used)]
 mod tests {
-    use std::mem;
     use std::sync::atomic::AtomicBool;
 
     use super::*;
@@ -269,39 +269,33 @@ mod tests {
             assert_eq!(0, pool.get_global_connections_count());
         }
         {
-            let mut client = Client::new(create_inner(), conn_info.clone(), ep_pool.clone());
-            client.do_drop().unwrap()();
-            mem::forget(client); // drop the client
+            let client = Client::new(create_inner(), conn_info.clone(), ep_pool.clone());
+            drop(client);
             assert_eq!(1, pool.get_global_connections_count());
         }
         {
-            let mut closed_client = Client::new(
+            let closed_client = Client::new(
                 create_inner_with(MockClient::new(true)),
                 conn_info.clone(),
                 ep_pool.clone(),
             );
-            closed_client.do_drop().unwrap()();
-            mem::forget(closed_client); // drop the client
-                                        // The closed client shouldn't be added to the pool.
+            drop(closed_client);
             assert_eq!(1, pool.get_global_connections_count());
         }
         let is_closed: Arc<AtomicBool> = Arc::new(false.into());
         {
-            let mut client = Client::new(
+            let client = Client::new(
                 create_inner_with(MockClient(is_closed.clone())),
                 conn_info.clone(),
                 ep_pool.clone(),
             );
-            client.do_drop().unwrap()();
-            mem::forget(client); // drop the client
-
+            drop(client);
             // The client should be added to the pool.
             assert_eq!(2, pool.get_global_connections_count());
         }
         {
-            let mut client = Client::new(create_inner(), conn_info, ep_pool);
-            client.do_drop().unwrap()();
-            mem::forget(client); // drop the client
+            let client = Client::new(create_inner(), conn_info, ep_pool);
+            drop(client);
 
             // The client shouldn't be added to the pool. Because the ep-pool is full.
             assert_eq!(2, pool.get_global_connections_count());
@@ -319,15 +313,13 @@ mod tests {
             &pool.get_or_create_endpoint_pool(&conn_info.endpoint_cache_key().unwrap()),
         );
         {
-            let mut client = Client::new(create_inner(), conn_info.clone(), ep_pool.clone());
-            client.do_drop().unwrap()();
-            mem::forget(client); // drop the client
+            let client = Client::new(create_inner(), conn_info.clone(), ep_pool.clone());
+            drop(client);
             assert_eq!(3, pool.get_global_connections_count());
         }
         {
-            let mut client = Client::new(create_inner(), conn_info.clone(), ep_pool.clone());
-            client.do_drop().unwrap()();
-            mem::forget(client); // drop the client
+            let client = Client::new(create_inner(), conn_info.clone(), ep_pool.clone());
+            drop(client);
 
             // The client shouldn't be added to the pool. Because the global pool is full.
             assert_eq!(3, pool.get_global_connections_count());

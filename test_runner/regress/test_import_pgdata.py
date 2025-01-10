@@ -84,6 +84,8 @@ def test_pgdata_import_smoke(
     elif rel_block_size == RelBlockSize.TWO_STRPES_PER_SHARD:
         target_relblock_size = (shard_count or 1) * stripe_size * 8192 * 2
     elif rel_block_size == RelBlockSize.MULTIPLE_RELATION_SEGMENTS:
+        # Postgres uses a 1GiB segment size, fixed at compile time, so we must use >2GB of data
+        # to exercise multiple segments.
         target_relblock_size = int(((2.333 * 1024 * 1024 * 1024) // 8192) * 8192)
     else:
         raise ValueError
@@ -111,9 +113,15 @@ def test_pgdata_import_smoke(
 
     def validate_vanilla_equivalence(ep):
         # TODO: would be nicer to just compare pgdump
-        assert ep.safe_psql("select count(*), sum(data::bigint)::bigint from t") == [
-            (expect_nrows, expect_sum)
-        ]
+
+        # Enable IO concurrency for batching on large sequential scan, to avoid making
+        # this test unnecessarily onerous on CPU
+        assert ep.safe_psql_many(
+            [
+                "set effective_io_concurrency=32;",
+                "select count(*), sum(data::bigint)::bigint from t",
+            ]
+        ) == [[], [(expect_nrows, expect_sum)]]
 
     validate_vanilla_equivalence(vanilla_pg)
 

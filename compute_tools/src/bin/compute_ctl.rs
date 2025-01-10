@@ -60,19 +60,22 @@ use compute_tools::compute::{
 };
 use compute_tools::configurator::launch_configurator;
 use compute_tools::extension_server::get_pg_version_string;
-use compute_tools::http::api::launch_http_server;
+use compute_tools::http::launch_http_server;
 use compute_tools::logger::*;
 use compute_tools::monitor::launch_monitor;
 use compute_tools::params::*;
 use compute_tools::spec::*;
 use compute_tools::swap::resize_swap;
 use rlimit::{setrlimit, Resource};
+use utils::failpoint_support;
 
 // this is an arbitrary build tag. Fine as a default / for testing purposes
 // in-case of not-set environment var
 const BUILD_TAG_DEFAULT: &str = "latest";
 
 fn main() -> Result<()> {
+    let scenario = failpoint_support::init();
+
     let (build_tag, clap_args) = init()?;
 
     // enable core dumping for all child processes
@@ -100,16 +103,13 @@ fn main() -> Result<()> {
 
     maybe_delay_exit(delay_exit);
 
+    scenario.teardown();
+
     deinit_and_exit(wait_pg_result);
 }
 
 fn init() -> Result<(String, clap::ArgMatches)> {
     init_tracing_and_logging(DEFAULT_LOG_LEVEL)?;
-
-    opentelemetry::global::set_error_handler(|err| {
-        tracing::info!("OpenTelemetry error: {err}");
-    })
-    .expect("global error handler lock poisoned");
 
     let mut signals = Signals::new([SIGINT, SIGTERM, SIGQUIT])?;
     thread::spawn(move || {
@@ -246,47 +246,48 @@ fn try_spec_from_cli(
     let compute_id = matches.get_one::<String>("compute-id");
     let control_plane_uri = matches.get_one::<String>("control-plane-uri");
 
-    let spec;
-    let mut live_config_allowed = false;
-    match spec_json {
-        // First, try to get cluster spec from the cli argument
-        Some(json) => {
-            info!("got spec from cli argument {}", json);
-            spec = Some(serde_json::from_str(json)?);
-        }
-        None => {
-            // Second, try to read it from the file if path is provided
-            if let Some(sp) = spec_path {
-                let path = Path::new(sp);
-                let file = File::open(path)?;
-                spec = Some(serde_json::from_reader(file)?);
-                live_config_allowed = true;
-            } else if let Some(id) = compute_id {
-                if let Some(cp_base) = control_plane_uri {
-                    live_config_allowed = true;
-                    spec = match get_spec_from_control_plane(cp_base, id) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!("cannot get response from control plane: {}", e);
-                            panic!("neither spec nor confirmation that compute is in the Empty state was received");
-                        }
-                    };
-                } else {
-                    panic!("must specify both --control-plane-uri and --compute-id or none");
-                }
-            } else {
-                panic!(
-                    "compute spec should be provided by one of the following ways: \
-                    --spec OR --spec-path OR --control-plane-uri and --compute-id"
-                );
-            }
-        }
+    // First, try to get cluster spec from the cli argument
+    if let Some(spec_json) = spec_json {
+        info!("got spec from cli argument {}", spec_json);
+        return Ok(CliSpecParams {
+            spec: Some(serde_json::from_str(spec_json)?),
+            live_config_allowed: false,
+        });
+    }
+
+    // Second, try to read it from the file if path is provided
+    if let Some(spec_path) = spec_path {
+        let file = File::open(Path::new(spec_path))?;
+        return Ok(CliSpecParams {
+            spec: Some(serde_json::from_reader(file)?),
+            live_config_allowed: true,
+        });
+    }
+
+    let Some(compute_id) = compute_id else {
+        panic!(
+            "compute spec should be provided by one of the following ways: \
+                --spec OR --spec-path OR --control-plane-uri and --compute-id"
+        );
+    };
+    let Some(control_plane_uri) = control_plane_uri else {
+        panic!("must specify both --control-plane-uri and --compute-id or none");
     };
 
-    Ok(CliSpecParams {
-        spec,
-        live_config_allowed,
-    })
+    match get_spec_from_control_plane(control_plane_uri, compute_id) {
+        Ok(spec) => Ok(CliSpecParams {
+            spec,
+            live_config_allowed: true,
+        }),
+        Err(e) => {
+            error!(
+                "cannot get response from control plane: {}\n\
+                neither spec nor confirmation that compute is in the Empty state was received",
+                e
+            );
+            Err(e)
+        }
+    }
 }
 
 struct CliSpecParams {
@@ -418,9 +419,14 @@ fn start_postgres(
         "running compute with features: {:?}",
         state.pspec.as_ref().unwrap().spec.features
     );
-    // before we release the mutex, fetch the swap size (if any) for later.
-    let swap_size_bytes = state.pspec.as_ref().unwrap().spec.swap_size_bytes;
-    let disk_quota_bytes = state.pspec.as_ref().unwrap().spec.disk_quota_bytes;
+    // before we release the mutex, fetch some parameters for later.
+    let &ComputeSpec {
+        swap_size_bytes,
+        disk_quota_bytes,
+        #[cfg(target_os = "linux")]
+        disable_lfc_resizing,
+        ..
+    } = &state.pspec.as_ref().unwrap().spec;
     drop(state);
 
     // Launch remaining service threads
@@ -482,7 +488,10 @@ fn start_postgres(
     let mut pg = None;
     if !prestartup_failed {
         pg = match compute.start_compute() {
-            Ok(pg) => Some(pg),
+            Ok(pg) => {
+                info!(postmaster_pid = %pg.0.id(), "Postgres was started");
+                Some(pg)
+            }
             Err(err) => {
                 error!("could not start the compute node: {:#}", err);
                 compute.set_failed_status(err);
@@ -525,11 +534,18 @@ fn start_postgres(
             // This token is used internally by the monitor to clean up all threads
             let token = CancellationToken::new();
 
+            // don't pass postgres connection string to vm-monitor if we don't want it to resize LFC
+            let pgconnstr = if disable_lfc_resizing.unwrap_or(false) {
+                None
+            } else {
+                file_cache_connstr.cloned()
+            };
+
             let vm_monitor = rt.as_ref().map(|rt| {
                 rt.spawn(vm_monitor::start(
                     Box::leak(Box::new(vm_monitor::Args {
                         cgroup: cgroup.cloned(),
-                        pgconnstr: file_cache_connstr.cloned(),
+                        pgconnstr,
                         addr: vm_monitor_addr.clone(),
                     })),
                     token.clone(),
@@ -573,6 +589,8 @@ fn wait_postgres(pg: Option<PostgresHandle>) -> Result<WaitPostgresResult> {
     // propagate to Postgres and it will be shut down as well.
     let mut exit_code = None;
     if let Some((mut pg, logs_handle)) = pg {
+        info!(postmaster_pid = %pg.id(), "Waiting for Postgres to exit");
+
         let ecode = pg
             .wait()
             .expect("failed to start waiting on Postgres process");

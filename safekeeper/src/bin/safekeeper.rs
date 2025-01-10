@@ -338,7 +338,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let conf = SafeKeeperConf {
+    let conf = Arc::new(SafeKeeperConf {
         workdir,
         my_id: id,
         listen_pg_addr: args.listen_pg,
@@ -368,7 +368,7 @@ async fn main() -> anyhow::Result<()> {
         control_file_save_interval: args.control_file_save_interval,
         partial_backup_concurrency: args.partial_backup_concurrency,
         eviction_min_resident: args.eviction_min_resident,
-    };
+    });
 
     // initialize sentry if SENTRY_DSN is provided
     let _sentry_guard = init_sentry(
@@ -382,7 +382,7 @@ async fn main() -> anyhow::Result<()> {
 /// complete, e.g. panicked, inner is error produced by task itself.
 type JoinTaskRes = Result<anyhow::Result<()>, JoinError>;
 
-async fn start_safekeeper(conf: SafeKeeperConf) -> Result<()> {
+async fn start_safekeeper(conf: Arc<SafeKeeperConf>) -> Result<()> {
     // fsync the datadir to make sure we have a consistent state on disk.
     if !conf.no_sync {
         let dfd = File::open(&conf.workdir).context("open datadir for syncfs")?;
@@ -428,9 +428,11 @@ async fn start_safekeeper(conf: SafeKeeperConf) -> Result<()> {
         e
     })?;
 
+    let global_timelines = Arc::new(GlobalTimelines::new(conf.clone()));
+
     // Register metrics collector for active timelines. It's important to do this
     // after daemonizing, otherwise process collector will be upset.
-    let timeline_collector = safekeeper::metrics::TimelineCollector::new();
+    let timeline_collector = safekeeper::metrics::TimelineCollector::new(global_timelines.clone());
     metrics::register_internal(Box::new(timeline_collector))?;
 
     wal_backup::init_remote_storage(&conf).await;
@@ -447,9 +449,8 @@ async fn start_safekeeper(conf: SafeKeeperConf) -> Result<()> {
         .then(|| Handle::try_current().expect("no runtime in main"));
 
     // Load all timelines from disk to memory.
-    GlobalTimelines::init(conf.clone()).await?;
+    global_timelines.init().await?;
 
-    let conf_ = conf.clone();
     // Run everything in current thread rt, if asked.
     if conf.current_thread_runtime {
         info!("running in current thread runtime");
@@ -459,14 +460,16 @@ async fn start_safekeeper(conf: SafeKeeperConf) -> Result<()> {
         .as_ref()
         .unwrap_or_else(|| WAL_SERVICE_RUNTIME.handle())
         .spawn(wal_service::task_main(
-            conf_,
+            conf.clone(),
             pg_listener,
             Scope::SafekeeperData,
+            global_timelines.clone(),
         ))
         // wrap with task name for error reporting
         .map(|res| ("WAL service main".to_owned(), res));
     tasks_handles.push(Box::pin(wal_service_handle));
 
+    let global_timelines_ = global_timelines.clone();
     let timeline_housekeeping_handle = current_thread_rt
         .as_ref()
         .unwrap_or_else(|| WAL_SERVICE_RUNTIME.handle())
@@ -474,40 +477,45 @@ async fn start_safekeeper(conf: SafeKeeperConf) -> Result<()> {
             const TOMBSTONE_TTL: Duration = Duration::from_secs(3600 * 24);
             loop {
                 tokio::time::sleep(TOMBSTONE_TTL).await;
-                GlobalTimelines::housekeeping(&TOMBSTONE_TTL);
+                global_timelines_.housekeeping(&TOMBSTONE_TTL);
             }
         })
         .map(|res| ("Timeline map housekeeping".to_owned(), res));
     tasks_handles.push(Box::pin(timeline_housekeeping_handle));
 
     if let Some(pg_listener_tenant_only) = pg_listener_tenant_only {
-        let conf_ = conf.clone();
         let wal_service_handle = current_thread_rt
             .as_ref()
             .unwrap_or_else(|| WAL_SERVICE_RUNTIME.handle())
             .spawn(wal_service::task_main(
-                conf_,
+                conf.clone(),
                 pg_listener_tenant_only,
                 Scope::Tenant,
+                global_timelines.clone(),
             ))
             // wrap with task name for error reporting
             .map(|res| ("WAL service tenant only main".to_owned(), res));
         tasks_handles.push(Box::pin(wal_service_handle));
     }
 
-    let conf_ = conf.clone();
     let http_handle = current_thread_rt
         .as_ref()
         .unwrap_or_else(|| HTTP_RUNTIME.handle())
-        .spawn(http::task_main(conf_, http_listener))
+        .spawn(http::task_main(
+            conf.clone(),
+            http_listener,
+            global_timelines.clone(),
+        ))
         .map(|res| ("HTTP service main".to_owned(), res));
     tasks_handles.push(Box::pin(http_handle));
 
-    let conf_ = conf.clone();
     let broker_task_handle = current_thread_rt
         .as_ref()
         .unwrap_or_else(|| BROKER_RUNTIME.handle())
-        .spawn(broker::task_main(conf_).instrument(info_span!("broker")))
+        .spawn(
+            broker::task_main(conf.clone(), global_timelines.clone())
+                .instrument(info_span!("broker")),
+        )
         .map(|res| ("broker main".to_owned(), res));
     tasks_handles.push(Box::pin(broker_task_handle));
 

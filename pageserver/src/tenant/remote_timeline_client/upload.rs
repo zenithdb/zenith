@@ -25,8 +25,8 @@ use utils::id::{TenantId, TimelineId};
 use tracing::info;
 
 /// Serializes and uploads the given index part data to the remote storage.
-pub(crate) async fn upload_index_part<'a>(
-    storage: &'a GenericRemoteStorage,
+pub(crate) async fn upload_index_part(
+    storage: &GenericRemoteStorage,
     tenant_shard_id: &TenantShardId,
     timeline_id: &TimelineId,
     generation: Generation,

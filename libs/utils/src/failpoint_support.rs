@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::*;
 
-/// Declare a failpoint that can use the `pause` failpoint action.
+/// Declare a failpoint that can use to `pause` failpoint action.
 /// We don't want to block the executor thread, hence, spawn_blocking + await.
 #[macro_export]
 macro_rules! pausable_failpoint {
@@ -181,7 +181,7 @@ pub async fn failpoints_handler(
 ) -> Result<Response<Body>, ApiError> {
     if !fail::has_failpoints() {
         return Err(ApiError::BadRequest(anyhow::anyhow!(
-            "Cannot manage failpoints because storage was compiled without failpoints support"
+            "Cannot manage failpoints because neon was compiled without failpoints support"
         )));
     }
 

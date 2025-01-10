@@ -70,6 +70,7 @@ jobs:
         name: neon-${{ runner.os }}-${{ runner.arch }}-release-artifact
         path: /tmp/neon/
         prefix: latest
+        aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
 
     # we create a table that has one row for each database that we want to restore with the status whether the restore is done
     - name: Create benchmark_restore_status table if it does not exist

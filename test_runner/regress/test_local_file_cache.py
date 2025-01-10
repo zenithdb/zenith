@@ -29,8 +29,8 @@ def test_local_file_cache_unlink(neon_env_builder: NeonEnvBuilder):
     cur = endpoint.connect().cursor()
 
     stop = threading.Event()
-    n_rows = 100000
-    n_threads = 20
+    n_rows = 10000
+    n_threads = 5
     n_updates_per_connection = 1000
 
     cur.execute("CREATE TABLE lfctest (id int4 PRIMARY KEY, n int) WITH (fillfactor=10)")

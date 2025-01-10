@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from fixtures.neon_fixtures import NeonEnv, logical_replication_sync
+from fixtures.neon_fixtures import NeonEnv, logical_replication_sync, wait_replica_caughtup
 
 
 def test_physical_and_logical_replication_slot_not_copied(neon_simple_env: NeonEnv, vanilla_pg):
@@ -37,6 +37,8 @@ def test_physical_and_logical_replication_slot_not_copied(neon_simple_env: NeonE
 
     for pk in range(n_records):
         p_cur.execute("insert into t (pk) values (%s)", (pk,))
+
+    wait_replica_caughtup(primary, secondary)
 
     s_cur.execute("select count(*) from t")
     assert s_cur.fetchall()[0][0] == n_records

@@ -11,9 +11,9 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_rustls::server::TlsStream;
 use tracing::debug;
 
-use crate::config::TlsServerEndPoint;
 use crate::error::{ErrorKind, ReportableError, UserFacingError};
 use crate::metrics::Metrics;
+use crate::tls::TlsServerEndPoint;
 
 /// Stream wrapper which implements libpq's protocol.
 ///

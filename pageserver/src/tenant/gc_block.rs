@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use utils::id::TimelineId;
 
@@ -20,7 +20,7 @@ pub(crate) struct GcBlock {
     /// Do not add any more features taking and forbidding taking this lock. It should be
     /// `tokio::sync::Notify`, but that is rarely used. On the other side, [`GcBlock::insert`]
     /// synchronizes with gc attempts by locking and unlocking this mutex.
-    blocking: tokio::sync::Mutex<()>,
+    blocking: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl GcBlock {
@@ -30,7 +30,7 @@ impl GcBlock {
     /// it's ending, or if not currently possible, a value describing the reasons why not.
     ///
     /// Cancellation safe.
-    pub(super) async fn start(&self) -> Result<Guard<'_>, BlockingReasons> {
+    pub(super) async fn start(&self) -> Result<Guard, BlockingReasons> {
         let reasons = {
             let g = self.reasons.lock().unwrap();
 
@@ -44,7 +44,7 @@ impl GcBlock {
             Err(reasons)
         } else {
             Ok(Guard {
-                _inner: self.blocking.lock().await,
+                _inner: self.blocking.clone().lock_owned().await,
             })
         }
     }
@@ -170,8 +170,8 @@ impl GcBlock {
     }
 }
 
-pub(super) struct Guard<'a> {
-    _inner: tokio::sync::MutexGuard<'a, ()>,
+pub(crate) struct Guard {
+    _inner: tokio::sync::OwnedMutexGuard<()>,
 }
 
 #[derive(Debug)]

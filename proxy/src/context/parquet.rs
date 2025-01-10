@@ -23,6 +23,7 @@ use utils::backoff;
 use super::{RequestContextInner, LOG_CHAN};
 use crate::config::remote_storage_from_toml;
 use crate::context::LOG_CHAN_DISCONNECT;
+use crate::ext::TaskExt;
 
 #[derive(clap::Args, Clone, Debug)]
 pub struct ParquetUploadArgs {
@@ -171,7 +172,9 @@ pub async fn worker(
     };
 
     let (tx, mut rx) = mpsc::unbounded_channel();
-    LOG_CHAN.set(tx.downgrade()).unwrap();
+    LOG_CHAN
+        .set(tx.downgrade())
+        .expect("only one worker should set the channel");
 
     // setup row stream that will close on cancellation
     let cancellation_token2 = cancellation_token.clone();
@@ -207,7 +210,9 @@ pub async fn worker(
         config.parquet_upload_disconnect_events_remote_storage
     {
         let (tx_disconnect, mut rx_disconnect) = mpsc::unbounded_channel();
-        LOG_CHAN_DISCONNECT.set(tx_disconnect.downgrade()).unwrap();
+        LOG_CHAN_DISCONNECT
+            .set(tx_disconnect.downgrade())
+            .expect("only one worker should set the channel");
 
         // setup row stream that will close on cancellation
         tokio::spawn(async move {
@@ -326,7 +331,7 @@ where
         Ok::<_, parquet::errors::ParquetError>((rows, w, rg_meta))
     })
     .await
-    .unwrap()?;
+    .propagate_task_panic()?;
 
     rows.clear();
     Ok((rows, w, rg_meta))
@@ -352,7 +357,7 @@ async fn upload_parquet(
             Ok((buffer, metadata))
         })
         .await
-        .unwrap()?;
+        .propagate_task_panic()?;
 
     let data = buffer.split().freeze();
 
@@ -409,6 +414,7 @@ async fn upload_parquet(
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use std::net::Ipv4Addr;
     use std::num::NonZeroUsize;

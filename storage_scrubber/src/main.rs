@@ -86,6 +86,8 @@ enum Command {
         /// For safekeeper node_kind only, json list of timelines and their lsn info
         #[arg(long, default_value = None)]
         timeline_lsns: Option<String>,
+        #[arg(long, default_value_t = false)]
+        verbose: bool,
     },
     TenantSnapshot {
         #[arg(long = "tenant-id")]
@@ -166,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
             dump_db_connstr,
             dump_db_table,
             timeline_lsns,
+            verbose,
         } => {
             if let NodeKind::Safekeeper = node_kind {
                 let db_or_list = match (timeline_lsns, dump_db_connstr) {
@@ -203,6 +206,7 @@ async fn main() -> anyhow::Result<()> {
                     tenant_ids,
                     json,
                     post_to_storcon,
+                    verbose,
                     cli.exit_code,
                 )
                 .await
@@ -313,6 +317,7 @@ pub async fn run_cron_job(
         Vec::new(),
         true,
         post_to_storcon,
+        false, // default to non-verbose mode
         exit_code,
     )
     .await?;
@@ -362,12 +367,13 @@ pub async fn scan_pageserver_metadata_cmd(
     tenant_shard_ids: Vec<TenantShardId>,
     json: bool,
     post_to_storcon: bool,
+    verbose: bool,
     exit_code: bool,
 ) -> anyhow::Result<()> {
     if controller_client.is_none() && post_to_storcon {
         return Err(anyhow!("Posting pageserver scan health status to storage controller requires `--controller-api` and `--controller-jwt` to run"));
     }
-    match scan_pageserver_metadata(bucket_config.clone(), tenant_shard_ids).await {
+    match scan_pageserver_metadata(bucket_config.clone(), tenant_shard_ids, verbose).await {
         Err(e) => {
             tracing::error!("Failed: {e}");
             Err(e)

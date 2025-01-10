@@ -168,7 +168,7 @@ pub(crate) async fn serve_websocket(
         Ok(Some(p)) => {
             ctx.set_success();
             ctx.log_connect();
-            match p.proxy_pass().await {
+            match p.proxy_pass(&config.connect_to_compute).await {
                 Ok(()) => Ok(()),
                 Err(ErrorSource::Client(err)) => Err(err).context("client"),
                 Err(ErrorSource::Compute(err)) => Err(err).context("compute"),
@@ -178,6 +178,7 @@ pub(crate) async fn serve_websocket(
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use std::pin::pin;
 

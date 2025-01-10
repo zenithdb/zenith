@@ -68,7 +68,7 @@ jobs:
       GH_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
       TAG: ${{ needs.tag.outputs.build-tag }}
     steps:
-      - name: Wait for `promote-images` job to finish
+      - name: Wait for `promote-images-dev` job to finish
         # It's important to have a timeout here, the script in the step can run infinitely
         timeout-minutes: 60
         run: |
@@ -79,17 +79,17 @@ jobs:
           # For PRs we use the run id as the tag
           BUILD_AND_TEST_RUN_ID=${TAG}
           while true; do
-            conclusion=$(gh run --repo ${GITHUB_REPOSITORY} view ${BUILD_AND_TEST_RUN_ID} --json jobs --jq '.jobs[] | select(.name == "promote-images") | .conclusion')
+            conclusion=$(gh run --repo ${GITHUB_REPOSITORY} view ${BUILD_AND_TEST_RUN_ID} --json jobs --jq '.jobs[] | select(.name == "promote-images-dev") | .conclusion')
             case "$conclusion" in
               success)
                 break
                 ;;
               failure | cancelled | skipped)
-                echo "The 'promote-images' job didn't succeed: '${conclusion}'. Exiting..."
+                echo "The 'promote-images-dev' job didn't succeed: '${conclusion}'. Exiting..."
                 exit 1
                 ;;
               *)
-                echo "The 'promote-images' hasn't succeed yet. Waiting..."
+                echo "The 'promote-images-dev' hasn't succeed yet. Waiting..."
                 sleep 60
                 ;;
             esac

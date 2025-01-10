@@ -152,7 +152,7 @@ pub async fn task_main(
                 Ok(Some(p)) => {
                     ctx.set_success();
                     let _disconnect = ctx.log_connect();
-                    match p.proxy_pass().await {
+                    match p.proxy_pass(&config.connect_to_compute).await {
                         Ok(()) => {}
                         Err(ErrorSource::Client(e)) => {
                             warn!(?session_id, "per-client task finished with an IO error from the client: {e:#}");
@@ -188,13 +188,6 @@ impl ClientMode {
         match self {
             ClientMode::Tcp => false,
             ClientMode::Websockets { .. } => true,
-        }
-    }
-
-    pub(crate) fn allow_self_signed_compute(&self, config: &ProxyConfig) -> bool {
-        match self {
-            ClientMode::Tcp => config.allow_self_signed_compute,
-            ClientMode::Websockets { .. } => false,
         }
     }
 
@@ -272,32 +265,33 @@ pub(crate) async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
     let pause = ctx.latency_timer_pause(crate::metrics::Waiting::Client);
     let do_handshake = handshake(ctx, stream, mode.handshake_tls(tls), record_handshake_error);
 
-    let (mut stream, params) =
-        match tokio::time::timeout(config.handshake_timeout, do_handshake).await?? {
-            HandshakeData::Startup(stream, params) => (stream, params),
-            HandshakeData::Cancel(cancel_key_data) => {
-                // spawn a task to cancel the session, but don't wait for it
-                cancellations.spawn({
-                    let cancellation_handler_clone = Arc::clone(&cancellation_handler);
-                    let session_id = ctx.session_id();
-                    let peer_ip = ctx.peer_addr();
-                    async move {
-                        drop(
-                            cancellation_handler_clone
-                                .cancel_session(
-                                    cancel_key_data,
-                                    session_id,
-                                    peer_ip,
-                                    config.authentication_config.ip_allowlist_check_enabled,
-                                )
-                                .await,
-                        );
-                    }
-                });
+    let (mut stream, params) = match tokio::time::timeout(config.handshake_timeout, do_handshake)
+        .await??
+    {
+        HandshakeData::Startup(stream, params) => (stream, params),
+        HandshakeData::Cancel(cancel_key_data) => {
+            // spawn a task to cancel the session, but don't wait for it
+            cancellations.spawn({
+                let cancellation_handler_clone = Arc::clone(&cancellation_handler);
+                let ctx = ctx.clone();
+                let cancel_span = tracing::span!(parent: None, tracing::Level::INFO, "cancel_session", session_id = ?ctx.session_id());
+                cancel_span.follows_from(tracing::Span::current());
+                async move {
+                    cancellation_handler_clone
+                        .cancel_session_auth(
+                            cancel_key_data,
+                            ctx,
+                            config.authentication_config.ip_allowlist_check_enabled,
+                            auth_backend,
+                        )
+                        .await
+                        .inspect_err(|e | debug!(error = ?e, "cancel_session failed")).ok();
+                }.instrument(cancel_span)
+            });
 
-                return Ok(None);
-            }
-        };
+            return Ok(None);
+        }
+    };
     drop(pause);
 
     ctx.set_db_options(params.clone());
@@ -318,7 +312,7 @@ pub(crate) async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
     };
 
     let user = user_info.get_user().to_owned();
-    let user_info = match user_info
+    let (user_info, ip_allowlist) = match user_info
         .authenticate(
             ctx,
             &mut stream,
@@ -338,28 +332,32 @@ pub(crate) async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
         }
     };
 
-    let params_compat = match &user_info {
-        auth::Backend::ControlPlane(_, info) => {
-            info.info.options.get(NeonOptions::PARAMS_COMPAT).is_some()
-        }
-        auth::Backend::Local(_) => false,
+    let compute_user_info = match &user_info {
+        auth::Backend::ControlPlane(_, info) => &info.info,
+        auth::Backend::Local(_) => unreachable!("local proxy does not run tcp proxy service"),
     };
+    let params_compat = compute_user_info
+        .options
+        .get(NeonOptions::PARAMS_COMPAT)
+        .is_some();
 
     let mut node = connect_to_compute(
         ctx,
         &TcpMechanism {
+            user_info: compute_user_info.clone(),
             params_compat,
             params: &params,
             locks: &config.connect_compute_locks,
         },
         &user_info,
-        mode.allow_self_signed_compute(config),
         config.wake_compute_retry_config,
-        config.connect_to_compute_retry_config,
+        &config.connect_to_compute,
     )
     .or_else(|e| stream.throw_error(e))
     .await?;
 
+    node.cancel_closure
+        .set_ip_allowlist(ip_allowlist.unwrap_or_default());
     let session = cancellation_handler.get_session();
     prepare_client_connection(&node, &session, &mut stream).await?;
 
@@ -490,7 +488,7 @@ impl NeonOptions {
 
 pub(crate) fn neon_option(bytes: &str) -> Option<(&str, &str)> {
     static RE: OnceCell<Regex> = OnceCell::new();
-    let re = RE.get_or_init(|| Regex::new(r"^neon_(\w+):(.+)").unwrap());
+    let re = RE.get_or_init(|| Regex::new(r"^neon_(\w+):(.+)").expect("regex should be correct"));
 
     let cap = re.captures(bytes)?;
     let (_, [k, v]) = cap.extract();

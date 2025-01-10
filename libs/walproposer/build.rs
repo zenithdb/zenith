@@ -30,9 +30,9 @@ fn main() -> anyhow::Result<()> {
     let pgxn_neon = std::fs::canonicalize(pgxn_neon)?;
     let pgxn_neon = pgxn_neon.to_str().ok_or(anyhow!("Bad non-UTF path"))?;
 
+    println!("cargo:rustc-link-lib=static=walproposer");
     println!("cargo:rustc-link-lib=static=pgport");
     println!("cargo:rustc-link-lib=static=pgcommon");
-    println!("cargo:rustc-link-lib=static=walproposer");
     println!("cargo:rustc-link-search={walproposer_lib_search_str}");
 
     // Rebuild crate when libwalproposer.a changes

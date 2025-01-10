@@ -14,6 +14,10 @@ inputs:
   prefix:
     description: "S3 prefix. Default is '${GITHUB_SHA}/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}'"
     required: false
+  aws-oicd-role-arn:
+    description: "the OIDC role arn for aws auth"
+    required: false
+    default: ""
 
 runs:
   using: "composite"
@@ -52,6 +56,13 @@ runs:
         fi
 
         echo 'SKIPPED=false' >> $GITHUB_OUTPUT
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: eu-central-1
+        role-to-assume: ${{ inputs.aws-oicd-role-arn }}
+        role-duration-seconds: 3600
 
     - name: Upload artifact
       if: ${{ steps.prepare-artifact.outputs.SKIPPED == 'false' }}

@@ -501,6 +501,11 @@ impl SerializedValueBatch {
         !self.has_data() && self.metadata.is_empty()
     }
 
+    /// Checks if the batch contains only observed values
+    pub fn is_observed(&self) -> bool {
+        !self.has_data() && !self.metadata.is_empty()
+    }
+
     /// Checks if the batch contains data
     ///
     /// Note that if this returns false, it may still contain observed values or

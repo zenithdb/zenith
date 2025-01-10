@@ -266,7 +266,9 @@ def test_scrubber_physical_gc_ancestors(neon_env_builder: NeonEnvBuilder, shard_
     for shard in shards:
         ps = env.get_tenant_pageserver(shard)
         assert ps is not None
-        ps.http_client().timeline_compact(shard, timeline_id, force_image_layer_creation=True)
+        ps.http_client().timeline_compact(
+            shard, timeline_id, force_image_layer_creation=True, wait_until_uploaded=True
+        )
         ps.http_client().timeline_gc(shard, timeline_id, 0)
 
     # We will use a min_age_secs=1 threshold for deletion, let it pass
@@ -572,4 +574,10 @@ def test_scrubber_scan_pageserver_metadata(
     unhealthy = env.storage_controller.metadata_health_list_unhealthy()["unhealthy_tenant_shards"]
     assert len(unhealthy) == 1 and unhealthy[0] == str(tenant_shard_id)
 
-    neon_env_builder.disable_scrub_on_exit()
+    healthy, _ = env.storage_scrubber.scan_metadata()
+    assert not healthy
+    env.storage_scrubber.allowed_errors.append(".*not present in remote storage.*")
+    healthy, _ = env.storage_scrubber.scan_metadata()
+    assert healthy
+
+    neon_env_builder.disable_scrub_on_exit()  # We already ran scrubber, no need to do an extra run

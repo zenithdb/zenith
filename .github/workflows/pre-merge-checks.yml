@@ -63,6 +63,7 @@ jobs:
     if: always()
     permissions:
       statuses: write # for `github.repos.createCommitStatus(...)`
+      contents: write
     needs:
       - get-changed-files
       - check-codestyle-python

@@ -3,7 +3,7 @@
   metrics: [
     import 'sql_exporter/checkpoints_req.libsonnet',
     import 'sql_exporter/checkpoints_timed.libsonnet',
-    import 'sql_exporter/compute_backpressure_throttling_seconds.libsonnet',
+    import 'sql_exporter/compute_backpressure_throttling_seconds_total.libsonnet',
     import 'sql_exporter/compute_current_lsn.libsonnet',
     import 'sql_exporter/compute_logical_snapshot_files.libsonnet',
     import 'sql_exporter/compute_logical_snapshots_bytes.libsonnet',

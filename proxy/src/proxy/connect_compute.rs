@@ -4,9 +4,9 @@ use tokio::time;
 use tracing::{debug, info, warn};
 
 use super::retry::ShouldRetryWakeCompute;
-use crate::auth::backend::ComputeCredentialKeys;
+use crate::auth::backend::{ComputeCredentialKeys, ComputeUserInfo};
 use crate::compute::{self, PostgresConnection, COULD_NOT_CONNECT};
-use crate::config::RetryConfig;
+use crate::config::{ComputeConfig, RetryConfig};
 use crate::context::RequestContext;
 use crate::control_plane::errors::WakeComputeError;
 use crate::control_plane::locks::ApiLocks;
@@ -18,8 +18,6 @@ use crate::metrics::{
 use crate::proxy::retry::{retry_after, should_retry, CouldRetry};
 use crate::proxy::wake_compute::wake_compute;
 use crate::types::Host;
-
-const CONNECT_TIMEOUT: time::Duration = time::Duration::from_secs(2);
 
 /// If we couldn't connect, a cached connection info might be to blame
 /// (e.g. the compute node's address might've changed at the wrong time).
@@ -49,7 +47,7 @@ pub(crate) trait ConnectMechanism {
         &self,
         ctx: &RequestContext,
         node_info: &control_plane::CachedNodeInfo,
-        timeout: time::Duration,
+        config: &ComputeConfig,
     ) -> Result<Self::Connection, Self::ConnectError>;
 
     fn update_connect_config(&self, conf: &mut compute::ConnCfg);
@@ -73,6 +71,8 @@ pub(crate) struct TcpMechanism<'a> {
 
     /// connect_to_compute concurrency lock
     pub(crate) locks: &'static ApiLocks<Host>,
+
+    pub(crate) user_info: ComputeUserInfo,
 }
 
 #[async_trait]
@@ -86,11 +86,11 @@ impl ConnectMechanism for TcpMechanism<'_> {
         &self,
         ctx: &RequestContext,
         node_info: &control_plane::CachedNodeInfo,
-        timeout: time::Duration,
+        config: &ComputeConfig,
     ) -> Result<PostgresConnection, Self::Error> {
         let host = node_info.config.get_host();
         let permit = self.locks.get_permit(&host).await?;
-        permit.release_result(node_info.connect(ctx, timeout).await)
+        permit.release_result(node_info.connect(ctx, config, self.user_info.clone()).await)
     }
 
     fn update_connect_config(&self, config: &mut compute::ConnCfg) {
@@ -104,9 +104,8 @@ pub(crate) async fn connect_to_compute<M: ConnectMechanism, B: ComputeConnectBac
     ctx: &RequestContext,
     mechanism: &M,
     user_info: &B,
-    allow_self_signed_compute: bool,
     wake_compute_retry_config: RetryConfig,
-    connect_to_compute_retry_config: RetryConfig,
+    compute: &ComputeConfig,
 ) -> Result<M::Connection, M::Error>
 where
     M::ConnectError: CouldRetry + ShouldRetryWakeCompute + std::fmt::Debug,
@@ -117,14 +116,10 @@ where
         wake_compute(&mut num_retries, ctx, user_info, wake_compute_retry_config).await?;
 
     node_info.set_keys(user_info.get_keys());
-    node_info.allow_self_signed_compute = allow_self_signed_compute;
     mechanism.update_connect_config(&mut node_info.config);
 
     // try once
-    let err = match mechanism
-        .connect_once(ctx, &node_info, CONNECT_TIMEOUT)
-        .await
-    {
+    let err = match mechanism.connect_once(ctx, &node_info, compute).await {
         Ok(res) => {
             ctx.success();
             Metrics::get().proxy.retries_metric.observe(
@@ -144,7 +139,7 @@ where
     let node_info = if !node_info.cached() || !err.should_retry_wake_compute() {
         // If we just recieved this from cplane and didn't get it from cache, we shouldn't retry.
         // Do not need to retrieve a new node_info, just return the old one.
-        if should_retry(&err, num_retries, connect_to_compute_retry_config) {
+        if should_retry(&err, num_retries, compute.retry) {
             Metrics::get().proxy.retries_metric.observe(
                 RetriesMetricGroup {
                     outcome: ConnectOutcome::Failed,
@@ -174,10 +169,7 @@ where
     debug!("wake_compute success. attempting to connect");
     num_retries = 1;
     loop {
-        match mechanism
-            .connect_once(ctx, &node_info, CONNECT_TIMEOUT)
-            .await
-        {
+        match mechanism.connect_once(ctx, &node_info, compute).await {
             Ok(res) => {
                 ctx.success();
                 Metrics::get().proxy.retries_metric.observe(
@@ -192,7 +184,7 @@ where
                 return Ok(res);
             }
             Err(e) => {
-                if !should_retry(&e, num_retries, connect_to_compute_retry_config) {
+                if !should_retry(&e, num_retries, compute.retry) {
                     // Don't log an error here, caller will print the error
                     Metrics::get().proxy.retries_metric.observe(
                         RetriesMetricGroup {
@@ -208,7 +200,7 @@ where
             }
         };
 
-        let wait_duration = retry_after(num_retries, connect_to_compute_retry_config);
+        let wait_duration = retry_after(num_retries, compute.retry);
         num_retries += 1;
 
         let pause = ctx.latency_timer_pause(crate::metrics::Waiting::RetryTimeout);

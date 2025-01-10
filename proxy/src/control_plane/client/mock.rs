@@ -102,7 +102,9 @@ impl MockControlPlane {
                     Some(s) => {
                         info!("got allowed_ips: {s}");
                         s.split(',')
-                            .map(|s| IpPattern::from_str(s).unwrap())
+                            .map(|s| {
+                                IpPattern::from_str(s).expect("mocked ip pattern should be correct")
+                            })
                             .collect()
                     }
                     None => vec![],
@@ -174,7 +176,6 @@ impl MockControlPlane {
                 branch_id: (&BranchId::from("branch")).into(),
                 cold_start_info: crate::control_plane::messages::ColdStartInfo::Warm,
             },
-            allow_self_signed_compute: false,
         };
 
         Ok(node)

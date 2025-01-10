@@ -7,6 +7,8 @@ use std::{fmt, pin::pin};
 use anyhow::{bail, Context};
 use futures::StreamExt;
 use postgres_protocol::message::backend::ReplicationMessage;
+use safekeeper_api::models::{PeerInfo, TimelineStatus};
+use safekeeper_api::Term;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::time::timeout;
 use tokio::{
@@ -24,13 +26,11 @@ use crate::receive_wal::{WalAcceptor, REPLY_QUEUE_SIZE};
 use crate::safekeeper::{AppendRequest, AppendRequestHeader};
 use crate::timeline::WalResidentTimeline;
 use crate::{
-    http::routes::TimelineStatus,
     receive_wal::MSG_QUEUE_SIZE,
     safekeeper::{
-        AcceptorProposerMessage, ProposerAcceptorMessage, ProposerElected, Term, TermHistory,
-        TermLsn, VoteRequest,
+        AcceptorProposerMessage, ProposerAcceptorMessage, ProposerElected, TermHistory, TermLsn,
+        VoteRequest,
     },
-    timeline::PeerInfo,
     SafeKeeperConf,
 };
 

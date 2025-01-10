@@ -8,20 +8,19 @@
 
 use anyhow::Context;
 use postgres_backend::QueryError;
+use safekeeper_api::{ServerInfo, Term};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::*;
-use utils::id::TenantTimelineId;
 
 use crate::handler::SafekeeperPostgresHandler;
-use crate::safekeeper::{AcceptorProposerMessage, AppendResponse, ServerInfo};
+use crate::safekeeper::{AcceptorProposerMessage, AppendResponse};
 use crate::safekeeper::{
     AppendRequest, AppendRequestHeader, ProposerAcceptorMessage, ProposerElected,
 };
-use crate::safekeeper::{Term, TermHistory, TermLsn};
+use crate::safekeeper::{TermHistory, TermLsn};
 use crate::state::TimelinePersistentState;
 use crate::timeline::WalResidentTimeline;
-use crate::GlobalTimelines;
 use postgres_backend::PostgresBackend;
 use postgres_ffi::encode_logical_message;
 use postgres_ffi::WAL_SEGMENT_SIZE;
@@ -70,7 +69,7 @@ pub async fn handle_json_ctrl<IO: AsyncRead + AsyncWrite + Unpin>(
     info!("JSON_CTRL request: {append_request:?}");
 
     // need to init safekeeper state before AppendRequest
-    let tli = prepare_safekeeper(spg.ttid, append_request.pg_version).await?;
+    let tli = prepare_safekeeper(spg, append_request.pg_version).await?;
 
     // if send_proposer_elected is true, we need to update local history
     if append_request.send_proposer_elected {
@@ -99,20 +98,22 @@ pub async fn handle_json_ctrl<IO: AsyncRead + AsyncWrite + Unpin>(
 /// Prepare safekeeper to process append requests without crashes,
 /// by sending ProposerGreeting with default server.wal_seg_size.
 async fn prepare_safekeeper(
-    ttid: TenantTimelineId,
+    spg: &SafekeeperPostgresHandler,
     pg_version: u32,
 ) -> anyhow::Result<WalResidentTimeline> {
-    let tli = GlobalTimelines::create(
-        ttid,
-        ServerInfo {
-            pg_version,
-            wal_seg_size: WAL_SEGMENT_SIZE as u32,
-            system_id: 0,
-        },
-        Lsn::INVALID,
-        Lsn::INVALID,
-    )
-    .await?;
+    let tli = spg
+        .global_timelines
+        .create(
+            spg.ttid,
+            ServerInfo {
+                pg_version,
+                wal_seg_size: WAL_SEGMENT_SIZE as u32,
+                system_id: 0,
+            },
+            Lsn::INVALID,
+            Lsn::INVALID,
+        )
+        .await?;
 
     tli.wal_residence_guard().await
 }

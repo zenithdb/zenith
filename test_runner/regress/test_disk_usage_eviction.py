@@ -460,10 +460,10 @@ def test_pageserver_respects_overridden_resident_size(
     assert (
         du_by_timeline[large_tenant] > min_resident_size
     ), "ensure the larger tenant will get a haircut"
-    env.neon_env.storage_controller.pageserver_api().patch_tenant_config_client_side(
+    env.neon_env.storage_controller.pageserver_api().update_tenant_config(
         small_tenant[0], {"min_resident_size_override": min_resident_size}
     )
-    env.neon_env.storage_controller.pageserver_api().patch_tenant_config_client_side(
+    env.neon_env.storage_controller.pageserver_api().update_tenant_config(
         large_tenant[0], {"min_resident_size_override": min_resident_size}
     )
 

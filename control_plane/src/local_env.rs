@@ -76,7 +76,7 @@ pub struct LocalEnv {
 
     // Control plane upcall API for pageserver: if None, we will not run storage_controller  If set, this will
     // be propagated into each pageserver's configuration.
-    pub control_plane_api: Option<Url>,
+    pub control_plane_api: Url,
 
     // Control plane upcall API for storage controller.  If set, this will be propagated into the
     // storage controller's configuration.
@@ -133,7 +133,7 @@ pub struct NeonLocalInitConf {
     pub storage_controller: Option<NeonStorageControllerConf>,
     pub pageservers: Vec<NeonLocalInitPageserverConf>,
     pub safekeepers: Vec<SafekeeperConf>,
-    pub control_plane_api: Option<Option<Url>>,
+    pub control_plane_api: Option<Url>,
     pub control_plane_compute_hook_api: Option<Option<Url>>,
 }
 
@@ -180,7 +180,7 @@ impl NeonStorageControllerConf {
     const DEFAULT_MAX_WARMING_UP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
     // Very tight heartbeat interval to speed up tests
-    const DEFAULT_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+    const DEFAULT_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
 }
 
 impl Default for NeonStorageControllerConf {
@@ -535,7 +535,7 @@ impl LocalEnv {
                 storage_controller,
                 pageservers,
                 safekeepers,
-                control_plane_api,
+                control_plane_api: control_plane_api.unwrap(),
                 control_plane_compute_hook_api,
                 branch_name_mappings,
             }
@@ -638,7 +638,7 @@ impl LocalEnv {
                 storage_controller: self.storage_controller.clone(),
                 pageservers: vec![], // it's skip_serializing anyway
                 safekeepers: self.safekeepers.clone(),
-                control_plane_api: self.control_plane_api.clone(),
+                control_plane_api: Some(self.control_plane_api.clone()),
                 control_plane_compute_hook_api: self.control_plane_compute_hook_api.clone(),
                 branch_name_mappings: self.branch_name_mappings.clone(),
             },
@@ -768,7 +768,7 @@ impl LocalEnv {
             storage_controller: storage_controller.unwrap_or_default(),
             pageservers: pageservers.iter().map(Into::into).collect(),
             safekeepers,
-            control_plane_api: control_plane_api.unwrap_or_default(),
+            control_plane_api: control_plane_api.unwrap(),
             control_plane_compute_hook_api: control_plane_compute_hook_api.unwrap_or_default(),
             branch_name_mappings: Default::default(),
         };

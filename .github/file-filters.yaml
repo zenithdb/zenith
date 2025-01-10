@@ -1,0 +1,12 @@
+rust_code: ['**/*.rs', '**/Cargo.toml', '**/Cargo.lock']
+
+v14: ['vendor/postgres-v14/**', 'Makefile', 'pgxn/**']
+v15: ['vendor/postgres-v15/**', 'Makefile', 'pgxn/**']
+v16: ['vendor/postgres-v16/**', 'Makefile', 'pgxn/**']
+v17: ['vendor/postgres-v17/**', 'Makefile', 'pgxn/**']
+
+rebuild_neon_extra:
+    - .github/workflows/neon_extra_builds.yml
+
+rebuild_macos:
+    - .github/workflows/build-macos.yml

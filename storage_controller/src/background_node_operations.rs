@@ -3,7 +3,7 @@ use std::{borrow::Cow, fmt::Debug, fmt::Display};
 use tokio_util::sync::CancellationToken;
 use utils::id::NodeId;
 
-pub(crate) const MAX_RECONCILES_PER_OPERATION: usize = 32;
+pub(crate) const MAX_RECONCILES_PER_OPERATION: usize = 64;
 
 #[derive(Copy, Clone)]
 pub(crate) struct Drain {

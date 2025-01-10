@@ -16,6 +16,8 @@ from fixtures.common_types import TenantId, TenantShardId, TimelineId
 from fixtures.compute_reconfigure import ComputeReconfigure
 from fixtures.log_helper import log
 from fixtures.neon_fixtures import (
+    DEFAULT_AZ_ID,
+    LogCursor,
     NeonEnv,
     NeonEnvBuilder,
     NeonPageserver,
@@ -57,6 +59,8 @@ from werkzeug.wrappers.response import Response
 
 if TYPE_CHECKING:
     from typing import Any
+
+    from fixtures.httpserver import ListenAddress
 
 
 def get_node_shard_counts(env: NeonEnv, tenant_ids):
@@ -563,7 +567,7 @@ def test_storage_controller_onboard_detached(neon_env_builder: NeonEnvBuilder):
 def test_storage_controller_compute_hook(
     httpserver: HTTPServer,
     neon_env_builder: NeonEnvBuilder,
-    httpserver_listen_address,
+    httpserver_listen_address: ListenAddress,
 ):
     """
     Test that the sharding service calls out to the configured HTTP endpoint on attachment changes
@@ -597,6 +601,7 @@ def test_storage_controller_compute_hook(
         "tenant_id": str(env.initial_tenant),
         "stripe_size": None,
         "shards": [{"node_id": int(env.pageservers[0].id), "shard_number": 0}],
+        "preferred_az": DEFAULT_AZ_ID,
     }
     assert notifications[0] == expect
 
@@ -614,6 +619,7 @@ def test_storage_controller_compute_hook(
         "tenant_id": str(env.initial_tenant),
         "stripe_size": None,
         "shards": [{"node_id": int(env.pageservers[1].id), "shard_number": 0}],
+        "preferred_az": DEFAULT_AZ_ID,
     }
 
     def received_migration_notification():
@@ -641,6 +647,7 @@ def test_storage_controller_compute_hook(
             {"node_id": int(env.pageservers[1].id), "shard_number": 0},
             {"node_id": int(env.pageservers[1].id), "shard_number": 1},
         ],
+        "preferred_az": DEFAULT_AZ_ID,
     }
 
     def received_split_notification():
@@ -681,7 +688,7 @@ NOTIFY_FAILURE_LOGS = [
 def test_storage_controller_stuck_compute_hook(
     httpserver: HTTPServer,
     neon_env_builder: NeonEnvBuilder,
-    httpserver_listen_address,
+    httpserver_listen_address: ListenAddress,
 ):
     """
     Test the migration process's behavior when the compute hook does not enable it to proceed
@@ -712,6 +719,7 @@ def test_storage_controller_stuck_compute_hook(
         "tenant_id": str(env.initial_tenant),
         "stripe_size": None,
         "shards": [{"node_id": int(env.pageservers[0].id), "shard_number": 0}],
+        "preferred_az": DEFAULT_AZ_ID,
     }
     assert notifications[0] == expect
 
@@ -818,7 +826,7 @@ def test_storage_controller_stuck_compute_hook(
 def test_storage_controller_compute_hook_revert(
     httpserver: HTTPServer,
     neon_env_builder: NeonEnvBuilder,
-    httpserver_listen_address,
+    httpserver_listen_address: ListenAddress,
 ):
     """
     'revert' in the sense of a migration which gets reversed shortly after, as may happen during
@@ -1768,7 +1776,7 @@ def test_storcon_cli(neon_env_builder: NeonEnvBuilder):
     # Modify a tenant's config
     storcon_cli(
         [
-            "tenant-config",
+            "patch-tenant-config",
             "--tenant-id",
             str(env.initial_tenant),
             "--config",
@@ -2136,7 +2144,7 @@ def test_background_operation_cancellation(neon_env_builder: NeonEnvBuilder):
     env.start()
 
     tenant_count = 10
-    shard_count_per_tenant = 8
+    shard_count_per_tenant = 16
     tenant_ids = []
 
     for _ in range(0, tenant_count):
@@ -2399,11 +2407,18 @@ def test_storage_controller_step_down(neon_env_builder: NeonEnvBuilder):
     env.storage_controller.tenant_create(tid)
 
     env.storage_controller.reconcile_until_idle()
-    env.storage_controller.configure_failpoints(("sleep-on-reconcile-epilogue", "return(10000)"))
+    env.storage_controller.configure_failpoints(("reconciler-epilogue", "pause"))
+
+    def unpause_failpoint():
+        time.sleep(2)
+        env.storage_controller.configure_failpoints(("reconciler-epilogue", "off"))
+
+    thread = threading.Thread(target=unpause_failpoint)
+    thread.start()
 
     # Make a change to the tenant config to trigger a slow reconcile
     virtual_ps_http = PageserverHttpClient(env.storage_controller_port, lambda: True)
-    virtual_ps_http.patch_tenant_config_client_side(tid, {"compaction_threshold": 5}, None)
+    virtual_ps_http.update_tenant_config(tid, {"compaction_threshold": 5}, None)
     env.storage_controller.allowed_errors.extend(
         [
             ".*Accepted configuration update but reconciliation failed.*",
@@ -2413,6 +2428,8 @@ def test_storage_controller_step_down(neon_env_builder: NeonEnvBuilder):
 
     observed_state = env.storage_controller.step_down()
     log.info(f"Storage controller stepped down with {observed_state=}")
+
+    thread.join()
 
     # Validate that we waited for the slow reconcile to complete
     # and updated the observed state in the storcon before stepping down.
@@ -2953,6 +2970,8 @@ def test_safekeeper_deployment_time_update(neon_env_builder: NeonEnvBuilder):
 
     assert target.get_safekeeper(fake_id) is None
 
+    assert len(target.get_safekeepers()) == 0
+
     body = {
         "active": True,
         "id": fake_id,
@@ -2970,6 +2989,7 @@ def test_safekeeper_deployment_time_update(neon_env_builder: NeonEnvBuilder):
 
     inserted = target.get_safekeeper(fake_id)
     assert inserted is not None
+    assert target.get_safekeepers() == [inserted]
     assert eq_safekeeper_records(body, inserted)
 
     # error out if pk is changed (unexpected)
@@ -2981,6 +3001,7 @@ def test_safekeeper_deployment_time_update(neon_env_builder: NeonEnvBuilder):
     assert exc.value.status_code == 400
 
     inserted_again = target.get_safekeeper(fake_id)
+    assert target.get_safekeepers() == [inserted_again]
     assert inserted_again is not None
     assert eq_safekeeper_records(inserted, inserted_again)
 
@@ -2989,6 +3010,7 @@ def test_safekeeper_deployment_time_update(neon_env_builder: NeonEnvBuilder):
     body["version"] += 1
     target.on_safekeeper_deploy(fake_id, body)
     inserted_now = target.get_safekeeper(fake_id)
+    assert target.get_safekeepers() == [inserted_now]
     assert inserted_now is not None
 
     assert eq_safekeeper_records(body, inserted_now)
@@ -2997,7 +3019,7 @@ def test_safekeeper_deployment_time_update(neon_env_builder: NeonEnvBuilder):
 def eq_safekeeper_records(a: dict[str, Any], b: dict[str, Any]) -> bool:
     compared = [dict(a), dict(b)]
 
-    masked_keys = ["created_at", "updated_at"]
+    masked_keys = ["created_at", "updated_at", "active", "scheduling_policy"]
 
     for d in compared:
         # keep deleting these in case we are comparing the body as it will be uploaded by real scripts
@@ -3277,8 +3299,221 @@ def test_storage_controller_detached_stopped(
             "generation": None,
         },
     )
-
+    env.storage_controller.reconcile_until_idle()
     env.storage_controller.consistency_check()
 
     # Confirm the detach happened
     assert env.pageserver.http_client().tenant_list_locations()["tenant_shards"] == []
+
+
+@run_only_on_default_postgres("Postgres version makes no difference here")
+def test_storage_controller_detach_lifecycle(
+    neon_env_builder: NeonEnvBuilder,
+):
+    """
+    Test that detached tenants are handled properly through their lifecycle: getting dropped
+    from memory when detached, then getting loaded back on-demand.
+    """
+
+    remote_storage_kind = s3_storage()
+    neon_env_builder.enable_pageserver_remote_storage(remote_storage_kind)
+
+    neon_env_builder.num_pageservers = 1
+
+    env = neon_env_builder.init_configs()
+    env.start()
+    virtual_ps_http = PageserverHttpClient(env.storage_controller_port, lambda: True)
+
+    tenant_id = TenantId.generate()
+    timeline_id = TimelineId.generate()
+    env.storage_controller.tenant_create(
+        tenant_id,
+        shard_count=1,
+    )
+    virtual_ps_http.timeline_create(PgVersion.NOT_SET, tenant_id, timeline_id)
+
+    remote_prefix = "/".join(
+        (
+            "tenants",
+            str(tenant_id),
+        )
+    )
+    # We will later check data is gone after deletion, so as a control check that it is present to begin with
+    assert_prefix_not_empty(
+        neon_env_builder.pageserver_remote_storage,
+        prefix=remote_prefix,
+    )
+
+    assert len(env.pageserver.http_client().tenant_list_locations()["tenant_shards"]) == 1
+    assert len(env.storage_controller.tenant_list()) == 1
+
+    # Detach the tenant
+    virtual_ps_http.tenant_location_conf(
+        tenant_id,
+        {
+            "mode": "Detached",
+            "secondary_conf": None,
+            "tenant_conf": {},
+            "generation": None,
+        },
+    )
+    # Ensure reconciles are done (the one we do inline in location_conf is advisory and if it takes too long that API just succeeds anyway)
+    env.storage_controller.reconcile_until_idle()
+    env.storage_controller.consistency_check()
+
+    # Confirm the detach happened on pageserver
+    assert env.pageserver.http_client().tenant_list_locations()["tenant_shards"] == []
+    # Confirm the tenant is not in memory on the controller
+    assert env.storage_controller.tenant_list() == []
+
+    # The detached tenant does not get loaded into memory across a controller restart
+    env.storage_controller.stop()
+    env.storage_controller.start()
+    assert env.storage_controller.tenant_list() == []
+    env.storage_controller.consistency_check()
+
+    # The detached tenant can be re-attached
+    virtual_ps_http.tenant_location_conf(
+        tenant_id,
+        {
+            "mode": "AttachedSingle",
+            "secondary_conf": None,
+            "tenant_conf": {},
+            "generation": None,
+        },
+    )
+    assert len(env.pageserver.http_client().tenant_list_locations()["tenant_shards"]) == 1
+    assert len(env.storage_controller.tenant_list()) == 1
+    env.storage_controller.consistency_check()
+
+    # Detach it again before doing deletion
+    virtual_ps_http.tenant_location_conf(
+        tenant_id,
+        {
+            "mode": "Detached",
+            "secondary_conf": None,
+            "tenant_conf": {},
+            "generation": None,
+        },
+    )
+    env.storage_controller.reconcile_until_idle()
+    env.storage_controller.consistency_check()
+
+    # A detached tenant can be deleted
+    virtual_ps_http.tenant_delete(tenant_id)
+
+    # Such deletions really work (empty remote storage)
+    assert_prefix_empty(
+        neon_env_builder.pageserver_remote_storage,
+        prefix=remote_prefix,
+    )
+
+
+@run_only_on_default_postgres("Postgres version makes no difference here")
+def test_storage_controller_node_flap_detach_race(
+    neon_env_builder: NeonEnvBuilder,
+):
+    """
+    Reproducer for https://github.com/neondatabase/neon/issues/10253.
+
+    When a node's availability flaps, the reconciliations spawned by the node
+    going offline may race with the reconciliation done when then node comes
+    back online.
+    """
+    neon_env_builder.num_pageservers = 4
+
+    env = neon_env_builder.init_configs()
+    env.start()
+
+    tenant_id = TenantId.generate()
+    env.storage_controller.tenant_create(
+        tenant_id,
+        shard_count=2,
+    )
+    env.storage_controller.reconcile_until_idle()
+
+    stopped_nodes = [s["node_id"] for s in env.storage_controller.locate(tenant_id)]
+
+    def has_hit_failpoint(failpoint: str, offset: LogCursor | None = None) -> LogCursor:
+        res = env.storage_controller.log_contains(f"at failpoint {failpoint}", offset=offset)
+        assert res
+        return res[1]
+
+    # Stop the nodes which host attached shards.
+    # This will trigger reconciliations which pause before incrmenenting the generation,
+    # and, more importantly, updating the `generation_pageserver` of the shards.
+    env.storage_controller.configure_failpoints(("reconciler-pre-increment-generation", "pause"))
+    for node_id in stopped_nodes:
+        env.get_pageserver(node_id).stop(immediate=True)
+
+    def failure_handled() -> LogCursor:
+        stop_offset = None
+
+        for node_id in stopped_nodes:
+            res = env.storage_controller.log_contains(f"node {node_id} going offline")
+            assert res
+            stop_offset = res[1]
+
+        assert stop_offset
+        return stop_offset
+
+    offset = wait_until(failure_handled)
+
+    # Now restart the nodes and make them pause before marking themselves as available
+    # or running the activation reconciliation.
+    env.storage_controller.configure_failpoints(("heartbeat-pre-node-state-configure", "pause"))
+
+    for node_id in stopped_nodes:
+        env.get_pageserver(node_id).start(await_active=False)
+
+    offset = wait_until(
+        lambda: has_hit_failpoint("heartbeat-pre-node-state-configure", offset=offset)
+    )
+
+    # The nodes have restarted and are waiting to perform activaction reconciliation.
+    # Unpause the initial reconciliation triggered by the nodes going offline.
+    # It will attempt to detach from the old location, but notice that the old location
+    # is not yet available, and then stop before processing the results of the reconciliation.
+    env.storage_controller.configure_failpoints(("reconciler-epilogue", "pause"))
+    env.storage_controller.configure_failpoints(("reconciler-pre-increment-generation", "off"))
+
+    offset = wait_until(lambda: has_hit_failpoint("reconciler-epilogue", offset=offset))
+
+    # Let the nodes perform activation reconciliation while still holding up processing the result
+    # from the initial reconcile triggered by going offline.
+    env.storage_controller.configure_failpoints(("heartbeat-pre-node-state-configure", "off"))
+
+    def activate_reconciliation_done():
+        for node_id in stopped_nodes:
+            assert env.storage_controller.log_contains(
+                f"Node {node_id} transition to active", offset=offset
+            )
+
+    wait_until(activate_reconciliation_done)
+
+    # Finally, allow the initial reconcile to finish up.
+    env.storage_controller.configure_failpoints(("reconciler-epilogue", "off"))
+
+    # Give things a chance to settle and validate that no stale locations exist
+    env.storage_controller.reconcile_until_idle()
+
+    def validate_locations():
+        shard_locations = defaultdict(list)
+        for ps in env.pageservers:
+            locations = ps.http_client().tenant_list_locations()["tenant_shards"]
+            for loc in locations:
+                shard_locations[loc[0]].append(
+                    {"generation": loc[1]["generation"], "mode": loc[1]["mode"], "node": ps.id}
+                )
+
+        log.info(f"Shard locations: {shard_locations}")
+
+        attached_locations = {
+            k: list(filter(lambda loc: loc["mode"] == "AttachedSingle", v))
+            for k, v in shard_locations.items()
+        }
+
+        for shard, locs in attached_locations.items():
+            assert len(locs) == 1, f"{shard} has {len(locs)} attached locations"
+
+    wait_until(validate_locations, timeout=10)

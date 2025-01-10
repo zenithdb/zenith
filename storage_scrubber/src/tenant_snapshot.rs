@@ -268,6 +268,8 @@ impl SnapshotDownloader {
                         index_part,
                         index_part_generation,
                         s3_layers: _,
+                        index_part_last_modified_time: _,
+                        index_part_snapshot_time: _,
                     } => {
                         self.download_timeline(
                             ttid,

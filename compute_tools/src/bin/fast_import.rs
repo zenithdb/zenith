@@ -34,12 +34,12 @@ use nix::unistd::Pid;
 use tracing::{info, info_span, warn, Instrument};
 use utils::fs_ext::is_directory_empty;
 
+#[path = "fast_import/aws_s3_sync.rs"]
+mod aws_s3_sync;
 #[path = "fast_import/child_stdio_to_log.rs"]
 mod child_stdio_to_log;
 #[path = "fast_import/s3_uri.rs"]
 mod s3_uri;
-#[path = "fast_import/s5cmd.rs"]
-mod s5cmd;
 
 #[derive(clap::Parser)]
 struct Args {
@@ -326,7 +326,7 @@ pub(crate) async fn main() -> anyhow::Result<()> {
     }
 
     info!("upload pgdata");
-    s5cmd::sync(Utf8Path::new(&pgdata_dir), &s3_prefix.append("/"))
+    aws_s3_sync::sync(Utf8Path::new(&pgdata_dir), &s3_prefix.append("/pgdata/"))
         .await
         .context("sync dump directory to destination")?;
 
@@ -334,10 +334,10 @@ pub(crate) async fn main() -> anyhow::Result<()> {
     {
         let status_dir = working_directory.join("status");
         std::fs::create_dir(&status_dir).context("create status directory")?;
-        let status_file = status_dir.join("status");
+        let status_file = status_dir.join("pgdata");
         std::fs::write(&status_file, serde_json::json!({"done": true}).to_string())
             .context("write status file")?;
-        s5cmd::sync(&status_file, &s3_prefix.append("/status/pgdata"))
+        aws_s3_sync::sync(&status_dir, &s3_prefix.append("/status/"))
             .await
             .context("sync status directory to destination")?;
     }

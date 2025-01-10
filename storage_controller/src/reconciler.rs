@@ -1,19 +1,19 @@
 use crate::pageserver_client::PageserverClient;
 use crate::persistence::Persistence;
-use crate::service;
-use pageserver_api::controller_api::PlacementPolicy;
+use crate::{compute_hook, service};
+use pageserver_api::controller_api::{AvailabilityZone, PlacementPolicy};
 use pageserver_api::models::{
     LocationConfig, LocationConfigMode, LocationConfigSecondary, TenantConfig,
 };
 use pageserver_api::shard::{ShardIdentity, TenantShardId};
 use pageserver_client::mgmt_api;
 use reqwest::StatusCode;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use utils::backoff::exponential_backoff;
-use utils::failpoint_support;
 use utils::generation::Generation;
 use utils::id::{NodeId, TimelineId};
 use utils::lsn::Lsn;
@@ -45,6 +45,7 @@ pub(super) struct Reconciler {
     pub(crate) reconciler_config: ReconcilerConfig,
 
     pub(crate) config: TenantConfig,
+    pub(crate) preferred_az: Option<AvailabilityZone>,
 
     /// Observed state from the point of view of the reconciler.
     /// This gets updated as the reconciliation makes progress.
@@ -210,11 +211,12 @@ impl Reconciler {
         lazy: bool,
     ) -> Result<(), ReconcileError> {
         if !node.is_available() && config.mode == LocationConfigMode::Detached {
-            // Attempts to detach from offline nodes may be imitated without doing I/O: a node which is offline
-            // will get fully reconciled wrt the shard's intent state when it is reactivated, irrespective of
-            // what we put into `observed`, in [`crate::service::Service::node_activate_reconcile`]
-            tracing::info!("Node {node} is unavailable during detach: proceeding anyway, it will be detached on next activation");
-            self.observed.locations.remove(&node.get_id());
+            // [`crate::service::Service::node_activate_reconcile`] will update the observed state
+            // when the node comes back online. At that point, the intent and observed states will
+            // be mismatched and a background reconciliation will detach.
+            tracing::info!(
+                "Node {node} is unavailable during detach: proceeding anyway, it will be detached via background reconciliation"
+            );
             return Ok(());
         }
 
@@ -747,6 +749,8 @@ impl Reconciler {
                     };
 
                     if increment_generation {
+                        pausable_failpoint!("reconciler-pre-increment-generation");
+
                         let generation = self
                             .persistence
                             .increment_generation(self.tenant_shard_id, node.get_id())
@@ -822,7 +826,7 @@ impl Reconciler {
                 .handle_detach(self.tenant_shard_id, self.shard.stripe_size);
         }
 
-        failpoint_support::sleep_millis_async!("sleep-on-reconcile-epilogue");
+        pausable_failpoint!("reconciler-epilogue");
 
         Ok(())
     }
@@ -834,9 +838,12 @@ impl Reconciler {
             let result = self
                 .compute_hook
                 .notify(
-                    self.tenant_shard_id,
-                    node.get_id(),
-                    self.shard.stripe_size,
+                    compute_hook::ShardUpdate {
+                        tenant_shard_id: self.tenant_shard_id,
+                        node_id: node.get_id(),
+                        stripe_size: self.shard.stripe_size,
+                        preferred_az: self.preferred_az.as_ref().map(Cow::Borrowed),
+                    },
                     &self.cancel,
                 )
                 .await;

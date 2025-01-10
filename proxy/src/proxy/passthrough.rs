@@ -5,6 +5,7 @@ use utils::measured_stream::MeasuredStream;
 use super::copy_bidirectional::ErrorSource;
 use crate::cancellation;
 use crate::compute::PostgresConnection;
+use crate::config::ComputeConfig;
 use crate::control_plane::messages::MetricsAuxInfo;
 use crate::metrics::{Direction, Metrics, NumClientConnectionsGuard, NumConnectionRequestsGuard};
 use crate::stream::Stream;
@@ -67,9 +68,17 @@ pub(crate) struct ProxyPassthrough<P, S> {
 }
 
 impl<P, S: AsyncRead + AsyncWrite + Unpin> ProxyPassthrough<P, S> {
-    pub(crate) async fn proxy_pass(self) -> Result<(), ErrorSource> {
+    pub(crate) async fn proxy_pass(
+        self,
+        compute_config: &ComputeConfig,
+    ) -> Result<(), ErrorSource> {
         let res = proxy_pass(self.client, self.compute.stream, self.aux).await;
-        if let Err(err) = self.compute.cancel_closure.try_cancel_query().await {
+        if let Err(err) = self
+            .compute
+            .cancel_closure
+            .try_cancel_query(compute_config)
+            .await
+        {
             tracing::warn!(session_id = ?self.session_id, ?err, "could not cancel the query in the database");
         }
         res

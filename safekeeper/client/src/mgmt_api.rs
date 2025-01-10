@@ -2,20 +2,15 @@
 //!
 //! Partially copied from pageserver client; some parts might be better to be
 //! united.
-//!
-//! It would be also good to move it out to separate crate, but this needs
-//! duplication of internal-but-reported structs like WalSenderState, ServerInfo
-//! etc.
 
 use reqwest::{IntoUrl, Method, StatusCode};
+use safekeeper_api::models::TimelineStatus;
 use std::error::Error as _;
 use utils::{
     http::error::HttpErrorBody,
     id::{NodeId, TenantId, TimelineId},
     logging::SecretString,
 };
-
-use super::routes::TimelineStatus;
 
 #[derive(Debug, Clone)]
 pub struct Client {

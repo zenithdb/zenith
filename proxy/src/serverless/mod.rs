@@ -46,6 +46,7 @@ use utils::http::error::ApiError;
 use crate::cancellation::CancellationHandlerMain;
 use crate::config::{ProxyConfig, ProxyProtocolV2};
 use crate::context::RequestContext;
+use crate::ext::TaskExt;
 use crate::metrics::Metrics;
 use crate::protocol2::{read_proxy_protocol, ChainRW, ConnectHeader, ConnectionInfo};
 use crate::proxy::run_until_cancelled;
@@ -84,7 +85,7 @@ pub async fn task_main(
             cancellation_token.cancelled().await;
             tokio::task::spawn_blocking(move || conn_pool.shutdown())
                 .await
-                .unwrap();
+                .propagate_task_panic();
         }
     });
 
@@ -104,7 +105,7 @@ pub async fn task_main(
             cancellation_token.cancelled().await;
             tokio::task::spawn_blocking(move || http_conn_pool.shutdown())
                 .await
-                .unwrap();
+                .propagate_task_panic();
         }
     });
 

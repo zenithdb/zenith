@@ -365,6 +365,10 @@ lfc_change_limit_hook(int newval, void *extra)
 			neon_log(LOG, "Failed to punch hole in file: %m");
 #endif
 		/* We remove the old entry, and re-enter a hole to the hash table */
+		for (int i = 0; i < BLOCKS_PER_CHUNK; i++)
+		{
+			lfc_ctl->used_pages -= (victim->bitmap[i >> 5] >> (i & 31)) & 1;
+		}
 		hash_search_with_hash_value(lfc_hash, &victim->key, victim->hash, HASH_REMOVE, NULL);
 
 		memset(&holetag, 0, sizeof(holetag));
@@ -537,6 +541,7 @@ lfc_cache_containsv(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 		}
 		else
 		{
+			LWLockRelease(lfc_lock);
 			return found;
 		}
 

@@ -81,11 +81,14 @@ impl HttpErrorBody {
             .header(http::header::CONTENT_TYPE, "application/json")
             // we do not have nested maps with non string keys so serialization shouldn't fail
             .body(
-                Full::new(Bytes::from(serde_json::to_string(self).unwrap()))
-                    .map_err(|x| match x {})
-                    .boxed(),
+                Full::new(Bytes::from(
+                    serde_json::to_string(self)
+                        .expect("serialising HttpErrorBody should never fail"),
+                ))
+                .map_err(|x| match x {})
+                .boxed(),
             )
-            .unwrap()
+            .expect("content-type header should be valid")
     }
 }
 

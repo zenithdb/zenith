@@ -57,6 +57,7 @@ fn sha256<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> [u8; 32] {
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::threadpool::ThreadPool;
     use super::{Exchange, ServerSecret};
@@ -76,11 +77,8 @@ mod tests {
         const NONCE: [u8; 18] = [
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
         ];
-        let mut exchange = Exchange::new(
-            &secret,
-            || NONCE,
-            crate::config::TlsServerEndPoint::Undefined,
-        );
+        let mut exchange =
+            Exchange::new(&secret, || NONCE, crate::tls::TlsServerEndPoint::Undefined);
 
         let client_first = "n,,n=user,r=rOprNGfwEbeRWgbNEkqO";
         let client_final = "c=biws,r=rOprNGfwEbeRWgbNEkqOAQIDBAUGBwgJCgsMDQ4PEBES,p=rw1r5Kph5ThxmaUBC2GAQ6MfXbPnNkFiTIvdb/Rear0=";

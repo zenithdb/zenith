@@ -248,7 +248,7 @@ where
     }
 }
 
-impl<'a, W> Basebackup<'a, W>
+impl<W> Basebackup<'_, W>
 where
     W: AsyncWrite + Send + Sync + Unpin,
 {

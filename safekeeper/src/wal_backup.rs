@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use futures::stream::FuturesOrdered;
 use futures::StreamExt;
+use safekeeper_api::models::PeerInfo;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use utils::backoff;
@@ -30,7 +31,7 @@ use tracing::*;
 use utils::{id::TenantTimelineId, lsn::Lsn};
 
 use crate::metrics::{BACKED_UP_SEGMENTS, BACKUP_ERRORS, WAL_BACKUP_TASKS};
-use crate::timeline::{PeerInfo, WalResidentTimeline};
+use crate::timeline::WalResidentTimeline;
 use crate::timeline_manager::{Manager, StateSnapshot};
 use crate::{SafeKeeperConf, WAL_BACKUP_RUNTIME};
 

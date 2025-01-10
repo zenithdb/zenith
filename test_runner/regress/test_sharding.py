@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 from collections import defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import requests
@@ -11,6 +11,7 @@ from fixtures.common_types import Lsn, TenantId, TenantShardId, TimelineArchival
 from fixtures.compute_reconfigure import ComputeReconfigure
 from fixtures.log_helper import log
 from fixtures.neon_fixtures import (
+    DEFAULT_AZ_ID,
     NeonEnv,
     NeonEnvBuilder,
     StorageControllerApiException,
@@ -26,6 +27,9 @@ from pytest_httpserver import HTTPServer
 from typing_extensions import override
 from werkzeug.wrappers.request import Request
 from werkzeug.wrappers.response import Response
+
+if TYPE_CHECKING:
+    from fixtures.httpserver import ListenAddress
 
 
 def test_sharding_smoke(
@@ -557,11 +561,17 @@ def test_sharding_split_smoke(
     workload.write_rows(256)
 
     # Note which pageservers initially hold a shard after tenant creation
-    pre_split_pageserver_ids = [loc["node_id"] for loc in env.storage_controller.locate(tenant_id)]
-    log.info("Pre-split pageservers: {pre_split_pageserver_ids}")
+    pre_split_pageserver_ids = dict()
+    for loc in env.storage_controller.locate(tenant_id):
+        shard_no = TenantShardId.parse(loc["shard_id"]).shard_number
+        pre_split_pageserver_ids[loc["node_id"]] = shard_no
+    log.info(f"Pre-split pageservers: {pre_split_pageserver_ids}")
 
     # For pageservers holding a shard, validate their ingest statistics
     # reflect a proper splitting of the WAL.
+
+    observed_on_shard_zero = 0
+    received_on_non_zero_shard = 0
     for pageserver in env.pageservers:
         if pageserver.id not in pre_split_pageserver_ids:
             continue
@@ -569,28 +579,38 @@ def test_sharding_split_smoke(
         metrics = pageserver.http_client().get_metrics_values(
             [
                 "pageserver_wal_ingest_records_received_total",
-                "pageserver_wal_ingest_records_committed_total",
-                "pageserver_wal_ingest_records_filtered_total",
+                "pageserver_wal_ingest_records_observed_total",
             ]
         )
 
         log.info(f"Pageserver {pageserver.id} metrics: {metrics}")
 
-        # Not everything received was committed
-        assert (
-            metrics["pageserver_wal_ingest_records_received_total"]
-            > metrics["pageserver_wal_ingest_records_committed_total"]
-        )
+        received = metrics["pageserver_wal_ingest_records_received_total"]
+        observed = metrics["pageserver_wal_ingest_records_observed_total"]
 
-        # Something was committed
-        assert metrics["pageserver_wal_ingest_records_committed_total"] > 0
+        shard_number: int | None = pre_split_pageserver_ids.get(pageserver.id, None)
+        if shard_number is None:
+            assert received == 0
+            assert observed == 0
+        elif shard_number == 0:
+            # Shard 0 receives its own records and observes records of other shards
+            # for relation size tracking.
+            assert observed > 0
+            assert received > 0
+            observed_on_shard_zero = int(observed)
+        else:
+            # Non zero shards do not observe any records, but only receive their own.
+            assert observed == 0
+            assert received > 0
+            received_on_non_zero_shard += int(received)
 
-        # Counts are self consistent
-        assert (
-            metrics["pageserver_wal_ingest_records_received_total"]
-            == metrics["pageserver_wal_ingest_records_committed_total"]
-            + metrics["pageserver_wal_ingest_records_filtered_total"]
-        )
+    # Some records are sent to multiple shards and some shard 0 records include both value observations
+    # and other metadata. Hence, we do a sanity check below that shard 0 observes the majority of records
+    # received by other shards.
+    assert (
+        observed_on_shard_zero <= received_on_non_zero_shard
+        and observed_on_shard_zero >= received_on_non_zero_shard // 2
+    )
 
     # TODO: validate that shards have different sizes
 
@@ -629,7 +649,7 @@ def test_sharding_split_smoke(
     # We should have split into 8 shards, on the same 4 pageservers we started on.
     assert len(post_split_pageserver_ids) == split_shard_count
     assert len(set(post_split_pageserver_ids)) == shard_count
-    assert set(post_split_pageserver_ids) == set(pre_split_pageserver_ids)
+    assert set(post_split_pageserver_ids) == set(pre_split_pageserver_ids.keys())
 
     # The old parent shards should no longer exist on disk
     assert not shards_on_disk(old_shard_ids)
@@ -735,7 +755,7 @@ def test_sharding_split_smoke(
     # all the pageservers that originally held an attached shard should still hold one, otherwise
     # it would indicate that we had done some unnecessary migration.
     log.info(f"attached: {attached}")
-    for ps_id in pre_split_pageserver_ids:
+    for ps_id in pre_split_pageserver_ids.keys():
         log.info("Pre-split pageserver {ps_id} should still hold an attached location")
         assert ps_id in attached
 
@@ -759,7 +779,7 @@ def test_sharding_split_smoke(
 def test_sharding_split_stripe_size(
     neon_env_builder: NeonEnvBuilder,
     httpserver: HTTPServer,
-    httpserver_listen_address,
+    httpserver_listen_address: ListenAddress,
     initial_stripe_size: int,
 ):
     """
@@ -790,6 +810,7 @@ def test_sharding_split_stripe_size(
         "tenant_id": str(env.initial_tenant),
         "stripe_size": None,
         "shards": [{"node_id": int(env.pageservers[0].id), "shard_number": 0}],
+        "preferred_az": DEFAULT_AZ_ID,
     }
     assert notifications[0] == expect
 
@@ -809,6 +830,7 @@ def test_sharding_split_stripe_size(
             {"node_id": int(env.pageservers[0].id), "shard_number": 0},
             {"node_id": int(env.pageservers[0].id), "shard_number": 1},
         ],
+        "preferred_az": DEFAULT_AZ_ID,
     }
     log.info(f"Got notification: {notifications[1]}")
     assert notifications[1] == expect_after

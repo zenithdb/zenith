@@ -345,10 +345,7 @@ impl LayerFringe {
     }
 
     pub(crate) fn next_layer(&mut self) -> Option<(ReadableLayer, KeySpace, Range<Lsn>)> {
-        let read_desc = match self.planned_visits_by_lsn.pop() {
-            Some(desc) => desc,
-            None => return None,
-        };
+        let read_desc = self.planned_visits_by_lsn.pop()?;
 
         let removed = self.visit_reads.remove_entry(&read_desc.layer_to_visit_id);
 

@@ -29,7 +29,7 @@ use crate::rate_limiter::WakeComputeRateLimiter;
 use crate::types::{EndpointCacheKey, EndpointId};
 use crate::{compute, http, scram};
 
-const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
+pub(crate) const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
 #[derive(Clone)]
 pub struct NeonControlPlaneClient {
@@ -78,15 +78,30 @@ impl NeonControlPlaneClient {
             info!("endpoint is not valid, skipping the request");
             return Ok(AuthInfo::default());
         }
-        let request_id = ctx.session_id().to_string();
-        let application_name = ctx.console_application_name();
+        self.do_get_auth_req(user_info, &ctx.session_id(), Some(ctx))
+            .await
+    }
+
+    async fn do_get_auth_req(
+        &self,
+        user_info: &ComputeUserInfo,
+        session_id: &uuid::Uuid,
+        ctx: Option<&RequestContext>,
+    ) -> Result<AuthInfo, GetAuthInfoError> {
+        let request_id: String = session_id.to_string();
+        let application_name = if let Some(ctx) = ctx {
+            ctx.console_application_name()
+        } else {
+            "auth_cancellation".to_string()
+        };
+
         async {
             let request = self
                 .endpoint
                 .get_path("get_endpoint_access_control")
                 .header(X_REQUEST_ID, &request_id)
                 .header(AUTHORIZATION, format!("Bearer {}", &self.jwt))
-                .query(&[("session_id", ctx.session_id())])
+                .query(&[("session_id", session_id)])
                 .query(&[
                     ("application_name", application_name.as_str()),
                     ("endpointish", user_info.endpoint.as_str()),
@@ -96,9 +111,16 @@ impl NeonControlPlaneClient {
 
             debug!(url = request.url().as_str(), "sending http request");
             let start = Instant::now();
-            let pause = ctx.latency_timer_pause(crate::metrics::Waiting::Cplane);
-            let response = self.endpoint.execute(request).await?;
-            drop(pause);
+            let response = match ctx {
+                Some(ctx) => {
+                    let pause = ctx.latency_timer_pause(crate::metrics::Waiting::Cplane);
+                    let rsp = self.endpoint.execute(request).await;
+                    drop(pause);
+                    rsp?
+                }
+                None => self.endpoint.execute(request).await?,
+            };
+
             info!(duration = ?start.elapsed(), "received http response");
             let body = match parse_body::<GetEndpointAccessControl>(response).await {
                 Ok(body) => body,
@@ -250,7 +272,6 @@ impl NeonControlPlaneClient {
             let node = NodeInfo {
                 config,
                 aux: body.aux,
-                allow_self_signed_compute: false,
             };
 
             Ok(node)

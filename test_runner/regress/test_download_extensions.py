@@ -20,6 +20,8 @@ from werkzeug.wrappers.response import Response
 if TYPE_CHECKING:
     from typing import Any
 
+    from fixtures.httpserver import ListenAddress
+
 
 # use neon_env_builder_local fixture to override the default neon_env_builder fixture
 # and use a test-specific pg_install instead of shared one
@@ -47,8 +49,8 @@ def neon_env_builder_local(
 def test_remote_extensions(
     httpserver: HTTPServer,
     neon_env_builder_local: NeonEnvBuilder,
-    httpserver_listen_address,
-    pg_version,
+    httpserver_listen_address: ListenAddress,
+    pg_version: PgVersion,
 ):
     # setup mock http server
     # that expects request for anon.tar.zst

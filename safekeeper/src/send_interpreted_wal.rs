@@ -94,9 +94,14 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> InterpretedWalSender<'_, IO> {
                         }
                     }
 
+                    let max_next_record_lsn = match max_next_record_lsn {
+                        Some(lsn) => lsn,
+                        None => { continue; }
+                    };
+
                     let batch = InterpretedWalRecords {
                         records,
-                        next_record_lsn: max_next_record_lsn
+                        next_record_lsn: Some(max_next_record_lsn),
                     };
 
                     tx.send(Batch {wal_end_lsn, available_wal_end_lsn, records: batch}).await.unwrap();

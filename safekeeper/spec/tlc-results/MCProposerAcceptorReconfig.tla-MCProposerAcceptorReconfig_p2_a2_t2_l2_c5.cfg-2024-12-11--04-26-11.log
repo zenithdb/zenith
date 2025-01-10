@@ -1,0 +1,64 @@
+git revision: 9e386917a
+Platform: Linux neon-dev-arm64-1 6.8.0-49-generic #49-Ubuntu SMP PREEMPT_DYNAMIC Sun Nov  3 21:21:58 UTC 2024 aarch64 aarch64 aarch64 GNU/Linux
+CPU Info Linux: Neoverse-N1
+CPU Cores Linux: 80
+CPU Info Mac: 
+CPU Cores Mac: 
+Spec: MCProposerAcceptorReconfig.tla
+Config: models/MCProposerAcceptorReconfig_p2_a2_t2_l2_c5.cfg
+----
+CONSTANTS
+NULL = NULL
+proposers = {p1, p2}
+acceptors = {a1, a2}
+max_term = 2
+max_entries = 2
+max_generation = 5
+SPECIFICATION Spec
+CONSTRAINT StateConstraint
+INVARIANT
+TypeOk
+ElectionSafetyFull
+LogIsMonotonic
+LogSafety
+\* CommittedNotTruncated
+SYMMETRY ProposerAcceptorSymmetry
+CHECK_DEADLOCK FALSE
+ALIAS Alias
+
+----
+
+TLC2 Version 2.20 of Day Month 20?? (rev: f68cb71)
+Running breadth-first search Model-Checking with fp 114 and seed -8099467489737745861 with 35 workers on 80 cores with 27307MB heap and 30720MB offheap memory [pid: 392020] (Linux 6.8.0-49-generic aarch64, Ubuntu 21.0.5 x86_64, OffHeapDiskFPSet, DiskStateQueue).
+Parsing file /home/arseny/neon2/safekeeper/spec/MCProposerAcceptorReconfig.tla
+Parsing file /tmp/tlc-11757875725969857497/TLC.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /home/arseny/neon2/safekeeper/spec/ProposerAcceptorReconfig.tla
+Parsing file /tmp/tlc-11757875725969857497/_TLCTrace.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/_TLCTrace.tla)
+Parsing file /tmp/tlc-11757875725969857497/Integers.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Parsing file /tmp/tlc-11757875725969857497/Sequences.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /tmp/tlc-11757875725969857497/FiniteSets.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /tmp/tlc-11757875725969857497/Naturals.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /home/arseny/neon2/safekeeper/spec/ProposerAcceptorStatic.tla
+Parsing file /tmp/tlc-11757875725969857497/TLCExt.tla (jar:file:/home/arseny/tla2tools.jar!/tla2sany/StandardModules/TLCExt.tla)
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module Integers
+Semantic processing of module ProposerAcceptorStatic
+Semantic processing of module ProposerAcceptorReconfig
+Semantic processing of module TLCExt
+Semantic processing of module _TLCTrace
+Semantic processing of module MCProposerAcceptorReconfig
+Starting... (2024-12-11 04:26:12)
+Computing initial states...
+Finished computing initial states: 2 states generated, with 1 of them distinct at 2024-12-11 04:26:14.
+Progress(14) at 2024-12-11 04:26:17: 1,519,385 states generated (1,519,385 s/min), 231,263 distinct states found (231,263 ds/min), 121,410 states left on queue.
+Progress(20) at 2024-12-11 04:27:17: 42,757,204 states generated (41,237,819 s/min), 4,198,386 distinct states found (3,967,123 ds/min), 1,308,109 states left on queue.
+Progress(22) at 2024-12-11 04:28:17: 83,613,929 states generated (40,856,725 s/min), 7,499,873 distinct states found (3,301,487 ds/min), 1,929,464 states left on queue.
+Progress(23) at 2024-12-11 04:29:17: 124,086,758 states generated (40,472,829 s/min), 10,569,712 distinct states found (3,069,839 ds/min), 2,386,988 states left on queue.
+Progress(24) at 2024-12-11 04:30:17: 163,412,538 states generated (39,325,780 s/min), 13,314,303 distinct states found (2,744,591 ds/min), 2,610,637 states left on queue.
+Progress(25) at 2024-12-11 04:31:17: 202,643,708 states generated (39,231,170 s/min), 15,960,583 distinct states found (2,646,280 ds/min), 2,759,681 states left on queue.
+Progress(26) at 2024-12-11 04:32:17: 240,681,633 states generated (38,037,925 s/min), 18,443,440 distinct states found (2,482,857 ds/min), 2,852,177 states left on queue.
+Progress(27) at 2024-12-11 04:33:17: 278,559,134 states generated (37,877,501 s/min), 20,878,067 distinct states found (2,434,627 ds/min), 2,904,400 states left on queue.
+Progress(28) at 2024-12-11 04:34:17: 316,699,911 states generated (38,140,777 s/min), 23,212,229 distinct states found (2,334,162 ds/min), 2,864,969 states left on queue.

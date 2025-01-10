@@ -562,15 +562,19 @@ impl RemoteStorage for LocalFs {
         }
     }
 
-    async fn delete_objects<'a>(
+    async fn delete_objects(
         &self,
-        paths: &'a [RemotePath],
+        paths: &[RemotePath],
         cancel: &CancellationToken,
     ) -> anyhow::Result<()> {
         for path in paths {
             self.delete(path, cancel).await?
         }
         Ok(())
+    }
+
+    fn max_keys_per_delete(&self) -> usize {
+        super::MAX_KEYS_PER_DELETE_S3
     }
 
     async fn copy(

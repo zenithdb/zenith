@@ -13,7 +13,7 @@ pub mod tenant_snapshot;
 use std::env;
 use std::fmt::Display;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 use aws_config::retry::{RetryConfigBuilder, RetryMode};
@@ -509,10 +509,11 @@ async fn list_objects_with_retries(
     panic!("MAX_RETRIES is not allowed to be 0");
 }
 
+/// Returns content, last modified time
 async fn download_object_with_retries(
     remote_client: &GenericRemoteStorage,
     key: &RemotePath,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<(Vec<u8>, SystemTime)> {
     let cancel = CancellationToken::new();
     for trial in 0..MAX_RETRIES {
         let mut buf = Vec::new();
@@ -535,7 +536,7 @@ async fn download_object_with_retries(
         {
             Ok(bytes_read) => {
                 tracing::debug!("Downloaded {bytes_read} bytes for object {key}");
-                return Ok(buf);
+                return Ok((buf, download.last_modified));
             }
             Err(e) => {
                 error!("Failed to stream object body for key {key}: {e}");

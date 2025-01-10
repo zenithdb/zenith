@@ -22,7 +22,10 @@ CHECKPOINT_TIMEOUT_SECONDS = 60
 
 
 async def run_worker_for_tenant(
-    env: NeonEnv, entries: int, tenant: TenantId, offset: int | None = None
+    env: NeonEnv,
+    entries: int,
+    tenant: TenantId,
+    offset: int | None = None,
 ) -> Lsn:
     if offset is None:
         offset = 0
@@ -37,12 +40,20 @@ async def run_worker_for_tenant(
         finally:
             await conn.close(timeout=10)
 
-        last_flush_lsn = Lsn(ep.safe_psql("SELECT pg_current_wal_flush_lsn()")[0][0])
+        loop = asyncio.get_running_loop()
+        sql = await loop.run_in_executor(
+            None, lambda ep: ep.safe_psql("SELECT pg_current_wal_flush_lsn()"), ep
+        )
+        last_flush_lsn = Lsn(sql[0][0])
         return last_flush_lsn
 
 
 async def run_worker(env: NeonEnv, tenant_conf, entries: int) -> tuple[TenantId, TimelineId, Lsn]:
-    tenant, timeline = env.create_tenant(conf=tenant_conf)
+    loop = asyncio.get_running_loop()
+    # capture tenant_conf by specifying `tenant_conf=tenant_conf`, otherwise it will be evaluated to some random value
+    tenant, timeline = await loop.run_in_executor(
+        None, lambda tenant_conf, env: env.create_tenant(conf=tenant_conf), tenant_conf, env
+    )
     last_flush_lsn = await run_worker_for_tenant(env, entries, tenant)
     return tenant, timeline, last_flush_lsn
 

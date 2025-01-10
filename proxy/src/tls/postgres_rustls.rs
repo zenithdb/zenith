@@ -18,7 +18,7 @@ mod private {
     use tokio_rustls::client::TlsStream;
     use tokio_rustls::TlsConnector;
 
-    use crate::config::TlsServerEndPoint;
+    use crate::tls::TlsServerEndPoint;
 
     pub struct TlsConnectFuture<S> {
         inner: tokio_rustls::Connect<S>,
@@ -126,16 +126,14 @@ mod private {
 /// That way you can connect to PostgreSQL using `rustls` as the TLS stack.
 #[derive(Clone)]
 pub struct MakeRustlsConnect {
-    config: Arc<ClientConfig>,
+    pub config: Arc<ClientConfig>,
 }
 
 impl MakeRustlsConnect {
     /// Creates a new `MakeRustlsConnect` from the provided `ClientConfig`.
     #[must_use]
-    pub fn new(config: ClientConfig) -> Self {
-        Self {
-            config: Arc::new(config),
-        }
+    pub fn new(config: Arc<ClientConfig>) -> Self {
+        Self { config }
     }
 }
 

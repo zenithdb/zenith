@@ -13,7 +13,6 @@ use super::secret::ServerSecret;
 use super::signature::SignatureBuilder;
 use super::threadpool::ThreadPool;
 use super::ScramKey;
-use crate::config;
 use crate::intern::EndpointIdInt;
 use crate::sasl::{self, ChannelBinding, Error as SaslError};
 
@@ -59,14 +58,14 @@ enum ExchangeState {
 pub(crate) struct Exchange<'a> {
     state: ExchangeState,
     secret: &'a ServerSecret,
-    tls_server_end_point: config::TlsServerEndPoint,
+    tls_server_end_point: crate::tls::TlsServerEndPoint,
 }
 
 impl<'a> Exchange<'a> {
     pub(crate) fn new(
         secret: &'a ServerSecret,
         nonce: fn() -> [u8; SCRAM_RAW_NONCE_LEN],
-        tls_server_end_point: config::TlsServerEndPoint,
+        tls_server_end_point: crate::tls::TlsServerEndPoint,
     ) -> Self {
         Self {
             state: ExchangeState::Initial(SaslInitial { nonce }),
@@ -120,7 +119,7 @@ impl SaslInitial {
     fn transition(
         &self,
         secret: &ServerSecret,
-        tls_server_end_point: &config::TlsServerEndPoint,
+        tls_server_end_point: &crate::tls::TlsServerEndPoint,
         input: &str,
     ) -> sasl::Result<sasl::Step<SaslSentInner, Infallible>> {
         let client_first_message = ClientFirstMessage::parse(input)
@@ -155,7 +154,7 @@ impl SaslSentInner {
     fn transition(
         &self,
         secret: &ServerSecret,
-        tls_server_end_point: &config::TlsServerEndPoint,
+        tls_server_end_point: &crate::tls::TlsServerEndPoint,
         input: &str,
     ) -> sasl::Result<sasl::Step<Infallible, super::ScramKey>> {
         let Self {
@@ -168,8 +167,8 @@ impl SaslSentInner {
             .ok_or(SaslError::BadClientMessage("invalid client-final-message"))?;
 
         let channel_binding = cbind_flag.encode(|_| match tls_server_end_point {
-            config::TlsServerEndPoint::Sha256(x) => Ok(x),
-            config::TlsServerEndPoint::Undefined => Err(SaslError::MissingBinding),
+            crate::tls::TlsServerEndPoint::Sha256(x) => Ok(x),
+            crate::tls::TlsServerEndPoint::Undefined => Err(SaslError::MissingBinding),
         })?;
 
         // This might've been caused by a MITM attack

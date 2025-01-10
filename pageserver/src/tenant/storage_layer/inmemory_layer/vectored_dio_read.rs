@@ -25,11 +25,11 @@ pub trait File: Send {
     /// [`std::io::ErrorKind::UnexpectedEof`] error if the file is shorter than `start+dst.len()`.
     ///
     /// No guarantees are made about the remaining bytes in `dst` in case of a short read.
-    async fn read_exact_at_eof_ok<'a, 'b, B: IoBufAlignedMut + Send>(
-        &'b self,
+    async fn read_exact_at_eof_ok<B: IoBufAlignedMut + Send>(
+        &self,
         start: u64,
         dst: Slice<B>,
-        ctx: &'a RequestContext,
+        ctx: &RequestContext,
     ) -> std::io::Result<(Slice<B>, usize)>;
 }
 
@@ -479,11 +479,11 @@ mod tests {
     }
 
     impl File for InMemoryFile {
-        async fn read_exact_at_eof_ok<'a, 'b, B: IoBufMut + Send>(
-            &'b self,
+        async fn read_exact_at_eof_ok<B: IoBufMut + Send>(
+            &self,
             start: u64,
             mut dst: Slice<B>,
-            _ctx: &'a RequestContext,
+            _ctx: &RequestContext,
         ) -> std::io::Result<(Slice<B>, usize)> {
             let dst_slice: &mut [u8] = dst.as_mut_rust_slice_full_zeroed();
             let nread = {
@@ -609,12 +609,12 @@ mod tests {
         }
     }
 
-    impl<'x> File for RecorderFile<'x> {
-        async fn read_exact_at_eof_ok<'a, 'b, B: IoBufAlignedMut + Send>(
-            &'b self,
+    impl File for RecorderFile<'_> {
+        async fn read_exact_at_eof_ok<B: IoBufAlignedMut + Send>(
+            &self,
             start: u64,
             dst: Slice<B>,
-            ctx: &'a RequestContext,
+            ctx: &RequestContext,
         ) -> std::io::Result<(Slice<B>, usize)> {
             let (dst, nread) = self.file.read_exact_at_eof_ok(start, dst, ctx).await?;
             self.recorded.borrow_mut().push(RecordedRead {
@@ -740,11 +740,11 @@ mod tests {
     }
 
     impl File for MockFile {
-        async fn read_exact_at_eof_ok<'a, 'b, B: IoBufMut + Send>(
-            &'b self,
+        async fn read_exact_at_eof_ok<B: IoBufMut + Send>(
+            &self,
             start: u64,
             mut dst: Slice<B>,
-            _ctx: &'a RequestContext,
+            _ctx: &RequestContext,
         ) -> std::io::Result<(Slice<B>, usize)> {
             let ExpectedRead {
                 expect_pos,

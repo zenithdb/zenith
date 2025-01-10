@@ -4,7 +4,6 @@
 
 use crate::defaults::DEFAULT_EVICTION_CONCURRENCY;
 use crate::rate_limit::RateLimiter;
-use crate::safekeeper::ServerInfo;
 use crate::state::TimelinePersistentState;
 use crate::timeline::{get_tenant_dir, get_timeline_dir, Timeline, TimelineError};
 use crate::timelines_set::TimelinesSet;
@@ -13,7 +12,7 @@ use crate::{control_file, wal_storage, SafeKeeperConf};
 use anyhow::{bail, Context, Result};
 use camino::Utf8PathBuf;
 use camino_tempfile::Utf8TempDir;
-use once_cell::sync::Lazy;
+use safekeeper_api::ServerInfo;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -42,23 +41,16 @@ struct GlobalTimelinesState {
     // this map is dropped on restart.
     tombstones: HashMap<TenantTimelineId, Instant>,
 
-    conf: Option<SafeKeeperConf>,
+    conf: Arc<SafeKeeperConf>,
     broker_active_set: Arc<TimelinesSet>,
     global_rate_limiter: RateLimiter,
 }
 
 impl GlobalTimelinesState {
-    /// Get configuration, which must be set once during init.
-    fn get_conf(&self) -> &SafeKeeperConf {
-        self.conf
-            .as_ref()
-            .expect("GlobalTimelinesState conf is not initialized")
-    }
-
     /// Get dependencies for a timeline constructor.
-    fn get_dependencies(&self) -> (SafeKeeperConf, Arc<TimelinesSet>, RateLimiter) {
+    fn get_dependencies(&self) -> (Arc<SafeKeeperConf>, Arc<TimelinesSet>, RateLimiter) {
         (
-            self.get_conf().clone(),
+            self.conf.clone(),
             self.broker_active_set.clone(),
             self.global_rate_limiter.clone(),
         )
@@ -82,35 +74,39 @@ impl GlobalTimelinesState {
     }
 }
 
-static TIMELINES_STATE: Lazy<Mutex<GlobalTimelinesState>> = Lazy::new(|| {
-    Mutex::new(GlobalTimelinesState {
-        timelines: HashMap::new(),
-        tombstones: HashMap::new(),
-        conf: None,
-        broker_active_set: Arc::new(TimelinesSet::default()),
-        global_rate_limiter: RateLimiter::new(1, 1),
-    })
-});
-
-/// A zero-sized struct used to manage access to the global timelines map.
-pub struct GlobalTimelines;
+/// A struct used to manage access to the global timelines map.
+pub struct GlobalTimelines {
+    state: Mutex<GlobalTimelinesState>,
+}
 
 impl GlobalTimelines {
+    /// Create a new instance of the global timelines map.
+    pub fn new(conf: Arc<SafeKeeperConf>) -> Self {
+        Self {
+            state: Mutex::new(GlobalTimelinesState {
+                timelines: HashMap::new(),
+                tombstones: HashMap::new(),
+                conf,
+                broker_active_set: Arc::new(TimelinesSet::default()),
+                global_rate_limiter: RateLimiter::new(1, 1),
+            }),
+        }
+    }
+
     /// Inject dependencies needed for the timeline constructors and load all timelines to memory.
-    pub async fn init(conf: SafeKeeperConf) -> Result<()> {
+    pub async fn init(&self) -> Result<()> {
         // clippy isn't smart enough to understand that drop(state) releases the
         // lock, so use explicit block
         let tenants_dir = {
-            let mut state = TIMELINES_STATE.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
             state.global_rate_limiter = RateLimiter::new(
-                conf.partial_backup_concurrency,
+                state.conf.partial_backup_concurrency,
                 DEFAULT_EVICTION_CONCURRENCY,
             );
-            state.conf = Some(conf);
 
             // Iterate through all directories and load tenants for all directories
             // named as a valid tenant_id.
-            state.get_conf().workdir.clone()
+            state.conf.workdir.clone()
         };
         let mut tenant_count = 0;
         for tenants_dir_entry in std::fs::read_dir(&tenants_dir)
@@ -122,7 +118,7 @@ impl GlobalTimelines {
                         TenantId::from_str(tenants_dir_entry.file_name().to_str().unwrap_or(""))
                     {
                         tenant_count += 1;
-                        GlobalTimelines::load_tenant_timelines(tenant_id).await?;
+                        self.load_tenant_timelines(tenant_id).await?;
                     }
                 }
                 Err(e) => error!(
@@ -135,7 +131,7 @@ impl GlobalTimelines {
         info!(
             "found {} tenants directories, successfully loaded {} timelines",
             tenant_count,
-            TIMELINES_STATE.lock().unwrap().timelines.len()
+            self.state.lock().unwrap().timelines.len()
         );
         Ok(())
     }
@@ -143,13 +139,13 @@ impl GlobalTimelines {
     /// Loads all timelines for the given tenant to memory. Returns fs::read_dir
     /// errors if any.
     ///
-    /// It is async, but TIMELINES_STATE lock is sync and there is no important
+    /// It is async, but self.state lock is sync and there is no important
     /// reason to make it async (it is always held for a short while), so we
     /// just lock and unlock it for each timeline -- this function is called
     /// during init when nothing else is running, so this is fine.
-    async fn load_tenant_timelines(tenant_id: TenantId) -> Result<()> {
+    async fn load_tenant_timelines(&self, tenant_id: TenantId) -> Result<()> {
         let (conf, broker_active_set, partial_backup_rate_limiter) = {
-            let state = TIMELINES_STATE.lock().unwrap();
+            let state = self.state.lock().unwrap();
             state.get_dependencies()
         };
 
@@ -163,10 +159,10 @@ impl GlobalTimelines {
                         TimelineId::from_str(timeline_dir_entry.file_name().to_str().unwrap_or(""))
                     {
                         let ttid = TenantTimelineId::new(tenant_id, timeline_id);
-                        match Timeline::load_timeline(&conf, ttid) {
+                        match Timeline::load_timeline(conf.clone(), ttid) {
                             Ok(tli) => {
                                 let mut shared_state = tli.write_shared_state().await;
-                                TIMELINES_STATE
+                                self.state
                                     .lock()
                                     .unwrap()
                                     .timelines
@@ -200,29 +196,30 @@ impl GlobalTimelines {
     }
 
     /// Get the number of timelines in the map.
-    pub fn timelines_count() -> usize {
-        TIMELINES_STATE.lock().unwrap().timelines.len()
+    pub fn timelines_count(&self) -> usize {
+        self.state.lock().unwrap().timelines.len()
     }
 
     /// Get the global safekeeper config.
-    pub fn get_global_config() -> SafeKeeperConf {
-        TIMELINES_STATE.lock().unwrap().get_conf().clone()
+    pub fn get_global_config(&self) -> Arc<SafeKeeperConf> {
+        self.state.lock().unwrap().conf.clone()
     }
 
-    pub fn get_global_broker_active_set() -> Arc<TimelinesSet> {
-        TIMELINES_STATE.lock().unwrap().broker_active_set.clone()
+    pub fn get_global_broker_active_set(&self) -> Arc<TimelinesSet> {
+        self.state.lock().unwrap().broker_active_set.clone()
     }
 
     /// Create a new timeline with the given id. If the timeline already exists, returns
     /// an existing timeline.
     pub(crate) async fn create(
+        &self,
         ttid: TenantTimelineId,
         server_info: ServerInfo,
         commit_lsn: Lsn,
         local_start_lsn: Lsn,
     ) -> Result<Arc<Timeline>> {
         let (conf, _, _) = {
-            let state = TIMELINES_STATE.lock().unwrap();
+            let state = self.state.lock().unwrap();
             if let Ok(timeline) = state.get(&ttid) {
                 // Timeline already exists, return it.
                 return Ok(timeline);
@@ -245,7 +242,7 @@ impl GlobalTimelines {
         let state =
             TimelinePersistentState::new(&ttid, server_info, vec![], commit_lsn, local_start_lsn)?;
         control_file::FileStorage::create_new(&tmp_dir_path, state, conf.no_sync).await?;
-        let timeline = GlobalTimelines::load_temp_timeline(ttid, &tmp_dir_path, true).await?;
+        let timeline = self.load_temp_timeline(ttid, &tmp_dir_path, true).await?;
         Ok(timeline)
     }
 
@@ -261,13 +258,14 @@ impl GlobalTimelines {
     /// 2) move the directory and load the timeline
     /// 3) take lock again and insert the timeline into the global map.
     pub async fn load_temp_timeline(
+        &self,
         ttid: TenantTimelineId,
         tmp_path: &Utf8PathBuf,
         check_tombstone: bool,
     ) -> Result<Arc<Timeline>> {
         // Check for existence and mark that we're creating it.
         let (conf, broker_active_set, partial_backup_rate_limiter) = {
-            let mut state = TIMELINES_STATE.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
             match state.timelines.get(&ttid) {
                 Some(GlobalMapTimeline::CreationInProgress) => {
                     bail!(TimelineError::CreationInProgress(ttid));
@@ -295,10 +293,10 @@ impl GlobalTimelines {
         };
 
         // Do the actual move and reflect the result in the map.
-        match GlobalTimelines::install_temp_timeline(ttid, tmp_path, &conf).await {
+        match GlobalTimelines::install_temp_timeline(ttid, tmp_path, conf.clone()).await {
             Ok(timeline) => {
                 let mut timeline_shared_state = timeline.write_shared_state().await;
-                let mut state = TIMELINES_STATE.lock().unwrap();
+                let mut state = self.state.lock().unwrap();
                 assert!(matches!(
                     state.timelines.get(&ttid),
                     Some(GlobalMapTimeline::CreationInProgress)
@@ -319,7 +317,7 @@ impl GlobalTimelines {
             }
             Err(e) => {
                 // Init failed, remove the marker from the map
-                let mut state = TIMELINES_STATE.lock().unwrap();
+                let mut state = self.state.lock().unwrap();
                 assert!(matches!(
                     state.timelines.get(&ttid),
                     Some(GlobalMapTimeline::CreationInProgress)
@@ -334,10 +332,10 @@ impl GlobalTimelines {
     async fn install_temp_timeline(
         ttid: TenantTimelineId,
         tmp_path: &Utf8PathBuf,
-        conf: &SafeKeeperConf,
+        conf: Arc<SafeKeeperConf>,
     ) -> Result<Arc<Timeline>> {
-        let tenant_path = get_tenant_dir(conf, &ttid.tenant_id);
-        let timeline_path = get_timeline_dir(conf, &ttid);
+        let tenant_path = get_tenant_dir(conf.as_ref(), &ttid.tenant_id);
+        let timeline_path = get_timeline_dir(conf.as_ref(), &ttid);
 
         // We must have already checked that timeline doesn't exist in the map,
         // but there might be existing datadir: if timeline is corrupted it is
@@ -382,9 +380,9 @@ impl GlobalTimelines {
     /// Get a timeline from the global map. If it's not present, it doesn't exist on disk,
     /// or was corrupted and couldn't be loaded on startup. Returned timeline is always valid,
     /// i.e. loaded in memory and not cancelled.
-    pub(crate) fn get(ttid: TenantTimelineId) -> Result<Arc<Timeline>, TimelineError> {
+    pub(crate) fn get(&self, ttid: TenantTimelineId) -> Result<Arc<Timeline>, TimelineError> {
         let tli_res = {
-            let state = TIMELINES_STATE.lock().unwrap();
+            let state = self.state.lock().unwrap();
             state.get(&ttid)
         };
         match tli_res {
@@ -399,8 +397,8 @@ impl GlobalTimelines {
     }
 
     /// Returns all timelines. This is used for background timeline processes.
-    pub fn get_all() -> Vec<Arc<Timeline>> {
-        let global_lock = TIMELINES_STATE.lock().unwrap();
+    pub fn get_all(&self) -> Vec<Arc<Timeline>> {
+        let global_lock = self.state.lock().unwrap();
         global_lock
             .timelines
             .values()
@@ -419,8 +417,8 @@ impl GlobalTimelines {
 
     /// Returns all timelines belonging to a given tenant. Used for deleting all timelines of a tenant,
     /// and that's why it can return cancelled timelines, to retry deleting them.
-    fn get_all_for_tenant(tenant_id: TenantId) -> Vec<Arc<Timeline>> {
-        let global_lock = TIMELINES_STATE.lock().unwrap();
+    fn get_all_for_tenant(&self, tenant_id: TenantId) -> Vec<Arc<Timeline>> {
+        let global_lock = self.state.lock().unwrap();
         global_lock
             .timelines
             .values()
@@ -435,11 +433,12 @@ impl GlobalTimelines {
     /// Cancels timeline, then deletes the corresponding data directory.
     /// If only_local, doesn't remove WAL segments in remote storage.
     pub(crate) async fn delete(
+        &self,
         ttid: &TenantTimelineId,
         only_local: bool,
     ) -> Result<TimelineDeleteForceResult> {
         let tli_res = {
-            let state = TIMELINES_STATE.lock().unwrap();
+            let state = self.state.lock().unwrap();
 
             if state.tombstones.contains_key(ttid) {
                 // Presence of a tombstone guarantees that a previous deletion has completed and there is no work to do.
@@ -472,7 +471,7 @@ impl GlobalTimelines {
             }
             Err(_) => {
                 // Timeline is not memory, but it may still exist on disk in broken state.
-                let dir_path = get_timeline_dir(TIMELINES_STATE.lock().unwrap().get_conf(), ttid);
+                let dir_path = get_timeline_dir(self.state.lock().unwrap().conf.as_ref(), ttid);
                 let dir_existed = delete_dir(dir_path)?;
 
                 Ok(TimelineDeleteForceResult {
@@ -485,7 +484,7 @@ impl GlobalTimelines {
         // Finalize deletion, by dropping Timeline objects and storing smaller tombstones.  The tombstones
         // are used to prevent still-running computes from re-creating the same timeline when they send data,
         // and to speed up repeated deletion calls by avoiding re-listing objects.
-        TIMELINES_STATE.lock().unwrap().delete(*ttid);
+        self.state.lock().unwrap().delete(*ttid);
 
         result
     }
@@ -497,17 +496,18 @@ impl GlobalTimelines {
     ///
     /// If only_local, doesn't remove WAL segments in remote storage.
     pub async fn delete_force_all_for_tenant(
+        &self,
         tenant_id: &TenantId,
         only_local: bool,
     ) -> Result<HashMap<TenantTimelineId, TimelineDeleteForceResult>> {
         info!("deleting all timelines for tenant {}", tenant_id);
-        let to_delete = Self::get_all_for_tenant(*tenant_id);
+        let to_delete = self.get_all_for_tenant(*tenant_id);
 
         let mut err = None;
 
         let mut deleted = HashMap::new();
         for tli in &to_delete {
-            match Self::delete(&tli.ttid, only_local).await {
+            match self.delete(&tli.ttid, only_local).await {
                 Ok(result) => {
                     deleted.insert(tli.ttid, result);
                 }
@@ -529,15 +529,15 @@ impl GlobalTimelines {
         // so the directory may be not empty. In this case timelines will have bad state
         // and timeline background jobs can panic.
         delete_dir(get_tenant_dir(
-            TIMELINES_STATE.lock().unwrap().get_conf(),
+            self.state.lock().unwrap().conf.as_ref(),
             tenant_id,
         ))?;
 
         Ok(deleted)
     }
 
-    pub fn housekeeping(tombstone_ttl: &Duration) {
-        let mut state = TIMELINES_STATE.lock().unwrap();
+    pub fn housekeeping(&self, tombstone_ttl: &Duration) {
+        let mut state = self.state.lock().unwrap();
 
         // We keep tombstones long enough to have a good chance of preventing rogue computes from re-creating deleted
         // timelines.  If a compute kept running for longer than this TTL (or across a safekeeper restart) then they

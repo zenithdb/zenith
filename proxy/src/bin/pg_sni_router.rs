@@ -10,12 +10,12 @@ use clap::Arg;
 use futures::future::Either;
 use futures::TryFutureExt;
 use itertools::Itertools;
-use proxy::config::TlsServerEndPoint;
 use proxy::context::RequestContext;
 use proxy::metrics::{Metrics, ThreadPoolMetrics};
 use proxy::protocol2::ConnectionInfo;
 use proxy::proxy::{copy_bidirectional_client_compute, run_until_cancelled, ErrorSource};
 use proxy::stream::{PqStream, Stream};
+use proxy::tls::TlsServerEndPoint;
 use rustls::crypto::ring;
 use rustls::pki_types::PrivateKeyDer;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -229,7 +229,7 @@ async fn ssl_handshake<S: AsyncRead + AsyncWrite + Unpin>(
 
             let (raw, read_buf) = stream.into_inner();
             // TODO: Normally, client doesn't send any data before
-            // server says TLS handshake is ok and read_buf is empy.
+            // server says TLS handshake is ok and read_buf is empty.
             // However, you could imagine pipelining of postgres
             // SSLRequest + TLS ClientHello in one hunk similar to
             // pipelining in our node js driver. We should probably

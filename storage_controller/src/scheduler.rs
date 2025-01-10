@@ -742,6 +742,50 @@ impl Scheduler {
         self.schedule_shard::<AttachedShardTag>(&[], &None, &ScheduleContext::default())
     }
 
+    /// For choosing which AZ to schedule a new shard into, use this.  It will return the
+    /// AZ with the lowest median utilization.
+    ///
+    /// We use an AZ-wide measure rather than simply selecting the AZ of the least-loaded
+    /// node, because while tenants start out single sharded, when they grow and undergo
+    /// shard-split, they will occupy space on many nodes within an AZ.
+    ///
+    /// We use median rather than total free space or mean utilization, because
+    /// we wish to avoid preferring AZs that have low-load nodes resulting from
+    /// recent replacements.
+    ///
+    /// The practical result is that we will pick an AZ based on its median node, and
+    /// then actually _schedule_ the new shard onto the lowest-loaded node in that AZ.
+    pub(crate) fn get_az_for_new_tenant(&self) -> Option<AvailabilityZone> {
+        if self.nodes.is_empty() {
+            return None;
+        }
+
+        let mut scores_by_az = HashMap::new();
+        for (node_id, node) in &self.nodes {
+            let az_scores = scores_by_az.entry(&node.az).or_insert_with(Vec::new);
+            let score = match &node.may_schedule {
+                MaySchedule::Yes(utilization) => utilization.score(),
+                MaySchedule::No => PageserverUtilization::full().score(),
+            };
+            az_scores.push((node_id, node, score));
+        }
+
+        // Sort by utilization.  Also include the node ID to break ties.
+        for scores in scores_by_az.values_mut() {
+            scores.sort_by_key(|i| (i.2, i.0));
+        }
+
+        let mut median_by_az = scores_by_az
+            .iter()
+            .map(|(az, nodes)| (*az, nodes.get(nodes.len() / 2).unwrap().2))
+            .collect::<Vec<_>>();
+        // Sort by utilization.  Also include the AZ to break ties.
+        median_by_az.sort_by_key(|i| (i.1, i.0));
+
+        // Return the AZ with the lowest median utilization
+        Some(median_by_az.first().unwrap().0.clone())
+    }
+
     /// Unit test access to internal state
     #[cfg(test)]
     pub(crate) fn get_node_shard_count(&self, node_id: NodeId) -> usize {
@@ -1086,5 +1130,54 @@ mod tests {
         for mut intent in scheduled_intents {
             intent.clear(&mut scheduler);
         }
+    }
+
+    #[test]
+    fn az_scheduling_for_new_tenant() {
+        let az_a_tag = AvailabilityZone("az-a".to_string());
+        let az_b_tag = AvailabilityZone("az-b".to_string());
+        let nodes = test_utils::make_test_nodes(
+            6,
+            &[
+                az_a_tag.clone(),
+                az_a_tag.clone(),
+                az_a_tag.clone(),
+                az_b_tag.clone(),
+                az_b_tag.clone(),
+                az_b_tag.clone(),
+            ],
+        );
+
+        let mut scheduler = Scheduler::new(nodes.values());
+
+        /// Force the utilization of a node in Scheduler's state to a particular
+        /// number of bytes used.
+        fn set_utilization(scheduler: &mut Scheduler, node_id: NodeId, shard_count: u32) {
+            let mut node = Node::new(
+                node_id,
+                "".to_string(),
+                0,
+                "".to_string(),
+                0,
+                scheduler.nodes.get(&node_id).unwrap().az.clone(),
+            );
+            node.set_availability(NodeAvailability::Active(test_utilization::simple(
+                shard_count,
+                0,
+            )));
+            scheduler.node_upsert(&node);
+        }
+
+        // Initial empty state.  Scores are tied, scheduler prefers lower AZ ID.
+        assert_eq!(scheduler.get_az_for_new_tenant(), Some(az_a_tag.clone()));
+
+        // Put some utilization on one node in AZ A: this should change nothing, as the median hasn't changed
+        set_utilization(&mut scheduler, NodeId(1), 1000000);
+        assert_eq!(scheduler.get_az_for_new_tenant(), Some(az_a_tag.clone()));
+
+        // Put some utilization on a second node in AZ A: now the median has changed, so the scheduler
+        // should prefer the other AZ.
+        set_utilization(&mut scheduler, NodeId(2), 1000000);
+        assert_eq!(scheduler.get_az_for_new_tenant(), Some(az_b_tag.clone()));
     }
 }

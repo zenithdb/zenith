@@ -64,7 +64,7 @@ async fn main_impl(args: Args) -> anyhow::Result<()> {
     println!("operating on timeline {}", timeline);
 
     mgmt_api_client
-        .tenant_config(&TenantConfigRequest {
+        .set_tenant_config(&TenantConfigRequest {
             tenant_id: timeline.tenant_id,
             config: TenantConfig::default(),
         })

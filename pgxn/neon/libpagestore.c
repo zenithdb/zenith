@@ -22,6 +22,7 @@
 #include "libpq/pqformat.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "portability/instr_time.h"
 #include "postmaster/interrupt.h"
 #include "storage/buf_internals.h"
 #include "storage/ipc.h"
@@ -118,6 +119,11 @@ typedef struct
 	 */
 	PSConnectionState state;
 	PGconn		   *conn;
+
+	/* request / response counters for debugging */
+	uint64			nrequests_sent;
+	uint64			nresponses_received;
+
 	/*---
 	 * WaitEventSet containing:
 	 *	- WL_SOCKET_READABLE on 'conn'
@@ -550,6 +556,9 @@ pageserver_connect(shardno_t shard_no, int elevel)
 
 		switch (neon_protocol_version)
 		{
+		case 3:
+			pagestream_query = psprintf("pagestream_v3 %s %s", neon_tenant, neon_timeline);
+			break;
 		case 2:
 			pagestream_query = psprintf("pagestream_v2 %s %s", neon_tenant, neon_timeline);
 			break;
@@ -628,6 +637,8 @@ pageserver_connect(shardno_t shard_no, int elevel)
 		}
 
 		shard->state = PS_Connected;
+		shard->nrequests_sent = 0;
+		shard->nresponses_received = 0;
 	}
 	/* FALLTHROUGH */
 	case PS_Connected:
@@ -656,6 +667,27 @@ call_PQgetCopyData(shardno_t shard_no, char **buffer)
 	int			ret;
 	PageServer *shard = &page_servers[shard_no];
 	PGconn	   *pageserver_conn = shard->conn;
+	instr_time	now,
+				start_ts,
+				since_start,
+				last_log_ts,
+				since_last_log;
+	bool		logged = false;
+
+	/*
+	 * As a debugging aid, if we don't get a response for a long time, print a
+	 * log message.
+	 *
+	 * 10 s is a very generous threshold, normally we expect a response in a
+	 * few milliseconds. We have metrics to track latencies in normal ranges,
+	 * but in the cases that take exceptionally long, it's useful to log the
+	 * exact timestamps.
+	 */
+#define LOG_INTERVAL_MS		INT64CONST(10 * 1000)
+
+	INSTR_TIME_SET_CURRENT(now);
+	start_ts = last_log_ts = now;
+	INSTR_TIME_SET_ZERO(since_last_log);
 
 retry:
 	ret = PQgetCopyData(pageserver_conn, buffer, 1 /* async */ );
@@ -663,9 +695,12 @@ retry:
 	if (ret == 0)
 	{
 		WaitEvent	event;
+		long		timeout;
+
+		timeout = Max(0, LOG_INTERVAL_MS - INSTR_TIME_GET_MILLISEC(since_last_log));
 
 		/* Sleep until there's something to do */
-		(void) WaitEventSetWait(shard->wes_read, -1L, &event, 1,
+		(void) WaitEventSetWait(shard->wes_read, timeout, &event, 1,
 								WAIT_EVENT_NEON_PS_READ);
 		ResetLatch(MyLatch);
 
@@ -684,7 +719,38 @@ retry:
 			}
 		}
 
+		/*
+		 * Print a message to the log if a long time has passed with no
+		 * response.
+		 */
+		INSTR_TIME_SET_CURRENT(now);
+		since_last_log = now;
+		INSTR_TIME_SUBTRACT(since_last_log, last_log_ts);
+		if (INSTR_TIME_GET_MILLISEC(since_last_log) >= LOG_INTERVAL_MS)
+		{
+			since_start = now;
+			INSTR_TIME_SUBTRACT(since_start, start_ts);
+			neon_shard_log(shard_no, LOG, "no response received from pageserver for %0.3f s, still waiting (sent " UINT64_FORMAT " requests, received " UINT64_FORMAT " responses)",
+						   INSTR_TIME_GET_DOUBLE(since_start),
+						   shard->nrequests_sent, shard->nresponses_received);
+			last_log_ts = now;
+			logged = true;
+		}
+
 		goto retry;
+	}
+
+	/*
+	 * If we logged earlier that the response is taking a long time, log
+	 * another message when the response is finally received.
+	 */
+	if (logged)
+	{
+		INSTR_TIME_SET_CURRENT(now);
+		since_start = now;
+		INSTR_TIME_SUBTRACT(since_start, start_ts);
+		neon_shard_log(shard_no, LOG, "received response from pageserver after %0.3f s",
+					   INSTR_TIME_GET_DOUBLE(since_start));
 	}
 
 	return ret;
@@ -764,7 +830,6 @@ pageserver_send(shardno_t shard_no, NeonRequest *request)
 	{
 		while (!pageserver_connect(shard_no, shard->n_reconnect_attempts < max_reconnect_attempts ? LOG : ERROR))
 		{
-			HandleMainLoopInterrupts();
 			shard->n_reconnect_attempts += 1;
 		}
 		shard->n_reconnect_attempts = 0;
@@ -786,6 +851,7 @@ pageserver_send(shardno_t shard_no, NeonRequest *request)
 	 * PGRES_POLLING_WRITING state. It's kinda dirty to disconnect at this
 	 * point, but on the grand scheme of things it's only a small issue.
 	 */
+	shard->nrequests_sent++;
 	if (PQputCopyData(pageserver_conn, req_buff.data, req_buff.len) <= 0)
 	{
 		char	   *msg = pchomp(PQerrorMessage(pageserver_conn));
@@ -878,6 +944,7 @@ pageserver_receive(shardno_t shard_no)
 		neon_shard_log(shard_no, ERROR, "pageserver_receive disconnect: unexpected PQgetCopyData return value: %d", rc);
 	}
 
+	shard->nresponses_received++;
 	return (NeonResponse *) resp;
 }
 
@@ -1071,9 +1138,9 @@ pg_init_libpagestore(void)
 							"Version of compute<->page server protocol",
 							NULL,
 							&neon_protocol_version,
-							2, /* use protocol version 2 */
-							2, /* min */
-							2, /* max */
+							2,	/* use protocol version 2 */
+							2,	/* min */
+							3,	/* max */
 							PGC_SU_BACKEND,
 							0,	/* no flags required */
 							NULL, NULL, NULL);

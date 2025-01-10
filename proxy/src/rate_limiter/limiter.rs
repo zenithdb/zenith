@@ -12,6 +12,7 @@ use rand::{Rng, SeedableRng};
 use tokio::time::{Duration, Instant};
 use tracing::info;
 
+use crate::ext::LockExt;
 use crate::intern::EndpointIdInt;
 
 pub struct GlobalRateLimiter {
@@ -246,12 +247,13 @@ impl<K: Hash + Eq, R: Rng, S: BuildHasher + Clone> BucketRateLimiter<K, R, S> {
         let n = self.map.shards().len();
         // this lock is ok as the periodic cycle of do_gc makes this very unlikely to collide
         // (impossible, infact, unless we have 2048 threads)
-        let shard = self.rand.lock().unwrap().gen_range(0..n);
+        let shard = self.rand.lock_propagate_poison().gen_range(0..n);
         self.map.shards()[shard].write().clear();
     }
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use std::hash::BuildHasherDefault;
     use std::time::Duration;

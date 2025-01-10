@@ -187,19 +187,22 @@ impl<C: ClientInnerExt> EndpointConnPool<C> {
 
     pub(crate) fn put(pool: &RwLock<Self>, conn_info: &ConnInfo, client: ClientInnerCommon<C>) {
         let conn_id = client.get_conn_id();
-        let pool_name = pool.read().get_name().to_string();
+        let (max_conn, conn_count, pool_name) = {
+            let pool = pool.read();
+            (
+                pool.global_pool_size_max_conns,
+                pool.global_connections_count
+                    .load(atomic::Ordering::Relaxed),
+                pool.get_name().to_string(),
+            )
+        };
+
         if client.inner.is_closed() {
             info!(%conn_id, "{}: throwing away connection '{conn_info}' because connection is closed", pool_name);
             return;
         }
 
-        let global_max_conn = pool.read().global_pool_size_max_conns;
-        if pool
-            .read()
-            .global_connections_count
-            .load(atomic::Ordering::Relaxed)
-            >= global_max_conn
-        {
+        if conn_count >= max_conn {
             info!(%conn_id, "{}: throwing away connection '{conn_info}' because pool is full", pool_name);
             return;
         }
@@ -633,35 +636,29 @@ impl<C: ClientInnerExt> Client<C> {
     }
 
     pub(crate) fn metrics(&self) -> Arc<MetricCounter> {
-        let aux = &self.inner.as_ref().unwrap().aux;
+        let aux = &self
+            .inner
+            .as_ref()
+            .expect("client inner should not be removed")
+            .aux;
         USAGE_METRICS.register(Ids {
             endpoint_id: aux.endpoint_id,
             branch_id: aux.branch_id,
         })
     }
+}
 
-    pub(crate) fn do_drop(&mut self) -> Option<impl FnOnce() + use<C>> {
+impl<C: ClientInnerExt> Drop for Client<C> {
+    fn drop(&mut self) {
         let conn_info = self.conn_info.clone();
         let client = self
             .inner
             .take()
             .expect("client inner should not be removed");
         if let Some(conn_pool) = std::mem::take(&mut self.pool).upgrade() {
-            let current_span = self.span.clone();
+            let _current_span = self.span.enter();
             // return connection to the pool
-            return Some(move || {
-                let _span = current_span.enter();
-                EndpointConnPool::put(&conn_pool, &conn_info, client);
-            });
-        }
-        None
-    }
-}
-
-impl<C: ClientInnerExt> Drop for Client<C> {
-    fn drop(&mut self) {
-        if let Some(drop) = self.do_drop() {
-            tokio::task::spawn_blocking(drop);
+            EndpointConnPool::put(&conn_pool, &conn_info, client);
         }
     }
 }

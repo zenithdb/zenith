@@ -70,6 +70,9 @@ class MockS3Server:
     def secret_key(self) -> str:
         return "test"
 
+    def session_token(self) -> str:
+        return "test"
+
     def kill(self):
         self.server.stop()
 
@@ -161,6 +164,7 @@ class S3Storage:
     bucket_region: str
     access_key: str | None
     secret_key: str | None
+    session_token: str | None
     aws_profile: str | None
     prefix_in_bucket: str
     client: S3Client
@@ -181,13 +185,18 @@ class S3Storage:
             if home is not None:
                 env["HOME"] = home
             return env
-        if self.access_key is not None and self.secret_key is not None:
+        if (
+            self.access_key is not None
+            and self.secret_key is not None
+            and self.session_token is not None
+        ):
             return {
                 "AWS_ACCESS_KEY_ID": self.access_key,
                 "AWS_SECRET_ACCESS_KEY": self.secret_key,
+                "AWS_SESSION_TOKEN": self.session_token,
             }
         raise RuntimeError(
-            "Either AWS_PROFILE or (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) have to be set for S3Storage"
+            "Either AWS_PROFILE or (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN) have to be set for S3Storage"
         )
 
     def to_string(self) -> str:
@@ -352,6 +361,7 @@ class RemoteStorageKind(StrEnum):
             mock_region = mock_s3_server.region()
 
             access_key, secret_key = mock_s3_server.access_key(), mock_s3_server.secret_key()
+            session_token = mock_s3_server.session_token()
 
             client = boto3.client(
                 "s3",
@@ -359,6 +369,7 @@ class RemoteStorageKind(StrEnum):
                 region_name=mock_region,
                 aws_access_key_id=access_key,
                 aws_secret_access_key=secret_key,
+                aws_session_token=session_token,
             )
 
             bucket_name = to_bucket_name(user, test_name)
@@ -372,6 +383,7 @@ class RemoteStorageKind(StrEnum):
                 bucket_region=mock_region,
                 access_key=access_key,
                 secret_key=secret_key,
+                session_token=session_token,
                 aws_profile=None,
                 prefix_in_bucket="",
                 client=client,
@@ -383,9 +395,10 @@ class RemoteStorageKind(StrEnum):
 
         env_access_key = os.getenv("AWS_ACCESS_KEY_ID")
         env_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+        env_access_token = os.getenv("AWS_SESSION_TOKEN")
         env_profile = os.getenv("AWS_PROFILE")
         assert (
-            env_access_key and env_secret_key
+            env_access_key and env_secret_key and env_access_token
         ) or env_profile, "need to specify either access key and secret access key or profile"
 
         bucket_name = bucket_name or os.getenv("REMOTE_STORAGE_S3_BUCKET")
@@ -398,6 +411,9 @@ class RemoteStorageKind(StrEnum):
         client = boto3.client(
             "s3",
             region_name=bucket_region,
+            aws_access_key_id=env_access_key,
+            aws_secret_access_key=env_secret_key,
+            aws_session_token=env_access_token,
         )
 
         return S3Storage(
@@ -405,6 +421,7 @@ class RemoteStorageKind(StrEnum):
             bucket_region=bucket_region,
             access_key=env_access_key,
             secret_key=env_secret_key,
+            session_token=env_access_token,
             aws_profile=env_profile,
             prefix_in_bucket=prefix_in_bucket,
             client=client,

@@ -3,6 +3,9 @@ EXTENDS TLC, ProposerAcceptorStatic
 
 \* Augments the spec with model checking constraints.
 
+\* Note that MCProposerAcceptorReconfig duplicates it and might need to
+\* be updated as well.
+
 \* For model checking.
 CONSTANTS
   max_entries, \* model constraint: max log entries acceptor/proposer can hold

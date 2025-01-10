@@ -392,8 +392,8 @@ impl LayerMap {
         image_layer: Option<Arc<PersistentLayerDesc>>,
         end_lsn: Lsn,
     ) -> Option<SearchResult> {
-        assert!(delta_layer.as_ref().map_or(true, |l| l.is_delta()));
-        assert!(image_layer.as_ref().map_or(true, |l| !l.is_delta()));
+        assert!(delta_layer.as_ref().is_none_or(|l| l.is_delta()));
+        assert!(image_layer.as_ref().is_none_or(|l| !l.is_delta()));
 
         match (delta_layer, image_layer) {
             (None, None) => None,

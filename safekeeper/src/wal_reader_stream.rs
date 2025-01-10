@@ -4,12 +4,12 @@ use async_stream::try_stream;
 use bytes::Bytes;
 use futures::Stream;
 use postgres_backend::CopyStreamHandlerEnd;
+use safekeeper_api::Term;
 use std::time::Duration;
 use tokio::time::timeout;
 use utils::lsn::Lsn;
 
 use crate::{
-    safekeeper::Term,
     send_wal::{EndWatch, WalSenderGuard},
     timeline::WalResidentTimeline,
 };

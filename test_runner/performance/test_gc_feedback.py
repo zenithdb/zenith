@@ -22,7 +22,7 @@ def gc_feedback_impl(neon_env_builder: NeonEnvBuilder, zenbenchmark: NeonBenchma
             "checkpoint_distance": f"{1024 ** 2}",
             "compaction_target_size": f"{1024 ** 2}",
             # set PITR interval to be small, so we can do GC
-            "pitr_interval": "60 s",
+            "pitr_interval": "10 s",
             # "compaction_threshold": "3",
             # "image_creation_threshold": "2",
         }
@@ -32,6 +32,7 @@ def gc_feedback_impl(neon_env_builder: NeonEnvBuilder, zenbenchmark: NeonBenchma
     n_steps = 10
     n_update_iters = 100
     step_size = 10000
+    branch_created = 0
     with endpoint.cursor() as cur:
         cur.execute("SET statement_timeout='1000s'")
         cur.execute(
@@ -66,6 +67,7 @@ def gc_feedback_impl(neon_env_builder: NeonEnvBuilder, zenbenchmark: NeonBenchma
         if mode == "with_snapshots":
             if step == n_steps / 2:
                 env.create_branch("child")
+                branch_created += 1
 
     max_num_of_deltas_above_image = 0
     max_total_num_of_deltas = 0
@@ -141,6 +143,15 @@ def gc_feedback_impl(neon_env_builder: NeonEnvBuilder, zenbenchmark: NeonBenchma
     log.info(f"Writing layer map to {layer_map_path}")
     with layer_map_path.open("w") as f:
         f.write(json.dumps(client.timeline_layer_map_info(tenant_id, timeline_id)))
+
+    # We should have collected all garbage
+    if mode == "normal":
+        # in theory we should get physical size ~= logical size, but given that gc interval is 10s,
+        # and the layer has indexes that might contribute to the fluctuation, we allow a small margin
+        # of 1 here, and the end ratio we are asserting is 1 (margin) + 1 (expected) = 2.
+        assert physical_size / logical_size < 2
+    elif mode == "with_snapshots":
+        assert physical_size / logical_size < (2 + branch_created)
 
 
 @pytest.mark.timeout(10000)

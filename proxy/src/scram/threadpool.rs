@@ -33,14 +33,11 @@ thread_local! {
 }
 
 impl ThreadPool {
-    pub fn new(n_workers: u8) -> Arc<Self> {
+    pub fn new(mut n_workers: u8) -> Arc<Self> {
         // rayon would be nice here, but yielding in rayon does not work well afaict.
 
         if n_workers == 0 {
-            return Arc::new(Self {
-                runtime: None,
-                metrics: Arc::new(ThreadPoolMetrics::new(n_workers as usize)),
-            });
+            n_workers = 1;
         }
 
         Arc::new_cyclic(|pool| {
@@ -66,7 +63,7 @@ impl ThreadPool {
                     });
                 })
                 .build()
-                .unwrap();
+                .expect("password threadpool runtime should be configured correctly");
 
             Self {
                 runtime: Some(runtime),
@@ -79,7 +76,7 @@ impl ThreadPool {
         JobHandle(
             self.runtime
                 .as_ref()
-                .unwrap()
+                .expect("runtime is always set")
                 .spawn(JobSpec { pbkdf2, endpoint }),
         )
     }
@@ -87,7 +84,10 @@ impl ThreadPool {
 
 impl Drop for ThreadPool {
     fn drop(&mut self) {
-        self.runtime.take().unwrap().shutdown_background();
+        self.runtime
+            .take()
+            .expect("runtime is always set")
+            .shutdown_background();
     }
 }
 

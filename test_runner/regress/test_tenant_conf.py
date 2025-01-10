@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+import pytest
 from fixtures.common_types import Lsn
 from fixtures.neon_fixtures import (
     NeonEnvBuilder,
 )
 from fixtures.pageserver.utils import assert_tenant_state, wait_for_upload
 from fixtures.remote_storage import LocalFsStorage, RemoteStorageKind
-from fixtures.utils import wait_until
+from fixtures.utils import run_only_on_default_postgres, wait_until
 from fixtures.workload import Workload
 
 if TYPE_CHECKING:
@@ -330,3 +331,83 @@ def test_live_reconfig_get_evictions_low_residence_duration_metric_threshold(
     metric = get_metric()
     assert int(metric.labels["low_threshold_secs"]) == 24 * 60 * 60, "label resets to default"
     assert int(metric.value) == 0, "value resets to default"
+
+
+@run_only_on_default_postgres("Test does not start a compute")
+@pytest.mark.parametrize("ps_managed_by", ["storcon", "cplane"])
+def test_tenant_config_patch(neon_env_builder: NeonEnvBuilder, ps_managed_by: str):
+    """
+    Test tenant config patching (i.e. additive updates)
+
+    The flow is different for storage controller and cplane managed pageserver.
+    1. Storcon managed: /v1/tenant/config request lands on storcon, which generates
+    location_config calls containing the update to the pageserver
+    2. Cplane managed: /v1/tenant/config is called directly on the pageserver
+    """
+
+    def assert_tenant_conf_semantically_equal(lhs, rhs):
+        """
+        Storcon returns None for fields that are not set while the pageserver does not.
+        Compare two tenant's config overrides semantically, by dropping the None values.
+        """
+        lhs = {k: v for k, v in lhs.items() if v is not None}
+        rhs = {k: v for k, v in rhs.items() if v is not None}
+
+        assert lhs == rhs
+
+    env = neon_env_builder.init_start()
+
+    if ps_managed_by == "storcon":
+        api = env.storage_controller.pageserver_api()
+    elif ps_managed_by == "cplane":
+        # Disallow storcon from sending location_configs to the pageserver.
+        # These would overwrite the manually set tenant configs.
+        env.storage_controller.reconcile_until_idle()
+        env.storage_controller.tenant_policy_update(env.initial_tenant, {"scheduling": "Stop"})
+        env.storage_controller.allowed_errors.append(".*Scheduling is disabled by policy Stop.*")
+
+        api = env.pageserver.http_client()
+    else:
+        raise Exception(f"Unexpected value of ps_managed_by param: {ps_managed_by}")
+
+    crnt_tenant_conf = api.tenant_config(env.initial_tenant).tenant_specific_overrides
+
+    patch: dict[str, Any | None] = {
+        "gc_period": "3h",
+        "wal_receiver_protocol_override": {
+            "type": "interpreted",
+            "args": {"format": "bincode", "compression": {"zstd": {"level": 1}}},
+        },
+    }
+    api.patch_tenant_config(env.initial_tenant, patch)
+    tenant_conf_after_patch = api.tenant_config(env.initial_tenant).tenant_specific_overrides
+    if ps_managed_by == "storcon":
+        # Check that the config was propagated to the PS.
+        overrides_on_ps = (
+            env.pageserver.http_client().tenant_config(env.initial_tenant).tenant_specific_overrides
+        )
+        assert_tenant_conf_semantically_equal(overrides_on_ps, tenant_conf_after_patch)
+    assert_tenant_conf_semantically_equal(tenant_conf_after_patch, crnt_tenant_conf | patch)
+    crnt_tenant_conf = tenant_conf_after_patch
+
+    patch = {"gc_period": "5h", "wal_receiver_protocol_override": None}
+    api.patch_tenant_config(env.initial_tenant, patch)
+    tenant_conf_after_patch = api.tenant_config(env.initial_tenant).tenant_specific_overrides
+    if ps_managed_by == "storcon":
+        overrides_on_ps = (
+            env.pageserver.http_client().tenant_config(env.initial_tenant).tenant_specific_overrides
+        )
+        assert_tenant_conf_semantically_equal(overrides_on_ps, tenant_conf_after_patch)
+    assert_tenant_conf_semantically_equal(tenant_conf_after_patch, crnt_tenant_conf | patch)
+    crnt_tenant_conf = tenant_conf_after_patch
+
+    put = {"pitr_interval": "1m 1s"}
+    api.set_tenant_config(env.initial_tenant, put)
+    tenant_conf_after_put = api.tenant_config(env.initial_tenant).tenant_specific_overrides
+    if ps_managed_by == "storcon":
+        overrides_on_ps = (
+            env.pageserver.http_client().tenant_config(env.initial_tenant).tenant_specific_overrides
+        )
+        assert_tenant_conf_semantically_equal(overrides_on_ps, tenant_conf_after_put)
+    assert_tenant_conf_semantically_equal(tenant_conf_after_put, put)
+    crnt_tenant_conf = tenant_conf_after_put

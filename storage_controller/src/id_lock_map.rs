@@ -112,6 +112,14 @@ where
         }
     }
 
+    pub(crate) fn try_exclusive(&self, key: T, operation: I) -> Option<TracingExclusiveGuard<I>> {
+        let mut locked = self.entities.lock().unwrap();
+        let entry = locked.entry(key).or_default().clone();
+        let mut guard = TracingExclusiveGuard::new(entry.try_write_owned().ok()?);
+        *guard.guard = Some(operation);
+        Some(guard)
+    }
+
     /// Rather than building a lock guard that re-takes the [`Self::entities`] lock, we just do
     /// periodic housekeeping to avoid the map growing indefinitely
     pub(crate) fn housekeeping(&self) {

@@ -9,9 +9,7 @@ use crate::metrics::{
 };
 use crate::safekeeper::AcceptorProposerMessage;
 use crate::safekeeper::ProposerAcceptorMessage;
-use crate::safekeeper::ServerInfo;
 use crate::timeline::WalResidentTimeline;
-use crate::wal_service::ConnectionId;
 use crate::GlobalTimelines;
 use anyhow::{anyhow, Context};
 use bytes::BytesMut;
@@ -23,8 +21,8 @@ use postgres_backend::PostgresBackend;
 use postgres_backend::PostgresBackendReader;
 use postgres_backend::QueryError;
 use pq_proto::BeMessage;
-use serde::Deserialize;
-use serde::Serialize;
+use safekeeper_api::models::{ConnectionId, WalReceiverState, WalReceiverStatus};
+use safekeeper_api::ServerInfo;
 use std::future;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -171,21 +169,6 @@ impl WalReceiversShared {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalReceiverState {
-    /// None means it is recovery initiated by us (this safekeeper).
-    pub conn_id: Option<ConnectionId>,
-    pub status: WalReceiverStatus,
-}
-
-/// Walreceiver status. Currently only whether it passed voting stage and
-/// started receiving the stream, but it is easy to add more if needed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum WalReceiverStatus {
-    Voting,
-    Streaming,
-}
-
 /// Scope guard to access slot in WalReceivers registry and unregister from
 /// it in Drop.
 pub struct WalReceiverGuard {
@@ -267,6 +250,7 @@ impl SafekeeperPostgresHandler {
             pgb_reader: &mut pgb_reader,
             peer_addr,
             acceptor_handle: &mut acceptor_handle,
+            global_timelines: self.global_timelines.clone(),
         };
 
         // Read first message and create timeline if needed.
@@ -331,9 +315,10 @@ struct NetworkReader<'a, IO> {
     // WalAcceptor is spawned when we learn server info from walproposer and
     // create timeline; handle is put here.
     acceptor_handle: &'a mut Option<JoinHandle<anyhow::Result<()>>>,
+    global_timelines: Arc<GlobalTimelines>,
 }
 
-impl<'a, IO: AsyncRead + AsyncWrite + Unpin> NetworkReader<'a, IO> {
+impl<IO: AsyncRead + AsyncWrite + Unpin> NetworkReader<'_, IO> {
     async fn read_first_message(
         &mut self,
     ) -> Result<(WalResidentTimeline, ProposerAcceptorMessage), CopyStreamHandlerEnd> {
@@ -350,10 +335,11 @@ impl<'a, IO: AsyncRead + AsyncWrite + Unpin> NetworkReader<'a, IO> {
                     system_id: greeting.system_id,
                     wal_seg_size: greeting.wal_seg_size,
                 };
-                let tli =
-                    GlobalTimelines::create(self.ttid, server_info, Lsn::INVALID, Lsn::INVALID)
-                        .await
-                        .context("create timeline")?;
+                let tli = self
+                    .global_timelines
+                    .create(self.ttid, server_info, Lsn::INVALID, Lsn::INVALID)
+                    .await
+                    .context("create timeline")?;
                 tli.wal_residence_guard().await?
             }
             _ => {

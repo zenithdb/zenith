@@ -15,12 +15,13 @@ use desim::{
 };
 use http::Uri;
 use safekeeper::{
-    safekeeper::{ProposerAcceptorMessage, SafeKeeper, ServerInfo, UNKNOWN_SERVER_VERSION},
+    safekeeper::{ProposerAcceptorMessage, SafeKeeper, UNKNOWN_SERVER_VERSION},
     state::{TimelinePersistentState, TimelineState},
     timeline::TimelineError,
     wal_storage::Storage,
     SafeKeeperConf,
 };
+use safekeeper_api::ServerInfo;
 use tracing::{debug, info_span, warn};
 use utils::{
     id::{NodeId, TenantId, TenantTimelineId, TimelineId},

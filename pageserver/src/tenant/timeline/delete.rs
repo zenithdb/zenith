@@ -194,7 +194,9 @@ impl DeleteTimelineFlow {
         super::debug_assert_current_span_has_tenant_and_timeline_id();
 
         let allow_offloaded_children = false;
-        let (timeline, mut guard) = Self::prepare(tenant, timeline_id, allow_offloaded_children)?;
+        let set_stopping = true;
+        let (timeline, mut guard) =
+            Self::prepare(tenant, timeline_id, allow_offloaded_children, set_stopping)?;
 
         guard.mark_in_progress()?;
 
@@ -334,6 +336,7 @@ impl DeleteTimelineFlow {
         tenant: &Tenant,
         timeline_id: TimelineId,
         allow_offloaded_children: bool,
+        set_stopping: bool,
     ) -> Result<(TimelineOrOffloaded, DeletionGuard), DeleteTimelineError> {
         // Note the interaction between this guard and deletion guard.
         // Here we attempt to lock deletion guard when we're holding a lock on timelines.
@@ -389,8 +392,10 @@ impl DeleteTimelineFlow {
             }
         };
 
-        if let TimelineOrOffloaded::Timeline(timeline) = &timeline {
-            timeline.set_state(TimelineState::Stopping);
+        if set_stopping {
+            if let TimelineOrOffloaded::Timeline(timeline) = &timeline {
+                timeline.set_state(TimelineState::Stopping);
+            }
         }
 
         Ok((timeline, delete_lock_guard))

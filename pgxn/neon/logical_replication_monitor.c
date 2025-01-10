@@ -131,8 +131,8 @@ get_snapshots_cutoff_lsn(void)
 	{
 		cutoff = snapshot_descriptors[logical_replication_max_snap_files - 1].lsn;
 		elog(LOG,
-			"ls_monitor: dropping logical slots with restart_lsn lower %X/%X, found %zu snapshot files, limit is %d",
-			LSN_FORMAT_ARGS(cutoff), snapshot_index, logical_replication_max_snap_files);
+			"ls_monitor: number of snapshot files, %zu, is larger than limit of %d",
+			snapshot_index, logical_replication_max_snap_files);
 	}
 
 	/* Is the size of the logical snapshots directory larger than specified?
@@ -162,8 +162,8 @@ get_snapshots_cutoff_lsn(void)
 		}
 
 		if (cutoff != original)
-			elog(LOG, "ls_monitor: dropping logical slots with restart_lsn lower than %X/%X, " SNAPDIR " is larger than %d KB",
-					LSN_FORMAT_ARGS(cutoff), logical_replication_max_logicalsnapdir_size);
+			elog(LOG, "ls_monitor: " SNAPDIR " is larger than %d KB",
+				 logical_replication_max_logicalsnapdir_size);
 	}
 
 	pfree(snapshot_descriptors);
@@ -214,9 +214,13 @@ InitLogicalReplicationMonitor(void)
 }
 
 /*
- * Unused logical replication slots pins WAL and prevents deletion of snapshots.
+ * Unused logical replication slots pins WAL and prevent deletion of snapshots.
  * WAL bloat is guarded by max_slot_wal_keep_size; this bgw removes slots which
- * need too many .snap files.
+ * need too many .snap files. These files are stored as AUX files, which are a
+ * pageserver mechanism for storing non-relation data. AUX files are shipped in
+ * in the basebackup which is requested by compute_ctl before Postgres starts.
+ * The larger the time to retrieve the basebackup, the more likely it is the
+ * compute will be killed by the control plane due to a timeout.
  */
 void
 LogicalSlotsMonitorMain(Datum main_arg)
@@ -239,10 +243,7 @@ LogicalSlotsMonitorMain(Datum main_arg)
 			ProcessConfigFile(PGC_SIGHUP);
 		}
 
-		/*
-		 * If there are too many .snap files, just drop all logical slots to
-		 * prevent aux files bloat.
-		 */
+		/* Get the cutoff LSN */
 		cutoff_lsn = get_snapshots_cutoff_lsn();
 		if (cutoff_lsn > 0)
 		{
@@ -252,31 +253,37 @@ LogicalSlotsMonitorMain(Datum main_arg)
 				ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 				XLogRecPtr	restart_lsn;
 
-				/* find the name */
 				LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
-				/* Consider only logical repliction slots */
+
+				/* Consider only active logical repliction slots */
 				if (!s->in_use || !SlotIsLogical(s))
 				{
 					LWLockRelease(ReplicationSlotControlLock);
 					continue;
 				}
 
-				/* do we need to drop it? */
+				/*
+				 * Retrieve the restart LSN to determine if we need to drop the
+				 * slot
+				 */
 				SpinLockAcquire(&s->mutex);
 				restart_lsn = s->data.restart_lsn;
 				SpinLockRelease(&s->mutex);
+
+				strlcpy(slot_name, s->data.name.data, sizeof(slot_name));
+				LWLockRelease(ReplicationSlotControlLock);
+
 				if (restart_lsn >= cutoff_lsn)
 				{
-					LWLockRelease(ReplicationSlotControlLock);
+					elog(LOG, "ls_monitor: not dropping replication slot %s because restart LSN %X/%X is greater than cutoff LSN %X/%X",
+						 slot_name, LSN_FORMAT_ARGS(restart_lsn), LSN_FORMAT_ARGS(cutoff_lsn));
 					continue;
 				}
 
-				strlcpy(slot_name, s->data.name.data, NAMEDATALEN);
-				elog(LOG, "ls_monitor: dropping slot %s with restart_lsn %X/%X below horizon %X/%X",
+				elog(LOG, "ls_monitor: dropping replication slot %s because restart LSN %X/%X lower than cutoff LSN %X/%X",
 					 slot_name, LSN_FORMAT_ARGS(restart_lsn), LSN_FORMAT_ARGS(cutoff_lsn));
-				LWLockRelease(ReplicationSlotControlLock);
 
-				/* now try to drop it, killing owner before if any */
+				/* now try to drop it, killing owner before, if any */
 				for (;;)
 				{
 					pid_t		active_pid;
@@ -288,9 +295,9 @@ LogicalSlotsMonitorMain(Datum main_arg)
 					if (active_pid == 0)
 					{
 						/*
-						 * Slot is releasted, try to drop it. Though of course
+						 * Slot is released, try to drop it. Though of course,
 						 * it could have been reacquired, so drop can ERROR
-						 * out. Similarly it could have been dropped in the
+						 * out. Similarly, it could have been dropped in the
 						 * meanwhile.
 						 *
 						 * In principle we could remove pg_try/pg_catch, that
@@ -300,14 +307,14 @@ LogicalSlotsMonitorMain(Datum main_arg)
 						PG_TRY();
 						{
 							ReplicationSlotDrop(slot_name, true);
-							elog(LOG, "ls_monitor: slot %s dropped", slot_name);
+							elog(LOG, "ls_monitor: replication slot %s dropped", slot_name);
 						}
 						PG_CATCH();
 						{
 							/* log ERROR and reset elog stack */
 							EmitErrorReport();
 							FlushErrorState();
-							elog(LOG, "ls_monitor: failed to drop slot %s", slot_name);
+							elog(LOG, "ls_monitor: failed to drop replication slot %s", slot_name);
 						}
 						PG_END_TRY();
 						break;
@@ -315,7 +322,7 @@ LogicalSlotsMonitorMain(Datum main_arg)
 					else
 					{
 						/* kill the owner and wait for release */
-						elog(LOG, "ls_monitor: killing slot %s owner %d", slot_name, active_pid);
+						elog(LOG, "ls_monitor: killing replication slot %s owner %d", slot_name, active_pid);
 						(void) kill(active_pid, SIGTERM);
 						/* We shouldn't get stuck, but to be safe add timeout. */
 						ConditionVariableTimedSleep(&s->active_cv, 1000, WAIT_EVENT_REPLICATION_SLOT_DROP);

@@ -30,6 +30,20 @@ diesel::table! {
 }
 
 diesel::table! {
+    safekeepers (id) {
+        id -> Int8,
+        region_id -> Text,
+        version -> Int8,
+        host -> Text,
+        port -> Int4,
+        active -> Bool,
+        http_port -> Int4,
+        availability_zone_id -> Text,
+        scheduling_policy -> Varchar,
+    }
+}
+
+diesel::table! {
     tenant_shards (tenant_id, shard_number, shard_count) {
         tenant_id -> Varchar,
         shard_number -> Int4,
@@ -45,18 +59,10 @@ diesel::table! {
     }
 }
 
-diesel::allow_tables_to_appear_in_same_query!(controllers, metadata_health, nodes, tenant_shards,);
-
-diesel::table! {
-    safekeepers {
-        id -> Int8,
-        region_id -> Text,
-        version -> Int8,
-        instance_id -> Text,
-        host -> Text,
-        port -> Int4,
-        active -> Bool,
-        http_port -> Int4,
-        availability_zone_id -> Text,
-    }
-}
+diesel::allow_tables_to_appear_in_same_query!(
+    controllers,
+    metadata_health,
+    nodes,
+    safekeepers,
+    tenant_shards,
+);

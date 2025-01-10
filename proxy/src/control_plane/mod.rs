@@ -10,13 +10,13 @@ pub mod client;
 pub(crate) mod errors;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::auth::backend::jwt::AuthRule;
 use crate::auth::backend::{ComputeCredentialKeys, ComputeUserInfo};
 use crate::auth::IpPattern;
 use crate::cache::project_info::ProjectInfoCacheImpl;
 use crate::cache::{Cached, TimedLru};
+use crate::config::ComputeConfig;
 use crate::context::RequestContext;
 use crate::control_plane::messages::{ControlPlaneErrorMessage, MetricsAuxInfo};
 use crate::intern::ProjectIdInt;
@@ -67,28 +67,21 @@ pub(crate) struct NodeInfo {
 
     /// Labels for proxy's metrics.
     pub(crate) aux: MetricsAuxInfo,
-
-    /// Whether we should accept self-signed certificates (for testing)
-    pub(crate) allow_self_signed_compute: bool,
 }
 
 impl NodeInfo {
     pub(crate) async fn connect(
         &self,
         ctx: &RequestContext,
-        timeout: Duration,
+        config: &ComputeConfig,
+        user_info: ComputeUserInfo,
     ) -> Result<compute::PostgresConnection, compute::ConnectionError> {
         self.config
-            .connect(
-                ctx,
-                self.allow_self_signed_compute,
-                self.aux.clone(),
-                timeout,
-            )
+            .connect(ctx, self.aux.clone(), config, user_info)
             .await
     }
+
     pub(crate) fn reuse_settings(&mut self, other: Self) {
-        self.allow_self_signed_compute = other.allow_self_signed_compute;
         self.config.reuse_password(other.config);
     }
 

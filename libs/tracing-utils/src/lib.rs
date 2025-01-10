@@ -38,7 +38,6 @@ pub mod http;
 
 use opentelemetry::trace::TracerProvider;
 use opentelemetry::KeyValue;
-use opentelemetry_sdk::Resource;
 use tracing::Subscriber;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
@@ -121,7 +120,10 @@ where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
     // Sets up exporter from the OTEL_EXPORTER_* environment variables.
-    let exporter = opentelemetry_otlp::new_exporter().http();
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_http()
+        .build()
+        .expect("could not initialize opentelemetry exporter");
 
     // TODO: opentelemetry::global::set_error_handler() with custom handler that
     //       bypasses default tracing layers, but logs regular looking log
@@ -132,17 +134,13 @@ where
         opentelemetry_sdk::propagation::TraceContextPropagator::new(),
     );
 
-    let tracer = opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(exporter)
-        .with_trace_config(opentelemetry_sdk::trace::Config::default().with_resource(
-            Resource::new(vec![KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                service_name,
-            )]),
-        ))
-        .install_batch(opentelemetry_sdk::runtime::Tokio)
-        .expect("could not initialize opentelemetry exporter")
+    let tracer = opentelemetry_sdk::trace::TracerProvider::builder()
+        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+        .with_resource(opentelemetry_sdk::Resource::new(vec![KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+            service_name,
+        )]))
+        .build()
         .tracer("global");
 
     tracing_opentelemetry::layer().with_tracer(tracer)
