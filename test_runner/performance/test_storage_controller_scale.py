@@ -13,11 +13,13 @@ from fixtures.log_helper import log
 from fixtures.neon_fixtures import (
     NeonEnv,
     NeonEnvBuilder,
+    NeonPageserver,
     PageserverAvailability,
     PageserverSchedulingPolicy,
 )
 from fixtures.pageserver.http import PageserverApiException, PageserverHttpClient
 from fixtures.pg_version import PgVersion
+from fixtures.utils import wait_until
 
 
 def get_consistent_node_shard_counts(env: NeonEnv, total_shards) -> defaultdict[str, int]:
@@ -85,8 +87,12 @@ def test_storage_controller_many_tenants(
     )
 
     AZS = ["alpha", "bravo", "charlie"]
+
+    def az_selector(node_id):
+        return f"az-{AZS[(node_id - 1) % len(AZS)]}"
+
     neon_env_builder.pageserver_config_override = lambda ps_cfg: ps_cfg.update(
-        {"availability_zone": f"az-{AZS[ps_cfg['id'] % len(AZS)]}"}
+        {"availability_zone": az_selector(ps_cfg["id"])}
     )
 
     # A small sleep on each call into the notify hook, to simulate the latency of doing a database write
@@ -168,6 +174,31 @@ def test_storage_controller_many_tenants(
         log.info(f"Resident memory: {rss} ({ rss / total_shards} per shard)")
         assert rss < expect_memory_per_shard * total_shards
 
+    def assert_all_tenants_scheduled_in_home_az():
+        for tenant_id in tenant_ids:
+            desc = env.storage_controller.tenant_describe(tenant_id)
+            preferred_az = None
+            for shard in desc["shards"]:
+                # All shards in a tenant should have the same preferred AZ
+                if preferred_az is None:
+                    preferred_az = shard["preferred_az_id"]
+                else:
+                    assert preferred_az == shard["preferred_az_id"]
+
+                # Attachment should be in the preferred AZ
+                assert shard["preferred_az_id"] == az_selector(
+                    shard["node_attached"]
+                ), f"Shard {shard['tenant_shard_id']} not in {shard['preferred_az_id']}"
+
+                # Secondary locations should not be in the preferred AZ
+                for node_secondary in shard["node_secondary"]:
+                    assert (
+                        shard["preferred_az_id"] != az_selector(node_secondary)
+                    ), f"Shard {shard['tenant_shard_id']} secondary should be in {shard['preferred_az_id']}"
+
+                # There should only be one secondary location (i.e. no migrations in flight)
+                assert len(shard["node_secondary"]) == 1
+
     # Issue more concurrent operations than the storage controller's reconciler concurrency semaphore
     # permits, to ensure that we are exercising stressing that.
     api_concurrency = 135
@@ -241,6 +272,22 @@ def test_storage_controller_many_tenants(
         log.info(
             f"Created {len(tenants_with_timelines)} timelines in {time.time() - t1}, {len(tenants_with_timelines) / (time.time() - t1)}/s"
         )
+
+    # Check initial scheduling
+    assert_all_tenants_scheduled_in_home_az()
+    az_attached_counts: defaultdict[str, int] = defaultdict(int)
+    az_secondary_counts: defaultdict[str, int] = defaultdict(int)
+    node_attached_counts: defaultdict[str, int] = defaultdict(int)
+    for tenant_id in tenants.keys():
+        desc = env.storage_controller.tenant_describe(tenant_id)
+        for shard in desc["shards"]:
+            az_attached_counts[az_selector(shard["node_attached"])] += 1
+            node_attached_counts[shard["node_attached"]] += 1
+            for node_secondary in shard["node_secondary"]:
+                az_secondary_counts[az_selector(node_secondary)] += 1
+
+    log.info(f"Initial node attached counts: {node_attached_counts}")
+    log.info(f"Initial AZ shard counts: {az_attached_counts}, {az_secondary_counts}")
 
     # Plan operations: ensure each tenant with a timeline gets at least
     # one of each operation type.  Then add other tenants to make up the
@@ -450,10 +497,76 @@ def test_storage_controller_many_tenants(
         env.storage_controller.reconcile_until_idle(max_interval=0.1, timeout_secs=120)
         env.storage_controller.consistency_check()
 
+    # Since we did `reconcile_until_idle` during the above loop, the system should be left in
+    # an optimally scheduled state.  Validate that this includes all the tenants being scheduled
+    # in their home AZ.
+    assert_all_tenants_scheduled_in_home_az()
+
     # Consistency check is safe here: restarting pageservers should not have caused any Reconcilers to spawn,
     # as they were not offline long enough to trigger any scheduling changes.
     env.storage_controller.consistency_check()
     check_memory()
+
+    # Simulate loss of an AZ
+    victim_az = "az-alpha"
+    killed_pageservers = []
+    for ps in env.pageservers:
+        if az_selector(ps.id) == victim_az:
+            ps.stop(immediate=True)
+            killed_pageservers.append(ps)
+            log.info(f"Killed pageserver {ps.id}")
+
+    assert killed_pageservers
+
+    # Wait for the controller to notice the pageservers are dead
+    def assert_pageservers_availability(
+        pageservers: list[NeonPageserver], expected_availability: PageserverAvailability
+    ):
+        nodes = env.storage_controller.nodes()
+        checked_any = False
+        node_ids = [ps.id for ps in pageservers]
+        for node in nodes:
+            if node["id"] in node_ids:
+                checked_any = True
+                assert (
+                    node["availability"] == expected_availability
+                ), f"Node {node['id']} is not {expected_availability} yet: {node['availability']}"
+
+        assert checked_any
+
+    wait_until(
+        lambda: assert_pageservers_availability(killed_pageservers, PageserverAvailability.OFFLINE),
+        timeout=60,
+    )
+
+    # Let the controller finish all its rescheduling
+    env.storage_controller.reconcile_until_idle(max_interval=0.1, timeout_secs=120)
+
+    # Check that all the tenants are rescheduled to the remaining pageservers
+    for tenant_id in tenant_ids:
+        desc = env.storage_controller.tenant_describe(tenant_id)
+        for shard in desc["shards"]:
+            # Attachment should be outside the AZ where we killed the pageservers
+            assert (
+                az_selector(shard["node_attached"]) != victim_az
+            ), f"Shard {shard['tenant_shard_id']} still in {victim_az} (node {shard['node_attached']})"
+
+    # Bring back the pageservers
+    for ps in killed_pageservers:
+        ps.start()
+
+    wait_until(
+        lambda: assert_pageservers_availability(killed_pageservers, PageserverAvailability.ACTIVE),
+        timeout=60,
+    )
+
+    # A very long timeout is required: we will be migrating all the tenants on all the pageservers
+    # in the region that we just restored.  Assume it'll take up to twice as long as it took to fill
+    # a single node
+    env.storage_controller.reconcile_until_idle(
+        max_interval=0.1, timeout_secs=DRAIN_FILL_TIMEOUT * 2
+    )
+    assert_all_tenants_scheduled_in_home_az()
 
     # Stop the storage controller before tearing down fixtures, because it otherwise might log
     # errors trying to call our `ComputeReconfigure`.

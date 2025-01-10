@@ -813,7 +813,21 @@ impl Reconciler {
             if self.cancel.is_cancelled() {
                 return Err(ReconcileError::Cancel);
             }
-            self.location_config(&node, conf, None, false).await?;
+            // We only try to configure secondary locations if the node is available.  This does
+            // not stop us succeeding with the reconcile, because our core goal is to make the
+            // shard _available_ (the attached location), and configuring secondary locations
+            // can be done lazily when the node becomes available (via background reconciliation).
+            if node.is_available() {
+                self.location_config(&node, conf, None, false).await?;
+            } else {
+                // If the node is unavailable, we skip and consider the reconciliation successful: this
+                // is a common case where a pageserver is marked unavailable: we demote a location on
+                // that unavailable pageserver to secondary.
+                tracing::info!("Skipping configuring secondary location {node}, it is unavailable");
+                self.observed
+                    .locations
+                    .insert(node.get_id(), ObservedStateLocation { conf: None });
+            }
         }
 
         // The condition below identifies a detach. We must have no attached intent and

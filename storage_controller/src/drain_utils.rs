@@ -112,7 +112,7 @@ impl TenantShardDrain {
             }
         }
 
-        match scheduler.node_preferred(tenant_shard.intent.get_secondary()) {
+        match tenant_shard.preferred_secondary(scheduler) {
             Some(node) => Some(node),
             None => {
                 tracing::warn!(

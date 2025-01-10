@@ -56,3 +56,6 @@ utils = { path = "../libs/utils/" }
 metrics = { path = "../libs/metrics/" }
 control_plane = { path = "../control_plane" }
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
+
+[dev-dependencies]
+test-log = {version="0.2.16"}

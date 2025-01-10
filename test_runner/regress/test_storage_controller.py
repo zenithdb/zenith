@@ -3033,11 +3033,12 @@ def eq_safekeeper_records(a: dict[str, Any], b: dict[str, Any]) -> bool:
 @run_only_on_default_postgres("this is like a 'unit test' against storcon db")
 def test_shard_preferred_azs(neon_env_builder: NeonEnvBuilder):
     def assign_az(ps_cfg):
-        az = f"az-{ps_cfg['id']}"
+        az = f"az-{ps_cfg['id'] % 2}"
+        log.info("Assigned AZ {az}")
         ps_cfg["availability_zone"] = az
 
     neon_env_builder.pageserver_config_override = assign_az
-    neon_env_builder.num_pageservers = 2
+    neon_env_builder.num_pageservers = 4
     env = neon_env_builder.init_configs()
     env.start()
 
@@ -3052,8 +3053,14 @@ def test_shard_preferred_azs(neon_env_builder: NeonEnvBuilder):
 
         assert shards[0]["preferred_az_id"] == expected_az
 
+    # When all other schedule scoring parameters are equal, tenants should round-robin on AZs
+    assert env.storage_controller.tenant_describe(tids[0])["shards"][0]["preferred_az_id"] == "az-0"
+    assert env.storage_controller.tenant_describe(tids[1])["shards"][0]["preferred_az_id"] == "az-1"
+    assert env.storage_controller.tenant_describe(tids[2])["shards"][0]["preferred_az_id"] == "az-0"
+
+    # Try modifying preferred AZ
     updated = env.storage_controller.set_preferred_azs(
-        {TenantShardId(tid, 0, 0): "foo" for tid in tids}
+        {TenantShardId(tid, 0, 0): "az-0" for tid in tids}
     )
 
     assert set(updated) == set([TenantShardId(tid, 0, 0) for tid in tids])
@@ -3061,29 +3068,24 @@ def test_shard_preferred_azs(neon_env_builder: NeonEnvBuilder):
     for tid in tids:
         shards = env.storage_controller.tenant_describe(tid)["shards"]
         assert len(shards) == 1
-        assert shards[0]["preferred_az_id"] == "foo"
+        assert shards[0]["preferred_az_id"] == "az-0"
 
-    # Generate a layer to avoid shard split handling on ps from tripping
-    # up on debug assert.
-    timeline_id = TimelineId.generate()
-    env.create_timeline("bar", tids[0], timeline_id)
-
-    workload = Workload(env, tids[0], timeline_id, branch_name="bar")
-    workload.init()
-    workload.write_rows(256)
-    workload.validate()
+    # Having modified preferred AZ, we should get moved there
+    env.storage_controller.reconcile_until_idle(max_interval=0.1)
+    for tid in tids:
+        shard = env.storage_controller.tenant_describe(tid)["shards"][0]
+        attached_to = shard["node_attached"]
+        attached_in_az = env.get_pageserver(attached_to).az_id
+        assert shard["preferred_az_id"] == attached_in_az == "az-0"
 
     env.storage_controller.tenant_shard_split(tids[0], shard_count=2)
+    env.storage_controller.reconcile_until_idle(max_interval=0.1)
     shards = env.storage_controller.tenant_describe(tids[0])["shards"]
     assert len(shards) == 2
     for shard in shards:
         attached_to = shard["node_attached"]
-        expected_az = env.get_pageserver(attached_to).az_id
-
-        # The scheduling optimization logic is not yet AZ-aware, so doesn't succeed
-        # in putting the tenant shards in the preferred AZ.
-        # To be fixed in https://github.com/neondatabase/neon/pull/9916
-        # assert shard["preferred_az_id"] == expected_az
+        attached_in_az = env.get_pageserver(attached_to).az_id
+        assert shard["preferred_az_id"] == attached_in_az == "az-0"
 
 
 @run_only_on_default_postgres("Postgres version makes no difference here")

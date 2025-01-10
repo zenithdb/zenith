@@ -520,13 +520,17 @@ def test_sharding_split_smoke(
     shard_count = 2
     # Shard count we split into
     split_shard_count = 4
-    # We will have 2 shards per pageserver once done (including secondaries)
-    neon_env_builder.num_pageservers = split_shard_count
+    # In preferred AZ & other AZ we will end up with one shard per pageserver
+    neon_env_builder.num_pageservers = split_shard_count * 2
 
     # Two AZs
     def assign_az(ps_cfg):
         az = f"az-{(ps_cfg['id'] - 1) % 2}"
         ps_cfg["availability_zone"] = az
+
+        # We will run more pageservers than tests usually do, so give them tiny page caches
+        # in case we're on a test node under memory pressure.
+        ps_cfg["page_cache_size"] = 128
 
     neon_env_builder.pageserver_config_override = assign_az
 
@@ -679,8 +683,8 @@ def test_sharding_split_smoke(
     # - shard_count reconciles for the original setup of the tenant
     # - shard_count reconciles for detaching the original secondary locations during split
     # - split_shard_count reconciles during shard splitting, for setting up secondaries.
-    # - split_shard_count/2 of the child shards will need to fail over to their secondaries (since we have 8 shards and 4 pageservers, only 4 will move)
-    expect_reconciles = shard_count * 2 + split_shard_count + split_shard_count / 2
+    # - split_shard_count/2 reconciles to migrate shards to their temporary secondaries
+    expect_reconciles = shard_count * 2 + split_shard_count + 3 * (split_shard_count / 2)
 
     reconcile_ok = env.storage_controller.get_metric_value(
         "storage_controller_reconcile_complete_total", filter={"status": "ok"}
@@ -745,10 +749,14 @@ def test_sharding_split_smoke(
     # dominated by shard count.
     log.info(f"total: {total}")
     assert total == {
-        1: 2,
-        2: 2,
-        3: 2,
-        4: 2,
+        1: 1,
+        2: 1,
+        3: 1,
+        4: 1,
+        5: 1,
+        6: 1,
+        7: 1,
+        8: 1,
     }
 
     # The controller is not required to lay out the attached locations in any particular way, but
@@ -1387,13 +1395,7 @@ def test_sharding_split_failures(
                 else:
                     attached_count += 1
 
-        if exclude_ps_id is not None:
-            # For a node failure case, we expect there to be a secondary location
-            # scheduled on the offline node, so expect one fewer secondary in total
-            assert secondary_count == initial_shard_count - 1
-        else:
-            assert secondary_count == initial_shard_count
-
+        assert secondary_count == initial_shard_count
         assert attached_count == initial_shard_count
 
     def assert_split_done(exclude_ps_id: int | None = None) -> None:

@@ -368,6 +368,16 @@ pub enum PlacementPolicy {
     Detached,
 }
 
+impl PlacementPolicy {
+    pub fn want_secondaries(&self) -> usize {
+        match self {
+            PlacementPolicy::Attached(secondary_count) => *secondary_count,
+            PlacementPolicy::Secondary => 1,
+            PlacementPolicy::Detached => 0,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TenantShardMigrateResponse {}
 

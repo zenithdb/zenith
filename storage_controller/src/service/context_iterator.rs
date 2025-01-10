@@ -43,9 +43,6 @@ impl<'a> Iterator for TenantShardContextIterator<'a> {
 
             // Accumulate the schedule context for all the shards in a tenant
             schedule_context.avoid(&shard.intent.all_pageservers());
-            if let Some(attached) = shard.intent.get_attached() {
-                schedule_context.push_attached(*attached);
-            }
             tenant_shards.push(shard);
 
             if tenant_shard_id.shard_number.0 == tenant_shard_id.shard_count.count() - 1 {
@@ -115,7 +112,7 @@ mod tests {
         assert_eq!(tenant_id, t1_id);
         assert_eq!(shards[0].tenant_shard_id.shard_number, ShardNumber(0));
         assert_eq!(shards.len(), 1);
-        assert_eq!(context.attach_count(), 1);
+        assert_eq!(context.location_count(), 2);
 
         let (tenant_id, context, shards) = iter.next().unwrap();
         assert_eq!(tenant_id, t2_id);
@@ -124,13 +121,13 @@ mod tests {
         assert_eq!(shards[2].tenant_shard_id.shard_number, ShardNumber(2));
         assert_eq!(shards[3].tenant_shard_id.shard_number, ShardNumber(3));
         assert_eq!(shards.len(), 4);
-        assert_eq!(context.attach_count(), 4);
+        assert_eq!(context.location_count(), 8);
 
         let (tenant_id, context, shards) = iter.next().unwrap();
         assert_eq!(tenant_id, t3_id);
         assert_eq!(shards[0].tenant_shard_id.shard_number, ShardNumber(0));
         assert_eq!(shards.len(), 1);
-        assert_eq!(context.attach_count(), 1);
+        assert_eq!(context.location_count(), 2);
 
         for shard in tenants.values_mut() {
             shard.intent.clear(&mut scheduler);
