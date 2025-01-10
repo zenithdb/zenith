@@ -74,7 +74,11 @@ pub(crate) enum Notification {
     #[serde(rename = "/cancel_session")]
     Cancel(CancelSession),
 
-    #[serde(other, skip_serializing)]
+    #[serde(
+        other,
+        deserialize_with = "deserialize_unknown_topic",
+        skip_serializing
+    )]
     UnknownTopic,
 }
 
@@ -121,6 +125,15 @@ where
 {
     let s = String::deserialize(deserializer)?;
     serde_json::from_str(&s).map_err(<D::Error as serde::de::Error>::custom)
+}
+
+// https://github.com/serde-rs/serde/issues/1714
+fn deserialize_unknown_topic<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_any(serde::de::IgnoredAny)?;
+    Ok(())
 }
 
 struct MessageHandler<C: ProjectInfoCache + Send + Sync + 'static> {
@@ -455,6 +468,32 @@ mod tests {
         let text = serde_json::to_string(&msg)?;
         let result: Notification = serde_json::from_str(&text)?;
         assert_eq!(msg, result,);
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_unknown_topic() -> anyhow::Result<()> {
+        let with_data = json!({
+            "type": "message",
+            "topic": "/doesnotexist",
+            "data": {
+                "payload": "ignored"
+            },
+            "extra_fields": "something"
+        })
+        .to_string();
+        let result: Notification = serde_json::from_str(&with_data)?;
+        assert_eq!(result, Notification::UnknownTopic);
+
+        let without_data = json!({
+            "type": "message",
+            "topic": "/doesnotexist",
+            "extra_fields": "something"
+        })
+        .to_string();
+        let result: Notification = serde_json::from_str(&without_data)?;
+        assert_eq!(result, Notification::UnknownTopic);
 
         Ok(())
     }

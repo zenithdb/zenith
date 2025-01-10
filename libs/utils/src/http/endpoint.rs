@@ -417,6 +417,7 @@ pub async fn profile_heap_handler(req: Request<Body>) -> Result<Response<Body>, 
     enum Format {
         Jemalloc,
         Pprof,
+        Svg,
     }
 
     // Parameters.
@@ -424,8 +425,23 @@ pub async fn profile_heap_handler(req: Request<Body>) -> Result<Response<Body>, 
         None => Format::Pprof,
         Some("jemalloc") => Format::Jemalloc,
         Some("pprof") => Format::Pprof,
+        Some("svg") => Format::Svg,
         Some(format) => return Err(ApiError::BadRequest(anyhow!("invalid format {format}"))),
     };
+
+    // Functions and mappings to strip when symbolizing pprof profiles. If true,
+    // also remove child frames.
+    static STRIP_FUNCTIONS: Lazy<Vec<(Regex, bool)>> = Lazy::new(|| {
+        vec![
+            (Regex::new("^__rust").unwrap(), false),
+            (Regex::new("^_start$").unwrap(), false),
+            (Regex::new("^irallocx_prof").unwrap(), true),
+            (Regex::new("^prof_alloc_prep").unwrap(), true),
+            (Regex::new("^std::rt::lang_start").unwrap(), false),
+            (Regex::new("^std::sys::backtrace::__rust").unwrap(), false),
+        ]
+    });
+    const STRIP_MAPPINGS: &[&str] = &["libc", "libgcc", "pthread", "vdso"];
 
     // Obtain profiler handle.
     let mut prof_ctl = jemalloc_pprof::PROF_CTL
@@ -464,24 +480,9 @@ pub async fn profile_heap_handler(req: Request<Body>) -> Result<Response<Body>, 
                 // Symbolize the profile.
                 // TODO: consider moving this upstream to jemalloc_pprof and avoiding the
                 // serialization roundtrip.
-                static STRIP_FUNCTIONS: Lazy<Vec<(Regex, bool)>> = Lazy::new(|| {
-                    // Functions to strip from profiles. If true, also remove child frames.
-                    vec![
-                        (Regex::new("^__rust").unwrap(), false),
-                        (Regex::new("^_start$").unwrap(), false),
-                        (Regex::new("^irallocx_prof").unwrap(), true),
-                        (Regex::new("^prof_alloc_prep").unwrap(), true),
-                        (Regex::new("^std::rt::lang_start").unwrap(), false),
-                        (Regex::new("^std::sys::backtrace::__rust").unwrap(), false),
-                    ]
-                });
                 let profile = pprof::decode(&bytes)?;
                 let profile = pprof::symbolize(profile)?;
-                let profile = pprof::strip_locations(
-                    profile,
-                    &["libc", "libgcc", "pthread", "vdso"],
-                    &STRIP_FUNCTIONS,
-                );
+                let profile = pprof::strip_locations(profile, STRIP_MAPPINGS, &STRIP_FUNCTIONS);
                 pprof::encode(&profile)
             })
             .await
@@ -492,6 +493,27 @@ pub async fn profile_heap_handler(req: Request<Body>) -> Result<Response<Body>, 
                 .header(CONTENT_TYPE, "application/octet-stream")
                 .header(CONTENT_DISPOSITION, "attachment; filename=\"heap.pb\"")
                 .body(Body::from(data))
+                .map_err(|err| ApiError::InternalServerError(err.into()))
+        }
+
+        Format::Svg => {
+            let body = tokio::task::spawn_blocking(move || {
+                let bytes = prof_ctl.dump_pprof()?;
+                let profile = pprof::decode(&bytes)?;
+                let profile = pprof::symbolize(profile)?;
+                let profile = pprof::strip_locations(profile, STRIP_MAPPINGS, &STRIP_FUNCTIONS);
+                let mut opts = inferno::flamegraph::Options::default();
+                opts.title = "Heap inuse".to_string();
+                opts.count_name = "bytes".to_string();
+                pprof::flamegraph(profile, &mut opts)
+            })
+            .await
+            .map_err(|join_err| ApiError::InternalServerError(join_err.into()))?
+            .map_err(ApiError::InternalServerError)?;
+            Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, "image/svg+xml")
+                .body(Body::from(body))
                 .map_err(|err| ApiError::InternalServerError(err.into()))
         }
     }

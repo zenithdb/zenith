@@ -74,8 +74,11 @@ impl NodeInfo {
         &self,
         ctx: &RequestContext,
         config: &ComputeConfig,
+        user_info: ComputeUserInfo,
     ) -> Result<compute::PostgresConnection, compute::ConnectionError> {
-        self.config.connect(ctx, self.aux.clone(), config).await
+        self.config
+            .connect(ctx, self.aux.clone(), config, user_info)
+            .await
     }
 
     pub(crate) fn reuse_settings(&mut self, other: Self) {

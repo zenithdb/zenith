@@ -111,11 +111,6 @@ fn main() -> Result<()> {
 fn init() -> Result<(String, clap::ArgMatches)> {
     init_tracing_and_logging(DEFAULT_LOG_LEVEL)?;
 
-    opentelemetry::global::set_error_handler(|err| {
-        tracing::info!("OpenTelemetry error: {err}");
-    })
-    .expect("global error handler lock poisoned");
-
     let mut signals = Signals::new([SIGINT, SIGTERM, SIGQUIT])?;
     thread::spawn(move || {
         for sig in signals.forever() {

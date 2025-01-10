@@ -4,7 +4,7 @@ use tokio::time;
 use tracing::{debug, info, warn};
 
 use super::retry::ShouldRetryWakeCompute;
-use crate::auth::backend::ComputeCredentialKeys;
+use crate::auth::backend::{ComputeCredentialKeys, ComputeUserInfo};
 use crate::compute::{self, PostgresConnection, COULD_NOT_CONNECT};
 use crate::config::{ComputeConfig, RetryConfig};
 use crate::context::RequestContext;
@@ -71,6 +71,8 @@ pub(crate) struct TcpMechanism<'a> {
 
     /// connect_to_compute concurrency lock
     pub(crate) locks: &'static ApiLocks<Host>,
+
+    pub(crate) user_info: ComputeUserInfo,
 }
 
 #[async_trait]
@@ -88,7 +90,7 @@ impl ConnectMechanism for TcpMechanism<'_> {
     ) -> Result<PostgresConnection, Self::Error> {
         let host = node_info.config.get_host();
         let permit = self.locks.get_permit(&host).await?;
-        permit.release_result(node_info.connect(ctx, config).await)
+        permit.release_result(node_info.connect(ctx, config, self.user_info.clone()).await)
     }
 
     fn update_connect_config(&self, config: &mut compute::ConnCfg) {

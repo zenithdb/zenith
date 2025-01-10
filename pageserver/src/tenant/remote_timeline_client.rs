@@ -304,6 +304,15 @@ pub enum WaitCompletionError {
 #[derive(Debug, thiserror::Error)]
 #[error("Upload queue either in unexpected state or hasn't downloaded manifest yet")]
 pub struct UploadQueueNotReadyError;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ShutdownIfArchivedError {
+    #[error(transparent)]
+    NotInitialized(NotInitialized),
+    #[error("timeline is not archived")]
+    NotArchived,
+}
+
 /// Behavioral modes that enable seamless live migration.
 ///
 /// See docs/rfcs/028-pageserver-migration.md to understand how these fit in.
@@ -814,6 +823,55 @@ impl RemoteTimelineClient {
 
         let need_wait = need_change(&upload_queue.clean.0.archived_at, state).is_some();
         Ok(need_wait)
+    }
+
+    /// Shuts the timeline client down, but only if the timeline is archived.
+    ///
+    /// This function and [`Self::schedule_index_upload_for_timeline_archival_state`] use the
+    /// same lock to prevent races between unarchival and offloading: unarchival requires the
+    /// upload queue to be initialized, and leaves behind an upload queue where either dirty
+    /// or clean has archived_at of `None`. offloading leaves behind an uninitialized upload
+    /// queue.
+    pub(crate) async fn shutdown_if_archived(
+        self: &Arc<Self>,
+    ) -> Result<(), ShutdownIfArchivedError> {
+        {
+            let mut guard = self.upload_queue.lock().unwrap();
+            let upload_queue = guard
+                .initialized_mut()
+                .map_err(ShutdownIfArchivedError::NotInitialized)?;
+
+            match (
+                upload_queue.dirty.archived_at.is_none(),
+                upload_queue.clean.0.archived_at.is_none(),
+            ) {
+                // The expected case: the timeline is archived and we don't want to unarchive
+                (false, false) => {}
+                (true, false) => {
+                    tracing::info!("can't shut down timeline: timeline slated for unarchival");
+                    return Err(ShutdownIfArchivedError::NotArchived);
+                }
+                (dirty_archived, true) => {
+                    tracing::info!(%dirty_archived, "can't shut down timeline: timeline not archived in remote storage");
+                    return Err(ShutdownIfArchivedError::NotArchived);
+                }
+            }
+
+            // Set the shutting_down flag while the guard from the archival check is held.
+            // This prevents a race with unarchival, as initialized_mut will not return
+            // an upload queue from this point.
+            // Also launch the queued tasks like shutdown() does.
+            if !upload_queue.shutting_down {
+                upload_queue.shutting_down = true;
+                upload_queue.queued_operations.push_back(UploadOp::Shutdown);
+                // this operation is not counted similar to Barrier
+                self.launch_queued_tasks(upload_queue);
+            }
+        }
+
+        self.shutdown().await;
+
+        Ok(())
     }
 
     /// Launch an index-file upload operation in the background, setting `import_pgdata` field.

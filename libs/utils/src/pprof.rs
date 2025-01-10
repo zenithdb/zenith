@@ -1,8 +1,9 @@
+use anyhow::bail;
 use flate2::write::{GzDecoder, GzEncoder};
 use flate2::Compression;
 use itertools::Itertools as _;
 use once_cell::sync::Lazy;
-use pprof::protos::{Function, Line, Message as _, Profile};
+use pprof::protos::{Function, Line, Location, Message as _, Profile};
 use regex::Regex;
 
 use std::borrow::Cow;
@@ -187,4 +188,60 @@ pub fn strip_locations(
     }
 
     profile
+}
+
+/// Generates an SVG flamegraph from a symbolized pprof profile.
+pub fn flamegraph(
+    profile: Profile,
+    opts: &mut inferno::flamegraph::Options,
+) -> anyhow::Result<Vec<u8>> {
+    if profile.mapping.iter().any(|m| !m.has_functions) {
+        bail!("profile not symbolized");
+    }
+
+    // Index locations, functions, and strings.
+    let locations: HashMap<u64, Location> =
+        profile.location.into_iter().map(|l| (l.id, l)).collect();
+    let functions: HashMap<u64, Function> =
+        profile.function.into_iter().map(|f| (f.id, f)).collect();
+    let strings = profile.string_table;
+
+    // Resolve stacks as function names, and sum sample values per stack. Also reverse the stack,
+    // since inferno expects it bottom-up.
+    let mut stacks: HashMap<Vec<&str>, i64> = HashMap::new();
+    for sample in profile.sample {
+        let mut stack = Vec::with_capacity(sample.location_id.len());
+        for location in sample.location_id.into_iter().rev() {
+            let Some(location) = locations.get(&location) else {
+                bail!("missing location {location}");
+            };
+            for line in location.line.iter().rev() {
+                let Some(function) = functions.get(&line.function_id) else {
+                    bail!("missing function {}", line.function_id);
+                };
+                let Some(name) = strings.get(function.name as usize) else {
+                    bail!("missing string {}", function.name);
+                };
+                stack.push(name.as_str());
+            }
+        }
+        let Some(&value) = sample.value.first() else {
+            bail!("missing value");
+        };
+        *stacks.entry(stack).or_default() += value;
+    }
+
+    // Construct stack lines for inferno.
+    let lines = stacks
+        .into_iter()
+        .map(|(stack, value)| (stack.into_iter().join(";"), value))
+        .map(|(stack, value)| format!("{stack} {value}"))
+        .sorted()
+        .collect_vec();
+
+    // Construct the flamegraph.
+    let mut bytes = Vec::new();
+    let lines = lines.iter().map(|line| line.as_str());
+    inferno::flamegraph::from_lines(opts, lines, &mut bytes)?;
+    Ok(bytes)
 }

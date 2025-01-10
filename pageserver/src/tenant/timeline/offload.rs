@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
-use pageserver_api::models::TenantState;
+use pageserver_api::models::{TenantState, TimelineState};
 
 use super::delete::{delete_local_timeline_directory, DeleteTimelineFlow, DeletionGuard};
 use super::Timeline;
 use crate::span::debug_assert_current_span_has_tenant_and_timeline_id;
+use crate::tenant::remote_timeline_client::ShutdownIfArchivedError;
 use crate::tenant::{OffloadedTimeline, Tenant, TenantManifestError, TimelineOrOffloaded};
 
 #[derive(thiserror::Error, Debug)]
@@ -36,28 +37,29 @@ pub(crate) async fn offload_timeline(
     tracing::info!("offloading archived timeline");
 
     let allow_offloaded_children = true;
-    let (timeline, guard) =
-        DeleteTimelineFlow::prepare(tenant, timeline.timeline_id, allow_offloaded_children)
-            .map_err(|e| OffloadError::Other(anyhow::anyhow!(e)))?;
+    let set_stopping = false;
+    let (timeline, guard) = DeleteTimelineFlow::prepare(
+        tenant,
+        timeline.timeline_id,
+        allow_offloaded_children,
+        set_stopping,
+    )
+    .map_err(|e| OffloadError::Other(anyhow::anyhow!(e)))?;
 
     let TimelineOrOffloaded::Timeline(timeline) = timeline else {
         tracing::error!("timeline already offloaded, but given timeline object");
         return Ok(());
     };
 
-    let is_archived = timeline.is_archived();
-    match is_archived {
-        Some(true) => (),
-        Some(false) => {
-            tracing::warn!("tried offloading a non-archived timeline");
-            return Err(OffloadError::NotArchived);
+    match timeline.remote_client.shutdown_if_archived().await {
+        Ok(()) => {}
+        Err(ShutdownIfArchivedError::NotInitialized(_)) => {
+            // Either the timeline is being deleted, the operation is being retried, or we are shutting down.
+            // Don't return cancelled here to keep it idempotent.
         }
-        None => {
-            // This is legal: calls to this function can race with the timeline shutting down
-            tracing::info!("tried offloading a timeline whose remote storage is not initialized");
-            return Err(OffloadError::Cancelled);
-        }
+        Err(ShutdownIfArchivedError::NotArchived) => return Err(OffloadError::NotArchived),
     }
+    timeline.set_state(TimelineState::Stopping);
 
     // Now that the Timeline is in Stopping state, request all the related tasks to shut down.
     timeline.shutdown(super::ShutdownMode::Reload).await;

@@ -141,11 +141,18 @@ def test_create_snapshot(
     neon_env_builder.num_safekeepers = 3
     neon_env_builder.enable_pageserver_remote_storage(RemoteStorageKind.LOCAL_FS)
 
-    env = neon_env_builder.init_start()
+    env = neon_env_builder.init_start(
+        initial_tenant_conf={
+            # Miniature layers to enable generating non-trivial layer map without writing lots of data
+            "checkpoint_distance": f"{128 * 1024}",
+            "compaction_threshold": "1",
+            "compaction_target_size": f"{128 * 1024}",
+        }
+    )
     endpoint = env.endpoints.create_start("main")
 
-    pg_bin.run_capture(["pgbench", "--initialize", "--scale=10", endpoint.connstr()])
-    pg_bin.run_capture(["pgbench", "--time=60", "--progress=2", endpoint.connstr()])
+    pg_bin.run_capture(["pgbench", "--initialize", "--scale=1", endpoint.connstr()])
+    pg_bin.run_capture(["pgbench", "--time=30", "--progress=2", endpoint.connstr()])
     pg_bin.run_capture(
         ["pg_dumpall", f"--dbname={endpoint.connstr()}", f"--file={test_output_dir / 'dump.sql'}"]
     )
@@ -157,7 +164,9 @@ def test_create_snapshot(
     pageserver_http = env.pageserver.http_client()
 
     flush_ep_to_pageserver(env, endpoint, tenant_id, timeline_id)
-    pageserver_http.timeline_checkpoint(tenant_id, timeline_id, wait_until_uploaded=True)
+    pageserver_http.timeline_checkpoint(
+        tenant_id, timeline_id, wait_until_uploaded=True, force_image_layer_creation=True
+    )
 
     env.endpoints.stop_all()
     for sk in env.safekeepers:

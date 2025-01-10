@@ -96,7 +96,11 @@ impl<T: Send> Sender<T> {
                     }
                 }
                 State::SenderWaitsForReceiverToConsume(_data) => {
-                    // Really, we shouldn't be polled until receiver has consumed and wakes us.
+                    // SAFETY: send is single threaded due to `&mut self` requirement,
+                    // therefore register is not concurrent.
+                    unsafe {
+                        self.state.wake_sender.register(cx.waker());
+                    }
                     Poll::Pending
                 }
                 State::ReceiverGone => Poll::Ready(Err(SendError::ReceiverGone)),

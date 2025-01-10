@@ -195,7 +195,7 @@ pub(crate) async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
 
     ctx.set_db_options(params.clone());
 
-    let (user_info, ip_allowlist) = match backend
+    let (node_info, user_info, ip_allowlist) = match backend
         .authenticate(ctx, &config.authentication_config, &mut stream)
         .await
     {
@@ -208,11 +208,12 @@ pub(crate) async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
     let mut node = connect_to_compute(
         ctx,
         &TcpMechanism {
+            user_info,
             params_compat: true,
             params: &params,
             locks: &config.connect_compute_locks,
         },
-        &user_info,
+        &node_info,
         config.wake_compute_retry_config,
         &config.connect_to_compute,
     )
