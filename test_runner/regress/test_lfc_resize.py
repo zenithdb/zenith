@@ -30,7 +30,7 @@ def test_lfc_resize(neon_simple_env: NeonEnv, pg_bin: PgBin):
         ],
     )
     n_resize = 10
-    scale = 100
+    scale = 20
 
     def run_pgbench(connstr: str):
         log.info(f"Start a pgbench workload on pg {connstr}")
@@ -46,16 +46,35 @@ def test_lfc_resize(neon_simple_env: NeonEnv, pg_bin: PgBin):
     conn = endpoint.connect()
     cur = conn.cursor()
 
+    def get_lfc_size() -> tuple[int, int]:
+        lfc_file_path = endpoint.lfc_path()
+        lfc_file_size = lfc_file_path.stat().st_size
+        res = subprocess.run(
+            ["ls", "-sk", lfc_file_path], check=True, text=True, capture_output=True
+        )
+        lfc_file_blocks = re.findall("([0-9A-F]+)", res.stdout)[0]
+        log.info(f"Size of LFC file {lfc_file_size}, blocks {lfc_file_blocks}")
+
+        return (lfc_file_size, lfc_file_blocks)
+
     # For as long as pgbench is running, twiddle the LFC size once a second.
     # Note that we launch this immediately, already while the "pgbench -i"
     # initialization step is still running. That's quite a different workload
     # than the actual pgbench benchamark run, so this gives us coverage of both.
     while thread.is_alive():
-        size = random.randint(1, 512)
+        # Vary the LFC size randomly within a range above what we will later
+        # decrease it to.  This should ensure that the final size decrease
+        # is really doing something.
+        size = random.randint(192, 512)
         cur.execute(f"alter system set neon.file_cache_size_limit='{size}MB'")
         cur.execute("select pg_reload_conf()")
         time.sleep(1)
+
     thread.join()
+
+    # Before shrinking the cache, check that it really is large now
+    (lfc_file_size, lfc_file_blocks) = get_lfc_size()
+    assert int(lfc_file_blocks) > 128 * 1024
 
     # At the end, set it at 100 MB, and perform a final check that the disk usage
     # of the file is in that ballbark.
@@ -66,13 +85,7 @@ def test_lfc_resize(neon_simple_env: NeonEnv, pg_bin: PgBin):
     cur.execute("select pg_reload_conf()")
     nretries = 10
     while True:
-        lfc_file_path = endpoint.lfc_path()
-        lfc_file_size = lfc_file_path.stat().st_size
-        res = subprocess.run(
-            ["ls", "-sk", lfc_file_path], check=True, text=True, capture_output=True
-        )
-        lfc_file_blocks = re.findall("([0-9A-F]+)", res.stdout)[0]
-        log.info(f"Size of LFC file {lfc_file_size}, blocks {lfc_file_blocks}")
+        (lfc_file_size, lfc_file_blocks) = get_lfc_size()
         assert lfc_file_size <= 512 * 1024 * 1024
 
         if int(lfc_file_blocks) <= 128 * 1024 or nretries == 0:

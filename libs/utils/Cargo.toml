@@ -26,6 +26,7 @@ git-version.workspace = true
 hex = { workspace = true, features = ["serde"] }
 humantime.workspace = true
 hyper0 = { workspace = true, features = ["full"] }
+inferno.workspace = true
 itertools.workspace = true
 fail.workspace = true
 futures = { workspace = true }

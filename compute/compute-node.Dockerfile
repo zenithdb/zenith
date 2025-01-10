@@ -1167,22 +1167,13 @@ FROM rust-extensions-build AS pg-mooncake-build
 ARG PG_VERSION
 COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
-# The topmost commit in the `neon` branch at the time of writing this
-# https://github.com/Mooncake-Labs/pg_mooncake/commits/neon/
-# https://github.com/Mooncake-Labs/pg_mooncake/commit/077c92c452bb6896a7b7776ee95f039984f076af
-ENV PG_MOONCAKE_VERSION=077c92c452bb6896a7b7776ee95f039984f076af
 ENV PATH="/usr/local/pgsql/bin/:$PATH"
 
-RUN case "${PG_VERSION}" in \
-        'v14') \
-            echo "pg_mooncake is not supported on Postgres ${PG_VERSION}" && exit 0;; \
-    esac && \
-    git clone --depth 1 --branch neon https://github.com/Mooncake-Labs/pg_mooncake.git pg_mooncake-src && \
-    cd pg_mooncake-src && \
-    git checkout "${PG_MOONCAKE_VERSION}" && \
-    git submodule update --init --depth 1 --recursive && \
-    make BUILD_TYPE=release -j $(getconf _NPROCESSORS_ONLN) && \
-    make BUILD_TYPE=release -j $(getconf _NPROCESSORS_ONLN) install && \
+RUN wget https://github.com/Mooncake-Labs/pg_mooncake/releases/download/v0.1.0/pg_mooncake-0.1.0.tar.gz -O pg_mooncake.tar.gz && \
+    echo "eafd059b77f541f11525eb8affcd66a176968cbd8fe7c0d436e733f2aa4da59f pg_mooncake.tar.gz" | sha256sum --check && \
+    mkdir pg_mooncake-src && cd pg_mooncake-src && tar xzf ../pg_mooncake.tar.gz --strip-components=1 -C . && \
+    make release -j $(getconf _NPROCESSORS_ONLN) && \
+    make install -j $(getconf _NPROCESSORS_ONLN) && \
     echo 'trusted = true' >> /usr/local/pgsql/share/extension/pg_mooncake.control
 
 #########################################################################################
