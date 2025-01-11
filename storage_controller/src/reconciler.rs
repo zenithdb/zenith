@@ -696,6 +696,11 @@ impl Reconciler {
     /// First we apply special case handling (e.g. for live migrations), and then a
     /// general case reconciliation where we walk through the intent by pageserver
     /// and call out to the pageserver to apply the desired state.
+    ///
+    /// An Ok(()) result indicates that we successfully attached the tenant, but _not_ that
+    /// all locations for the tenant are in the expected state. When nodes that are to be detached
+    /// or configured as secondary are unavailable, we may return Ok(()) but leave the shard in a
+    /// state where it still requires later reconciliation.
     pub(crate) async fn reconcile(&mut self) -> Result<(), ReconcileError> {
         // Prepare: if we have uncertain `observed` state for our would-be attachement location, then refresh it
         self.maybe_refresh_observed().await?;
@@ -784,10 +789,18 @@ impl Reconciler {
                     tracing::info!(node_id=%node.get_id(), "Observed configuration already correct.")
                 }
                 _ => {
-                    // In all cases other than a matching observed configuration, we will
-                    // reconcile this location.
-                    tracing::info!(node_id=%node.get_id(), "Observed configuration requires update.");
-                    changes.push((node.clone(), wanted_conf))
+                    // Only try and configure secondary locations on nodes that are available.  This
+                    // allows the reconciler to "succeed" while some secondaries are offline (e.g. after
+                    // a node failure, where the failed node will have a secondary intent)
+                    if node.is_available() {
+                        tracing::info!(node_id=%node.get_id(), "Observed configuration requires update.");
+                        changes.push((node.clone(), wanted_conf))
+                    } else {
+                        tracing::info!(node_id=%node.get_id(), "Skipping configuration as secondary, node is unavailable");
+                        self.observed
+                            .locations
+                            .insert(node.get_id(), ObservedStateLocation { conf: None });
+                    }
                 }
             }
         }

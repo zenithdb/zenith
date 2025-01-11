@@ -1122,10 +1122,15 @@ impl TenantShard {
         let result = reconciler.reconcile().await;
 
         // If we know we had a pending compute notification from some previous action, send a notification irrespective
-        // of whether the above reconcile() did any work
+        // of whether the above reconcile() did any work.  It has to be Ok() though, because otherwise we might be
+        // sending a notification of a location that isn't really attached.
         if result.is_ok() && must_notify {
             // If this fails we will send the need to retry in [`ReconcileResult::pending_compute_notification`]
             reconciler.compute_notify().await.ok();
+        } else if must_notify {
+            // Carry this flag so that the reconciler's result will indicate that it still needs to retry
+            // the compute hook notification eventually.
+            reconciler.compute_notify_failure = true;
         }
 
         // Update result counter

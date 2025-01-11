@@ -822,6 +822,121 @@ def test_storage_controller_stuck_compute_hook(
     env.storage_controller.consistency_check()
 
 
+def test_storage_controller_compute_hook_retry(
+    httpserver: HTTPServer,
+    neon_env_builder: NeonEnvBuilder,
+    httpserver_listen_address: ListenAddress,
+):
+    """
+    Test that when a reconciler can't do its compute hook notification, it will keep
+    trying until it succeeds.
+
+    Reproducer for https://github.com/neondatabase/cloud/issues/22612
+    """
+
+    neon_env_builder.num_pageservers = 2
+    (host, port) = httpserver_listen_address
+    neon_env_builder.control_plane_compute_hook_api = f"http://{host}:{port}/notify"
+
+    handle_params = {"status": 200}
+
+    notifications = []
+
+    def handler(request: Request):
+        status = handle_params["status"]
+        log.info(f"Notify request[{status}]: {request}")
+        notifications.append(request.json)
+        return Response(status=status)
+
+    httpserver.expect_request("/notify", method="PUT").respond_with_handler(handler)
+
+    # Start running
+    env = neon_env_builder.init_configs()
+    env.start()
+
+    tenant_id = TenantId.generate()
+    env.create_tenant(tenant_id, placement_policy='{"Attached": 1}')
+
+    # Initial notification from tenant creation
+    assert len(notifications) == 1
+    expect: dict[str, list[dict[str, int]] | str | None | int] = {
+        "tenant_id": str(tenant_id),
+        "stripe_size": None,
+        "shards": [{"node_id": int(env.pageservers[0].id), "shard_number": 0}],
+        "preferred_az": DEFAULT_AZ_ID,
+    }
+    assert notifications[0] == expect
+
+    # Block notifications, and fail a node
+    handle_params["status"] = 423
+    env.pageservers[0].stop()
+    env.storage_controller.allowed_errors.append(NOTIFY_BLOCKED_LOG)
+    env.storage_controller.allowed_errors.extend(NOTIFY_FAILURE_LOGS)
+
+    # Avoid waiting for heartbeats
+    env.storage_controller.node_configure(env.pageservers[0].id, {"availability": "Offline"})
+
+    # Make reconciler run and fail: it should leave itself in a state where the shard will retry notification later,
+    # and we will check that that happens
+    notifications = []
+    try:
+        assert env.storage_controller.reconcile_all() == 1
+    except StorageControllerApiException as e:
+        assert "Control plane tenant busy" in str(e)
+    assert len(notifications) == 1
+    assert (
+        env.storage_controller.tenant_describe(tenant_id)["shards"][0][
+            "is_pending_compute_notification"
+        ]
+        is True
+    )
+
+    # Try reconciling again, it should try notifying again
+    notifications = []
+    try:
+        assert env.storage_controller.reconcile_all() == 1
+    except StorageControllerApiException as e:
+        assert "Control plane tenant busy" in str(e)
+    assert len(notifications) == 1
+    assert (
+        env.storage_controller.tenant_describe(tenant_id)["shards"][0][
+            "is_pending_compute_notification"
+        ]
+        is True
+    )
+
+    # The describe API should indicate that a notification is pending
+    assert (
+        env.storage_controller.tenant_describe(tenant_id)["shards"][0][
+            "is_pending_compute_notification"
+        ]
+        is True
+    )
+
+    # Unblock notifications: reconcile should work now
+    handle_params["status"] = 200
+    notifications = []
+    assert env.storage_controller.reconcile_all() == 1
+    assert len(notifications) == 1
+    assert (
+        env.storage_controller.tenant_describe(tenant_id)["shards"][0][
+            "is_pending_compute_notification"
+        ]
+        is False
+    )
+
+    # Reconciler should be idle now that it succeeded in its compute notification
+    notifications = []
+    assert env.storage_controller.reconcile_all() == 0
+    assert len(notifications) == 0
+    assert (
+        env.storage_controller.tenant_describe(tenant_id)["shards"][0][
+            "is_pending_compute_notification"
+        ]
+        is False
+    )
+
+
 @run_only_on_default_postgres("this test doesn't start an endpoint")
 def test_storage_controller_compute_hook_revert(
     httpserver: HTTPServer,
