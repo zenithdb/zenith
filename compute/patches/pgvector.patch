@@ -1,8 +1,24 @@
+diff --git a/Makefile b/Makefile
+index 7a4b88c..56678af 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3,7 +3,10 @@ EXTVERSION = 0.8.0
+ 
+ MODULE_big = vector
+ DATA = $(wildcard sql/*--*--*.sql)
+-DATA_built = sql/$(EXTENSION)--$(EXTVERSION).sql
++# This change is needed to install different per-version SQL files
++# like pgvector--0.8.0.sql and pgvector--0.7.4.sql
++# The corresponding file is downloaded during the Docker image build process
++DATA_built = sql/$(EXTENSION)--$(EXTVERSION).sql sql/vector--0.7.4.sql
+ OBJS = src/bitutils.o src/bitvec.o src/halfutils.o src/halfvec.o src/hnsw.o src/hnswbuild.o src/hnswinsert.o src/hnswscan.o src/hnswutils.o src/hnswvacuum.o src/ivfbuild.o src/ivfflat.o src/ivfinsert.o src/ivfkmeans.o src/ivfscan.o src/ivfutils.o src/ivfvacuum.o src/sparsevec.o src/vector.o
+ HEADERS = src/halfvec.h src/sparsevec.h src/vector.h
+ 
 diff --git a/src/hnswbuild.c b/src/hnswbuild.c
-index dcfb2bd..d5189ee 100644
+index b667478..fc1897c 100644
 --- a/src/hnswbuild.c
 +++ b/src/hnswbuild.c
-@@ -860,9 +860,17 @@ HnswParallelBuildMain(dsm_segment *seg, shm_toc *toc)
+@@ -843,9 +843,17 @@ HnswParallelBuildMain(dsm_segment *seg, shm_toc *toc)
  
  	hnswarea = shm_toc_lookup(toc, PARALLEL_KEY_HNSW_AREA, false);
  
@@ -20,7 +36,7 @@ index dcfb2bd..d5189ee 100644
  	/* Close relations within worker */
  	index_close(indexRel, indexLockmode);
  	table_close(heapRel, heapLockmode);
-@@ -1117,12 +1125,38 @@ BuildIndex(Relation heap, Relation index, IndexInfo *indexInfo,
+@@ -1100,12 +1108,38 @@ BuildIndex(Relation heap, Relation index, IndexInfo *indexInfo,
  	SeedRandom(42);
  #endif
  
