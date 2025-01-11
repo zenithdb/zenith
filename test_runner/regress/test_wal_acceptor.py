@@ -48,7 +48,12 @@ from fixtures.remote_storage import (
     default_remote_storage,
     s3_storage,
 )
-from fixtures.safekeeper.http import SafekeeperHttpClient
+from fixtures.safekeeper.http import (
+    Configuration,
+    SafekeeperHttpClient,
+    SafekeeperId,
+    TimelineCreateRequest,
+)
 from fixtures.safekeeper.utils import wait_walreceivers_absent
 from fixtures.utils import (
     PropagatingThread,
@@ -658,7 +663,13 @@ def test_s3_wal_replay(neon_env_builder: NeonEnvBuilder):
     for sk in env.safekeepers:
         sk.start()
         cli = sk.http_client()
-        cli.timeline_create(tenant_id, timeline_id, pg_version, last_lsn)
+        mconf = Configuration(generation=0, members=[], new_members=None)
+        # set start_lsn to the beginning of the first segment to allow reading
+        # WAL from there (could you intidb LSN as well).
+        r = TimelineCreateRequest(
+            tenant_id, timeline_id, mconf, pg_version, Lsn("0/1000000"), commit_lsn=last_lsn
+        )
+        cli.timeline_create(r)
         f_partial_path = (
             Path(sk.data_dir) / str(tenant_id) / str(timeline_id) / f_partial_saved.name
         )
@@ -2235,6 +2246,63 @@ def test_pull_timeline_while_evicted(neon_env_builder: NeonEnvBuilder):
         assert n_evicted == 0
 
     wait_until(unevicted_on_dest, interval=0.1, timeout=1.0)
+
+
+# Basic test for http API membership related calls: create timeline and switch
+# configuration. Normally these are called by storage controller, but this
+# allows to test them separately.
+@run_only_on_default_postgres("tests only safekeeper API")
+def test_membership_api(neon_env_builder: NeonEnvBuilder):
+    neon_env_builder.num_safekeepers = 1
+    env = neon_env_builder.init_start()
+
+    tenant_id = env.initial_tenant
+    timeline_id = env.initial_timeline
+
+    sk = env.safekeepers[0]
+    http_cli = sk.http_client()
+
+    sk_id_1 = SafekeeperId(env.safekeepers[0].id, "localhost", sk.port.pg_tenant_only)
+    sk_id_2 = SafekeeperId(11, "localhost", 5434)  # just a mock
+
+    # Request to switch before timeline creation should fail.
+    init_conf = Configuration(generation=1, members=[sk_id_1], new_members=None)
+    with pytest.raises(requests.exceptions.HTTPError):
+        http_cli.membership_switch(tenant_id, timeline_id, init_conf)
+
+    # Create timeline.
+    create_r = TimelineCreateRequest(
+        tenant_id, timeline_id, init_conf, 150002, Lsn("0/1000000"), commit_lsn=None
+    )
+    log.info(f"sending {create_r.to_json()}")
+    http_cli.timeline_create(create_r)
+
+    # Switch into some conf.
+    joint_conf = Configuration(generation=4, members=[sk_id_1], new_members=[sk_id_2])
+    resp = http_cli.membership_switch(tenant_id, timeline_id, joint_conf)
+    log.info(f"joint switch resp: {resp}")
+    assert resp.previous_conf.generation == 1
+    assert resp.current_conf.generation == 4
+
+    # Restart sk, conf should be preserved.
+    sk.stop().start()
+    after_restart = http_cli.get_membership(tenant_id, timeline_id)
+    log.info(f"conf after restart: {after_restart}")
+    assert after_restart.generation == 4
+
+    # Switch into disjoint conf.
+    non_joint = Configuration(generation=5, members=[sk_id_2], new_members=None)
+    resp = http_cli.membership_switch(tenant_id, timeline_id, non_joint)
+    log.info(f"non joint switch resp: {resp}")
+    assert resp.previous_conf.generation == 4
+    assert resp.current_conf.generation == 5
+
+    # Switch request to lower conf should be ignored.
+    lower_conf = Configuration(generation=3, members=[], new_members=None)
+    resp = http_cli.membership_switch(tenant_id, timeline_id, lower_conf)
+    log.info(f"lower switch resp: {resp}")
+    assert resp.previous_conf.generation == 5
+    assert resp.current_conf.generation == 5
 
 
 # In this test we check for excessive START_REPLICATION and START_WAL_PUSH queries

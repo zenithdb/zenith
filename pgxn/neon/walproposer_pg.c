@@ -225,19 +225,21 @@ nwp_register_gucs(void)
 static int
 split_safekeepers_list(char *safekeepers_list, char *safekeepers[])
 {
-	int n_safekeepers = 0;
-	char *curr_sk = safekeepers_list;
+	int			n_safekeepers = 0;
+	char	   *curr_sk = safekeepers_list;
 
 	for (char *coma = safekeepers_list; coma != NULL && *coma != '\0'; curr_sk = coma)
 	{
-		if (++n_safekeepers >= MAX_SAFEKEEPERS) {
+		if (++n_safekeepers >= MAX_SAFEKEEPERS)
+		{
 			wpg_log(FATAL, "too many safekeepers");
 		}
 
 		coma = strchr(coma, ',');
-		safekeepers[n_safekeepers-1] = curr_sk;
+		safekeepers[n_safekeepers - 1] = curr_sk;
 
-		if (coma != NULL) {
+		if (coma != NULL)
+		{
 			*coma++ = '\0';
 		}
 	}
@@ -252,10 +254,10 @@ split_safekeepers_list(char *safekeepers_list, char *safekeepers[])
 static bool
 safekeepers_cmp(char *old, char *new)
 {
-	char *safekeepers_old[MAX_SAFEKEEPERS];
-	char *safekeepers_new[MAX_SAFEKEEPERS];
-	int len_old = 0;
-	int len_new = 0;
+	char	   *safekeepers_old[MAX_SAFEKEEPERS];
+	char	   *safekeepers_new[MAX_SAFEKEEPERS];
+	int			len_old = 0;
+	int			len_new = 0;
 
 	len_old = split_safekeepers_list(old, safekeepers_old);
 	len_new = split_safekeepers_list(new, safekeepers_new);
@@ -292,7 +294,8 @@ assign_neon_safekeepers(const char *newval, void *extra)
 	if (!am_walproposer)
 		return;
 
-	if (!newval) {
+	if (!newval)
+	{
 		/* should never happen */
 		wpg_log(FATAL, "neon.safekeepers is empty");
 	}
@@ -301,11 +304,11 @@ assign_neon_safekeepers(const char *newval, void *extra)
 	newval_copy = pstrdup(newval);
 	oldval = pstrdup(wal_acceptors_list);
 
-	/* 
+	/*
 	 * TODO: restarting through FATAL is stupid and introduces 1s delay before
-	 * next bgw start. We should refactor walproposer to allow graceful exit and
-	 * thus remove this delay.
-	 * XXX: If you change anything here, sync with test_safekeepers_reconfigure_reorder.
+	 * next bgw start. We should refactor walproposer to allow graceful exit
+	 * and thus remove this delay. XXX: If you change anything here, sync with
+	 * test_safekeepers_reconfigure_reorder.
 	 */
 	if (!safekeepers_cmp(oldval, newval_copy))
 	{
@@ -454,7 +457,8 @@ backpressure_throttling_impl(void)
 	memcpy(new_status, old_status, len);
 	snprintf(new_status + len, 64, "backpressure throttling: lag %lu", lag);
 	set_ps_display(new_status);
-	new_status[len] = '\0'; /* truncate off " backpressure ..." to later reset the ps */
+	new_status[len] = '\0';		/* truncate off " backpressure ..." to later
+								 * reset the ps */
 
 	elog(DEBUG2, "backpressure throttling: lag %lu", lag);
 	start = GetCurrentTimestamp();
@@ -1963,10 +1967,11 @@ walprop_pg_process_safekeeper_feedback(WalProposer *wp, Safekeeper *sk)
 		FullTransactionId xmin = hsFeedback.xmin;
 		FullTransactionId catalog_xmin = hsFeedback.catalog_xmin;
 		FullTransactionId next_xid = ReadNextFullTransactionId();
+
 		/*
-		 * Page server is updating nextXid in checkpoint each 1024 transactions,
-		 * so feedback xmin can be actually larger then nextXid and
-		 * function TransactionIdInRecentPast return false in this case,
+		 * Page server is updating nextXid in checkpoint each 1024
+		 * transactions, so feedback xmin can be actually larger then nextXid
+		 * and function TransactionIdInRecentPast return false in this case,
 		 * preventing update of slot's xmin.
 		 */
 		if (FullTransactionIdPrecedes(next_xid, xmin))

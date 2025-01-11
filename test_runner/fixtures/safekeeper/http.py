@@ -10,7 +10,7 @@ import requests
 from fixtures.common_types import Lsn, TenantId, TenantTimelineId, TimelineId
 from fixtures.log_helper import log
 from fixtures.metrics import Metrics, MetricsGetter, parse_metrics
-from fixtures.utils import wait_until
+from fixtures.utils import EnhancedJSONEncoder, wait_until
 
 if TYPE_CHECKING:
     from typing import Any
@@ -25,6 +25,7 @@ class Walreceiver:
 
 @dataclass
 class SafekeeperTimelineStatus:
+    mconf: Configuration | None
     term: int
     last_log_term: int
     pg_version: int  # Not exactly a PgVersion, safekeeper returns version as int, for example 150002 for 15.2
@@ -67,6 +68,56 @@ class TermBumpResponse:
             previous_term=d["previous_term"],
             current_term=d["current_term"],
         )
+
+
+@dataclass
+class SafekeeperId:
+    id: int
+    host: str
+    pg_port: int
+
+
+@dataclass
+class Configuration:
+    generation: int
+    members: list[SafekeeperId]
+    new_members: list[SafekeeperId] | None
+
+    @classmethod
+    def from_json(cls, d: dict[str, Any]) -> Configuration:
+        generation = d["generation"]
+        members = d["members"]
+        new_members = d.get("new_members")
+        return Configuration(generation, members, new_members)
+
+    def to_json(self) -> str:
+        return json.dumps(self, cls=EnhancedJSONEncoder)
+
+
+@dataclass
+class TimelineCreateRequest:
+    tenant_id: TenantId
+    timeline_id: TimelineId
+    mconf: Configuration
+    # not exactly PgVersion, for example 150002 for 15.2
+    pg_version: int
+    start_lsn: Lsn
+    commit_lsn: Lsn | None
+
+    def to_json(self) -> str:
+        return json.dumps(self, cls=EnhancedJSONEncoder)
+
+
+@dataclass
+class TimelineMembershipSwitchResponse:
+    previous_conf: Configuration
+    current_conf: Configuration
+
+    @classmethod
+    def from_json(cls, d: dict[str, Any]) -> TimelineMembershipSwitchResponse:
+        previous_conf = Configuration.from_json(d["previous_conf"])
+        current_conf = Configuration.from_json(d["current_conf"])
+        return TimelineMembershipSwitchResponse(previous_conf, current_conf)
 
 
 class SafekeeperHttpClient(requests.Session, MetricsGetter):
@@ -131,20 +182,8 @@ class SafekeeperHttpClient(requests.Session, MetricsGetter):
         resj = res.json()
         return [TenantTimelineId.from_json(ttidj) for ttidj in resj]
 
-    def timeline_create(
-        self,
-        tenant_id: TenantId,
-        timeline_id: TimelineId,
-        pg_version: int,  # Not exactly a PgVersion, safekeeper returns version as int, for example 150002 for 15.2
-        commit_lsn: Lsn,
-    ):
-        body = {
-            "tenant_id": str(tenant_id),
-            "timeline_id": str(timeline_id),
-            "pg_version": pg_version,
-            "commit_lsn": str(commit_lsn),
-        }
-        res = self.post(f"http://localhost:{self.port}/v1/tenant/timeline", json=body)
+    def timeline_create(self, r: TimelineCreateRequest):
+        res = self.post(f"http://localhost:{self.port}/v1/tenant/timeline", data=r.to_json())
         res.raise_for_status()
 
     def timeline_status(
@@ -154,7 +193,10 @@ class SafekeeperHttpClient(requests.Session, MetricsGetter):
         res.raise_for_status()
         resj = res.json()
         walreceivers = [Walreceiver(wr["conn_id"], wr["status"]) for wr in resj["walreceivers"]]
+        # It is always normally not None, it is allowed only to make forward compat tests happy.
+        mconf = Configuration.from_json(resj["mconf"]) if "mconf" in resj else None
         return SafekeeperTimelineStatus(
+            mconf=mconf,
             term=resj["acceptor_state"]["term"],
             last_log_term=resj["acceptor_state"]["epoch"],
             pg_version=resj["pg_info"]["pg_version"],
@@ -179,6 +221,11 @@ class SafekeeperHttpClient(requests.Session, MetricsGetter):
 
     def get_commit_lsn(self, tenant_id: TenantId, timeline_id: TimelineId) -> Lsn:
         return self.timeline_status(tenant_id, timeline_id).commit_lsn
+
+    # Get timeline membership configuration.
+    def get_membership(self, tenant_id: TenantId, timeline_id: TimelineId) -> Configuration:
+        # make mypy happy
+        return self.timeline_status(tenant_id, timeline_id).mconf  # type: ignore
 
     # only_local doesn't remove segments in the remote storage.
     def timeline_delete(
@@ -225,6 +272,16 @@ class SafekeeperHttpClient(requests.Session, MetricsGetter):
         res_json = res.json()
         assert isinstance(res_json, dict)
         return res_json
+
+    def membership_switch(
+        self, tenant_id: TenantId, timeline_id: TimelineId, to: Configuration
+    ) -> TimelineMembershipSwitchResponse:
+        res = self.post(
+            f"http://localhost:{self.port}/v1/tenant/{tenant_id}/timeline/{timeline_id}/membership",
+            data=to.to_json(),
+        )
+        res.raise_for_status()
+        return TimelineMembershipSwitchResponse.from_json(res.json())
 
     def copy_timeline(self, tenant_id: TenantId, timeline_id: TimelineId, body: dict[str, Any]):
         res = self.post(

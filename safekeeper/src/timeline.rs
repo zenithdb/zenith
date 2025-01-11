@@ -4,7 +4,10 @@
 use anyhow::{anyhow, bail, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use remote_storage::RemotePath;
-use safekeeper_api::models::{PeerInfo, TimelineTermBumpResponse};
+use safekeeper_api::membership::Configuration;
+use safekeeper_api::models::{
+    PeerInfo, TimelineMembershipSwitchResponse, TimelineTermBumpResponse,
+};
 use safekeeper_api::Term;
 use tokio::fs::{self};
 use tokio_util::sync::CancellationToken;
@@ -186,6 +189,13 @@ impl StateSK {
 
     pub async fn term_bump(&mut self, to: Option<Term>) -> Result<TimelineTermBumpResponse> {
         self.state_mut().term_bump(to).await
+    }
+
+    pub async fn membership_switch(
+        &mut self,
+        to: Configuration,
+    ) -> Result<TimelineMembershipSwitchResponse> {
+        self.state_mut().membership_switch(to).await
     }
 
     /// Close open WAL files to release FDs.
@@ -766,6 +776,14 @@ impl Timeline {
     pub async fn term_bump(self: &Arc<Self>, to: Option<Term>) -> Result<TimelineTermBumpResponse> {
         let mut state = self.write_shared_state().await;
         state.sk.term_bump(to).await
+    }
+
+    pub async fn membership_switch(
+        self: &Arc<Self>,
+        to: Configuration,
+    ) -> Result<TimelineMembershipSwitchResponse> {
+        let mut state = self.write_shared_state().await;
+        state.sk.membership_switch(to).await
     }
 
     /// Guts of [`Self::wal_residence_guard`] and [`Self::try_wal_residence_guard`]

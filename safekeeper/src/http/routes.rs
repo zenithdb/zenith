@@ -1,4 +1,5 @@
 use hyper::{Body, Request, Response, StatusCode};
+use safekeeper_api::models;
 use safekeeper_api::models::AcceptorStateStatus;
 use safekeeper_api::models::SafekeeperStatus;
 use safekeeper_api::models::TermSwitchApiEntry;
@@ -111,14 +112,15 @@ async fn timeline_create_handler(mut request: Request<Body>) -> Result<Response<
         system_id: request_data.system_id.unwrap_or(0),
         wal_seg_size: request_data.wal_seg_size.unwrap_or(WAL_SEGMENT_SIZE as u32),
     };
-    let local_start_lsn = request_data.local_start_lsn.unwrap_or_else(|| {
-        request_data
-            .commit_lsn
-            .segment_lsn(server_info.wal_seg_size as usize)
-    });
     let global_timelines = get_global_timelines(&request);
     global_timelines
-        .create(ttid, server_info, request_data.commit_lsn, local_start_lsn)
+        .create(
+            ttid,
+            request_data.mconf,
+            server_info,
+            request_data.start_lsn,
+            request_data.commit_lsn.unwrap_or(request_data.start_lsn),
+        )
         .await
         .map_err(ApiError::InternalServerError)?;
 
@@ -182,6 +184,7 @@ async fn timeline_status_handler(request: Request<Body>) -> Result<Response<Body
     let status = TimelineStatus {
         tenant_id: ttid.tenant_id,
         timeline_id: ttid.timeline_id,
+        mconf: state.mconf,
         acceptor_state: acc_state,
         pg_info: state.server,
         flush_lsn,
@@ -265,6 +268,28 @@ async fn timeline_snapshot_handler(request: Request<Body>) -> Result<Response<Bo
         .unwrap();
 
     Ok(response)
+}
+
+/// Consider switching timeline membership configuration to the provided one.
+async fn timeline_membership_handler(
+    mut request: Request<Body>,
+) -> Result<Response<Body>, ApiError> {
+    let ttid = TenantTimelineId::new(
+        parse_request_param(&request, "tenant_id")?,
+        parse_request_param(&request, "timeline_id")?,
+    );
+    check_permission(&request, Some(ttid.tenant_id))?;
+
+    let global_timelines = get_global_timelines(&request);
+    let tli = global_timelines.get(ttid).map_err(ApiError::from)?;
+
+    let data: models::TimelineMembershipSwitchRequest = json_request(&mut request).await?;
+    let response = tli
+        .membership_switch(data.mconf)
+        .await
+        .map_err(ApiError::InternalServerError)?;
+
+    json_response(StatusCode::OK, response)
 }
 
 async fn timeline_copy_handler(mut request: Request<Body>) -> Result<Response<Body>, ApiError> {
@@ -617,6 +642,10 @@ pub fn make_router(
         .get(
             "/v1/tenant/:tenant_id/timeline/:timeline_id/snapshot/:destination_id",
             |r| request_span(r, timeline_snapshot_handler),
+        )
+        .post(
+            "/v1/tenant/:tenant_id/timeline/:timeline_id/membership",
+            |r| request_span(r, timeline_membership_handler),
         )
         .post(
             "/v1/tenant/:tenant_id/timeline/:source_timeline_id/copy",

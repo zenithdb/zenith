@@ -1,20 +1,25 @@
 //! Defines per timeline data stored persistently (SafeKeeperPersistentState)
 //! and its wrapper with in memory layer (SafekeeperState).
 
-use std::{cmp::max, ops::Deref};
+use std::{cmp::max, ops::Deref, time::SystemTime};
 
 use anyhow::{bail, Result};
 use postgres_ffi::WAL_SEGMENT_SIZE;
-use safekeeper_api::{models::TimelineTermBumpResponse, ServerInfo, Term};
+use safekeeper_api::{
+    membership::Configuration,
+    models::{TimelineMembershipSwitchResponse, TimelineTermBumpResponse},
+    ServerInfo, Term, INITIAL_TERM,
+};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 use utils::{
-    id::{NodeId, TenantId, TenantTimelineId, TimelineId},
+    id::{TenantId, TenantTimelineId, TimelineId},
     lsn::Lsn,
 };
 
 use crate::{
     control_file,
-    safekeeper::{AcceptorState, PersistedPeerInfo, PgUuid, TermHistory, UNKNOWN_SERVER_VERSION},
+    safekeeper::{AcceptorState, PgUuid, TermHistory, TermLsn, UNKNOWN_SERVER_VERSION},
     timeline::TimelineError,
     wal_backup_partial::{self},
 };
@@ -27,6 +32,8 @@ pub struct TimelinePersistentState {
     pub tenant_id: TenantId,
     #[serde(with = "hex")]
     pub timeline_id: TimelineId,
+    /// Membership configuration.
+    pub mconf: Configuration,
     /// persistent acceptor state
     pub acceptor_state: AcceptorState,
     /// information about server
@@ -58,21 +65,14 @@ pub struct TimelinePersistentState {
     /// pushed to s3. We don't remove WAL beyond it. Persisted only for
     /// informational purposes, we receive it from pageserver (or broker).
     pub remote_consistent_lsn: Lsn,
-    /// Peers and their state as we remember it. Knowing peers themselves is
-    /// fundamental; but state is saved here only for informational purposes and
-    /// obviously can be stale. (Currently not saved at all, but let's provision
-    /// place to have less file version upgrades).
-    pub peers: PersistedPeers,
     /// Holds names of partial segments uploaded to remote storage. Used to
     /// clean up old objects without leaving garbage in remote storage.
     pub partial_backup: wal_backup_partial::State,
     /// Eviction state of the timeline. If it's Offloaded, we should download
     /// WAL files from remote storage to serve the timeline.
     pub eviction_state: EvictionState,
+    pub creation_ts: SystemTime,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PersistedPeers(pub Vec<(NodeId, PersistedPeerInfo)>);
 
 /// State of the local WAL files. Used to track current timeline state,
 /// that can be either WAL files are present on disk or last partial segment
@@ -87,12 +87,14 @@ pub enum EvictionState {
 }
 
 impl TimelinePersistentState {
+    /// commit_lsn is the same as start_lsn in the normal creaiton; see
+    /// `TimelineCreateRequest` comments.`
     pub fn new(
         ttid: &TenantTimelineId,
+        mconf: Configuration,
         server_info: ServerInfo,
-        peers: Vec<NodeId>,
+        start_lsn: Lsn,
         commit_lsn: Lsn,
-        local_start_lsn: Lsn,
     ) -> anyhow::Result<TimelinePersistentState> {
         if server_info.wal_seg_size == 0 {
             bail!(TimelineError::UninitializedWalSegSize(*ttid));
@@ -102,49 +104,59 @@ impl TimelinePersistentState {
             bail!(TimelineError::UninitialinzedPgVersion(*ttid));
         }
 
-        if commit_lsn < local_start_lsn {
+        if commit_lsn < start_lsn {
             bail!(
-                "commit_lsn {} is smaller than local_start_lsn {}",
+                "commit_lsn {} is smaller than start_lsn {}",
                 commit_lsn,
-                local_start_lsn
+                start_lsn
             );
         }
+
+        // If we are given with init LSN, initialize term history with it. It
+        // ensures that walproposer always must be able to find a common point
+        // in histories; if it can't something is corrupted. Not having LSN here
+        // is so far left for legacy case where timeline is created by compute
+        // and LSN during creation is not known yet.
+        let term_history = if commit_lsn != Lsn::INVALID {
+            TermHistory(vec![TermLsn {
+                term: INITIAL_TERM,
+                lsn: start_lsn,
+            }])
+        } else {
+            TermHistory::empty()
+        };
 
         Ok(TimelinePersistentState {
             tenant_id: ttid.tenant_id,
             timeline_id: ttid.timeline_id,
+            mconf,
             acceptor_state: AcceptorState {
-                term: 0,
-                term_history: TermHistory::empty(),
+                term: INITIAL_TERM,
+                term_history,
             },
             server: server_info,
             proposer_uuid: [0; 16],
-            timeline_start_lsn: Lsn(0),
-            local_start_lsn,
+            timeline_start_lsn: start_lsn,
+            local_start_lsn: start_lsn,
             commit_lsn,
-            backup_lsn: local_start_lsn,
-            peer_horizon_lsn: local_start_lsn,
+            backup_lsn: start_lsn,
+            peer_horizon_lsn: start_lsn,
             remote_consistent_lsn: Lsn(0),
-            peers: PersistedPeers(
-                peers
-                    .iter()
-                    .map(|p| (*p, PersistedPeerInfo::new()))
-                    .collect(),
-            ),
             partial_backup: wal_backup_partial::State::default(),
             eviction_state: EvictionState::Present,
+            creation_ts: SystemTime::now(),
         })
     }
 
     pub fn empty() -> Self {
         TimelinePersistentState::new(
             &TenantTimelineId::empty(),
+            Configuration::empty(),
             ServerInfo {
                 pg_version: 170000, /* Postgres server version (major * 10000) */
                 system_id: 0,       /* Postgres system identifier */
                 wal_seg_size: WAL_SEGMENT_SIZE as u32,
             },
-            vec![],
             Lsn::INVALID,
             Lsn::INVALID,
         )
@@ -247,6 +259,31 @@ where
         Ok(TimelineTermBumpResponse {
             previous_term: before,
             current_term: after,
+        })
+    }
+
+    /// Switch into membership configuration `to` if it is higher than the
+    /// current one.
+    pub async fn membership_switch(
+        &mut self,
+        to: Configuration,
+    ) -> Result<TimelineMembershipSwitchResponse> {
+        let before = self.mconf.clone();
+        // Is switch allowed?
+        if to.generation <= self.mconf.generation {
+            info!(
+                "ignoring request to switch membership conf to lower {}, current conf {}",
+                to, self.mconf
+            );
+        } else {
+            let mut state = self.start_change();
+            state.mconf = to.clone();
+            self.finish_change(&state).await?;
+            info!("switched membership conf to {} from {}", to, before);
+        }
+        Ok(TimelineMembershipSwitchResponse {
+            previous_conf: before,
+            current_conf: self.mconf.clone(),
         })
     }
 }

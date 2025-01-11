@@ -847,9 +847,9 @@ HandleElectedProposer(WalProposer *wp)
 	 * otherwise we must be sync-safekeepers and we have nothing to do then.
 	 *
 	 * Proceeding is not only pointless but harmful, because we'd give
-	 * safekeepers term history starting with 0/0. These hacks will go away once
-	 * we disable implicit timeline creation on safekeepers and create it with
-	 * non zero LSN from the start.
+	 * safekeepers term history starting with 0/0. These hacks will go away
+	 * once we disable implicit timeline creation on safekeepers and create it
+	 * with non zero LSN from the start.
 	 */
 	if (wp->propEpochStartLsn == InvalidXLogRecPtr)
 	{
@@ -1052,10 +1052,11 @@ DetermineEpochStartLsn(WalProposer *wp)
 		if (SkipXLogPageHeader(wp, wp->propEpochStartLsn) != wp->api.get_redo_start_lsn(wp))
 		{
 			/*
-			 * However, allow to proceed if last_log_term on the node which gave
-			 * the highest vote (i.e. point where we are going to start writing)
-			 * actually had been won by me; plain restart of walproposer not
-			 * intervened by concurrent compute which wrote WAL is ok.
+			 * However, allow to proceed if last_log_term on the node which
+			 * gave the highest vote (i.e. point where we are going to start
+			 * writing) actually had been won by me; plain restart of
+			 * walproposer not intervened by concurrent compute which wrote
+			 * WAL is ok.
 			 *
 			 * This avoids compute crash after manual term_bump.
 			 */
@@ -1366,14 +1367,17 @@ SendAppendRequests(Safekeeper *sk)
 			req = &sk->appendRequest;
 			req_len = req->endLsn - req->beginLsn;
 
-			/* We send zero sized AppenRequests as heartbeats; don't wal_read for these. */
+			/*
+			 * We send zero sized AppenRequests as heartbeats; don't wal_read
+			 * for these.
+			 */
 			if (req_len > 0)
 			{
 				switch (wp->api.wal_read(sk,
-										&sk->outbuf.data[sk->outbuf.len],
-										req->beginLsn,
-										req_len,
-										&errmsg))
+										 &sk->outbuf.data[sk->outbuf.len],
+										 req->beginLsn,
+										 req_len,
+										 &errmsg))
 				{
 					case NEON_WALREAD_SUCCESS:
 						break;
@@ -1381,7 +1385,7 @@ SendAppendRequests(Safekeeper *sk)
 						return true;
 					case NEON_WALREAD_ERROR:
 						wp_log(WARNING, "WAL reading for node %s:%s failed: %s",
-							sk->host, sk->port, errmsg);
+							   sk->host, sk->port, errmsg);
 						ShutdownConnection(sk);
 						return false;
 					default:
@@ -1469,11 +1473,11 @@ RecvAppendResponses(Safekeeper *sk)
 			 * Term has changed to higher one, probably another compute is
 			 * running. If this is the case we could PANIC as well because
 			 * likely it inserted some data and our basebackup is unsuitable
-			 * anymore. However, we also bump term manually (term_bump endpoint)
-			 * on safekeepers for migration purposes, in this case we do want
-			 * compute to stay alive. So restart walproposer with FATAL instead
-			 * of panicking; if basebackup is spoiled next election will notice
-			 * this.
+			 * anymore. However, we also bump term manually (term_bump
+			 * endpoint) on safekeepers for migration purposes, in this case
+			 * we do want compute to stay alive. So restart walproposer with
+			 * FATAL instead of panicking; if basebackup is spoiled next
+			 * election will notice this.
 			 */
 			wp_log(FATAL, "WAL acceptor %s:%s with term " INT64_FORMAT " rejected our request, our term " INT64_FORMAT ", meaning another compute is running at the same time, and it conflicts with us",
 				   sk->host, sk->port,

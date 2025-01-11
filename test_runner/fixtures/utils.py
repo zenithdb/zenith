@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import zstandard
 from psycopg2.extensions import cursor
 from typing_extensions import override
 
+from fixtures.common_types import Id, Lsn
 from fixtures.log_helper import log
 from fixtures.pageserver.common_types import (
     parse_delta_layer,
@@ -603,6 +605,22 @@ class PropagatingThread(threading.Thread):
         if self.exc:
             raise self.exc
         return self.ret
+
+
+class EnhancedJSONEncoder(json.JSONEncoder):
+    """
+    Default json.JSONEncoder works only on primitive builtins. Extend it to any
+    dataclass plus our custom types.
+    """
+
+    def default(self, o):
+        if dataclasses.is_dataclass(o) and not isinstance(o, type):
+            return dataclasses.asdict(o)
+        elif isinstance(o, Id):
+            return o.id.hex()
+        elif isinstance(o, Lsn):
+            return str(o)  # standard hex notation
+        return super().default(o)
 
 
 def human_bytes(amt: float) -> str:
