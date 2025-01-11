@@ -27,7 +27,7 @@ use pageserver_api::{
     config::tenant_conf_defaults::DEFAULT_COMPACTION_THRESHOLD,
     key::{
         KEY_SIZE, METADATA_KEY_BEGIN_PREFIX, METADATA_KEY_END_PREFIX, NON_INHERITED_RANGE,
-        NON_INHERITED_SPARSE_RANGE,
+        SPARSE_RANGE,
     },
     keyspace::{KeySpaceAccum, KeySpaceRandomAccum, SparseKeyPartitioning},
     models::{
@@ -3221,7 +3221,7 @@ impl Timeline {
             // We don't return a blanket [`GetVectoredError::MissingKey`] to avoid
             // stalling compaction.
             keyspace.remove_overlapping_with(&KeySpace {
-                ranges: vec![NON_INHERITED_RANGE, NON_INHERITED_SPARSE_RANGE],
+                ranges: vec![NON_INHERITED_RANGE, Key::sparse_non_inherited_keyspace()],
             });
 
             // Keyspace is fully retrieved
@@ -3242,7 +3242,11 @@ impl Timeline {
             // keys from `keyspace`, we expect there to be no overlap between it and the image covered key
             // space. If that's not the case, we had at least one key encounter a gap in the image layer
             // and stop the search as a result of that.
-            let removed = keyspace.remove_overlapping_with(&image_covered_keyspace);
+            let mut removed = keyspace.remove_overlapping_with(&image_covered_keyspace);
+            // Do not fire missing key error for sparse keys.
+            removed.remove_overlapping_with(&KeySpace {
+                ranges: vec![SPARSE_RANGE],
+            });
             if !removed.is_empty() {
                 break Some(removed);
             }
@@ -3255,6 +3259,21 @@ impl Timeline {
                 .get_ready_ancestor_timeline(ancestor_timeline, ctx)
                 .await?;
             timeline = &*timeline_owned;
+        };
+
+        // Remove sparse keys from the keyspace so that it doesn't fire errors.
+        let missing_keyspace = if let Some(missing_keyspace) = missing_keyspace {
+            let mut missing_keyspace = missing_keyspace;
+            missing_keyspace.remove_overlapping_with(&KeySpace {
+                ranges: vec![SPARSE_RANGE],
+            });
+            if missing_keyspace.is_empty() {
+                None
+            } else {
+                Some(missing_keyspace)
+            }
+        } else {
+            None
         };
 
         if let Some(missing_keyspace) = missing_keyspace {
