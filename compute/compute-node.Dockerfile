@@ -34,11 +34,11 @@ RUN case $DEBIAN_VERSION in \
         echo "Unknown Debian version ${DEBIAN_VERSION}" && exit 1 \
       ;; \
     esac && \
-    apt update &&  \
+    apt update && \
     apt install --no-install-recommends --no-install-suggests -y \
     ninja-build git autoconf automake libtool build-essential bison flex libreadline-dev \
     zlib1g-dev libxml2-dev libcurl4-openssl-dev libossp-uuid-dev wget ca-certificates pkg-config libssl-dev \
-    libicu-dev libxslt1-dev liblz4-dev libzstd-dev zstd \
+    libicu-dev libxslt1-dev liblz4-dev libzstd-dev zstd g++ \
     $VERSION_INSTALLS \
     && apt clean && rm -rf /var/lib/apt/lists/*
 
@@ -1152,6 +1152,25 @@ RUN wget https://github.com/Mooncake-Labs/pg_mooncake/releases/download/v0.1.0/p
 
 #########################################################################################
 #
+# Layer "pg-duckdb-pg-build"
+# compile pg_duckdb extension
+#
+#########################################################################################
+
+FROM build-deps AS pg-duckdb-pg-build
+ARG PG_VERSION
+COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
+
+ENV PATH="/usr/local/pgsql/bin/:$PATH"
+
+# pg_duckdb build requires source dir to be a git repo to get submodules
+RUN git clone --depth 1 --branch v0.2.0 https://github.com/duckdb/pg_duckdb.git pg_duckdb-src && \
+    cd pg_duckdb-src && \
+    make install -j $(getconf _NPROCESSORS_ONLN) && \
+    echo 'trusted = true' >> /usr/local/pgsql/share/extension/pg_duckdb.control
+
+#########################################################################################
+#
 # Layer "pg_repack"
 # compile pg_repack extension
 #
@@ -1215,6 +1234,7 @@ COPY --from=pg-ivm-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-partman-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-mooncake-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-repack-build /usr/local/pgsql/ /usr/local/pgsql/
+COPY --from=pg-duckdb-pg-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY pgxn/ pgxn/
 
 RUN make -j $(getconf _NPROCESSORS_ONLN) \
