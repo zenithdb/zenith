@@ -112,9 +112,9 @@ impl Serialize for Generation {
             // We should never be asked to serialize a None. Structures
             // that include an optional generation should convert None to an
             // Option<Generation>::None
-            Err(serde::ser::Error::custom(
-                "Tried to serialize invalid generation ({self})",
-            ))
+            Err(serde::ser::Error::custom(format!(
+                "Tried to serialize invalid generation ({self:?})"
+            )))
         }
     }
 }

@@ -403,7 +403,7 @@ pub(super) async fn handle_walreceiver_connection(
                 // need to advance last record LSN on all shards. If we've not ingested the latest
                 // record, then set the LSN of the modification past it. This way all shards
                 // advance their last record LSN at the same time.
-                let needs_last_record_lsn_advance = match next_record_lsn.map(Lsn::from) {
+                let needs_last_record_lsn_advance = match next_record_lsn {
                     Some(lsn) if lsn > modification.get_lsn() => {
                         modification.set_lsn(lsn).unwrap();
                         true

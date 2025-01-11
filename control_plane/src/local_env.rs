@@ -483,7 +483,6 @@ impl LocalEnv {
             .iter()
             .find(|(mapped_tenant_id, _)| mapped_tenant_id == &tenant_id)
             .map(|&(_, timeline_id)| timeline_id)
-            .map(TimelineId::from)
     }
 
     pub fn timeline_name_mappings(&self) -> HashMap<TenantTimelineId, String> {

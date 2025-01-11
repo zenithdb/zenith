@@ -308,7 +308,7 @@ impl WalIngest {
             epoch -= 1;
         }
 
-        Ok((epoch as u64) << 32 | xid as u64)
+        Ok(((epoch as u64) << 32) | xid as u64)
     }
 
     async fn ingest_clear_vm_bits(

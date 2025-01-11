@@ -11,7 +11,7 @@
 pub(crate) use pageserver_api::config::TenantConfigToml as TenantConf;
 use pageserver_api::models::CompactionAlgorithmSettings;
 use pageserver_api::models::EvictionPolicy;
-use pageserver_api::models::{self, TenantConfigPatch, ThrottleConfig};
+use pageserver_api::models::{self, TenantConfigPatch};
 use pageserver_api::shard::{ShardCount, ShardIdentity, ShardNumber, ShardStripeSize};
 use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
@@ -597,7 +597,7 @@ impl From<TenantConfOpt> for models::TenantConfig {
                 .map(humantime),
             heatmap_period: value.heatmap_period.map(humantime),
             lazy_slru_download: value.lazy_slru_download,
-            timeline_get_throttle: value.timeline_get_throttle.map(ThrottleConfig::from),
+            timeline_get_throttle: value.timeline_get_throttle,
             image_layer_creation_check_threshold: value.image_layer_creation_check_threshold,
             lsn_lease_length: value.lsn_lease_length.map(humantime),
             lsn_lease_length_for_ts: value.lsn_lease_length_for_ts.map(humantime),

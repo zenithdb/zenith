@@ -84,17 +84,17 @@ impl Value {
 
     fn to_u64(self) -> u64 {
         let b = &self.0;
-        (b[0] as u64) << 32
-            | (b[1] as u64) << 24
-            | (b[2] as u64) << 16
-            | (b[3] as u64) << 8
+        ((b[0] as u64) << 32)
+            | ((b[1] as u64) << 24)
+            | ((b[2] as u64) << 16)
+            | ((b[3] as u64) << 8)
             | b[4] as u64
     }
 
     fn to_blknum(self) -> u32 {
         let b = &self.0;
         assert!(b[0] == 0x80);
-        (b[1] as u32) << 24 | (b[2] as u32) << 16 | (b[3] as u32) << 8 | b[4] as u32
+        ((b[1] as u32) << 24) | ((b[2] as u32) << 16) | ((b[3] as u32) << 8) | b[4] as u32
     }
 }
 

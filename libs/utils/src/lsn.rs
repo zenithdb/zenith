@@ -260,7 +260,7 @@ impl FromStr for Lsn {
         {
             let left_num = u32::from_str_radix(left, 16).map_err(|_| LsnParseError)?;
             let right_num = u32::from_str_radix(right, 16).map_err(|_| LsnParseError)?;
-            Ok(Lsn((left_num as u64) << 32 | right_num as u64))
+            Ok(Lsn(((left_num as u64) << 32) | right_num as u64))
         } else {
             Err(LsnParseError)
         }

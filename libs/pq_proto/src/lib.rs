@@ -44,7 +44,7 @@ pub struct ProtocolVersion(u32);
 
 impl ProtocolVersion {
     pub const fn new(major: u16, minor: u16) -> Self {
-        Self((major as u32) << 16 | minor as u32)
+        Self(((major as u32) << 16) | minor as u32)
     }
     pub const fn minor(self) -> u16 {
         self.0 as u16

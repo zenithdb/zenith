@@ -112,8 +112,8 @@ const MAX_SUPPORTED_BLOB_LEN_BITS: usize = {
 ///
 /// Layout:
 /// - 1 bit: `will_init`
-/// - [`MAX_SUPPORTED_BLOB_LEN_BITS`]: `len`
-/// - [`MAX_SUPPORTED_POS_BITS`]: `pos`
+/// - [`MAX_SUPPORTED_BLOB_LEN_BITS`][]: `len`
+/// - [`MAX_SUPPORTED_POS_BITS`](IndexEntry::MAX_SUPPORTED_POS_BITS): `pos`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndexEntry(u64);
 
