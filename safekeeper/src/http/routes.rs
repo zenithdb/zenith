@@ -111,14 +111,15 @@ async fn timeline_create_handler(mut request: Request<Body>) -> Result<Response<
         system_id: request_data.system_id.unwrap_or(0),
         wal_seg_size: request_data.wal_seg_size.unwrap_or(WAL_SEGMENT_SIZE as u32),
     };
-    let local_start_lsn = request_data.local_start_lsn.unwrap_or_else(|| {
-        request_data
-            .commit_lsn
-            .segment_lsn(server_info.wal_seg_size as usize)
-    });
     let global_timelines = get_global_timelines(&request);
     global_timelines
-        .create(ttid, server_info, request_data.commit_lsn, local_start_lsn)
+        .create(
+            ttid,
+            request_data.mconf,
+            server_info,
+            request_data.start_lsn,
+            request_data.commit_lsn.unwrap_or(request_data.start_lsn),
+        )
         .await
         .map_err(ApiError::InternalServerError)?;
 

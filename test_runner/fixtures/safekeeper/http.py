@@ -10,7 +10,7 @@ import requests
 from fixtures.common_types import Lsn, TenantId, TenantTimelineId, TimelineId
 from fixtures.log_helper import log
 from fixtures.metrics import Metrics, MetricsGetter, parse_metrics
-from fixtures.utils import wait_until
+from fixtures.utils import EnhancedJSONEncoder, wait_until
 
 if TYPE_CHECKING:
     from typing import Any
@@ -67,6 +67,34 @@ class TermBumpResponse:
             previous_term=d["previous_term"],
             current_term=d["current_term"],
         )
+
+
+@dataclass
+class SafekeeperId:
+    id: int
+    host: str
+    pg_port: str
+
+
+@dataclass
+class Configuration:
+    generation: int
+    members: list[SafekeeperId]
+    new_members: list[SafekeeperId] | None
+
+
+@dataclass
+class TimelineCreateRequest:
+    tenant_id: TenantId
+    timeline_id: TimelineId
+    mconf: Configuration
+    # not exactly PgVersion, for example 150002 for 15.2
+    pg_version: int
+    start_lsn: Lsn
+    commit_lsn: Lsn | None
+
+    def to_json(self) -> str:
+        return json.dumps(self, cls=EnhancedJSONEncoder)
 
 
 class SafekeeperHttpClient(requests.Session, MetricsGetter):
@@ -131,20 +159,8 @@ class SafekeeperHttpClient(requests.Session, MetricsGetter):
         resj = res.json()
         return [TenantTimelineId.from_json(ttidj) for ttidj in resj]
 
-    def timeline_create(
-        self,
-        tenant_id: TenantId,
-        timeline_id: TimelineId,
-        pg_version: int,  # Not exactly a PgVersion, safekeeper returns version as int, for example 150002 for 15.2
-        commit_lsn: Lsn,
-    ):
-        body = {
-            "tenant_id": str(tenant_id),
-            "timeline_id": str(timeline_id),
-            "pg_version": pg_version,
-            "commit_lsn": str(commit_lsn),
-        }
-        res = self.post(f"http://localhost:{self.port}/v1/tenant/timeline", json=body)
+    def timeline_create(self, r: TimelineCreateRequest):
+        res = self.post(f"http://localhost:{self.port}/v1/tenant/timeline", data=r.to_json())
         res.raise_for_status()
 
     def timeline_status(

@@ -3,6 +3,7 @@
 use anyhow::{bail, ensure, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use camino::{Utf8Path, Utf8PathBuf};
+use safekeeper_api::membership::INVALID_GENERATION;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use utils::crashsafe::durable_rename;
@@ -13,14 +14,14 @@ use std::ops::Deref;
 use std::path::Path;
 use std::time::Instant;
 
-use crate::control_file_upgrade::downgrade_v9_to_v8;
+use crate::control_file_upgrade::downgrade_v10_to_v9;
 use crate::control_file_upgrade::upgrade_control_file;
 use crate::metrics::PERSIST_CONTROL_FILE_SECONDS;
 use crate::state::{EvictionState, TimelinePersistentState};
 use utils::bin_ser::LeSer;
 
 pub const SK_MAGIC: u32 = 0xcafeceefu32;
-pub const SK_FORMAT_VERSION: u32 = 9;
+pub const SK_FORMAT_VERSION: u32 = 10;
 
 // contains persistent metadata for safekeeper
 pub const CONTROL_FILE_NAME: &str = "safekeeper.control";
@@ -169,10 +170,11 @@ impl TimelinePersistentState {
         let mut buf: Vec<u8> = Vec::new();
         WriteBytesExt::write_u32::<LittleEndian>(&mut buf, SK_MAGIC)?;
 
-        if self.eviction_state == EvictionState::Present {
-            // temp hack for forward compatibility
-            const PREV_FORMAT_VERSION: u32 = 8;
-            let prev = downgrade_v9_to_v8(self);
+        if self.mconf.generation == INVALID_GENERATION {
+            // Temp hack for forward compatibility test: in case of none
+            // configuration save cfile in previous v9 format.
+            const PREV_FORMAT_VERSION: u32 = 9;
+            let prev = downgrade_v10_to_v9(self);
             WriteBytesExt::write_u32::<LittleEndian>(&mut buf, PREV_FORMAT_VERSION)?;
             prev.ser_into(&mut buf)?;
         } else {
@@ -233,6 +235,7 @@ impl Storage for FileStorage {
 #[cfg(test)]
 mod test {
     use super::*;
+    use safekeeper_api::membership::{Configuration, MemberSet};
     use tokio::fs;
     use utils::lsn::Lsn;
 
@@ -242,6 +245,11 @@ mod test {
     async fn test_read_write_safekeeper_state() -> anyhow::Result<()> {
         let tempdir = camino_tempfile::tempdir()?;
         let mut state = TimelinePersistentState::empty();
+        state.mconf = Configuration {
+            generation: 42,
+            members: MemberSet::empty(),
+            new_members: None,
+        };
         let mut storage = FileStorage::create_new(tempdir.path(), state.clone(), NO_SYNC).await?;
 
         // Make a change.

@@ -48,7 +48,7 @@ from fixtures.remote_storage import (
     default_remote_storage,
     s3_storage,
 )
-from fixtures.safekeeper.http import SafekeeperHttpClient
+from fixtures.safekeeper.http import Configuration, SafekeeperHttpClient, TimelineCreateRequest
 from fixtures.safekeeper.utils import wait_walreceivers_absent
 from fixtures.utils import (
     PropagatingThread,
@@ -658,7 +658,13 @@ def test_s3_wal_replay(neon_env_builder: NeonEnvBuilder):
     for sk in env.safekeepers:
         sk.start()
         cli = sk.http_client()
-        cli.timeline_create(tenant_id, timeline_id, pg_version, last_lsn)
+        mconf = Configuration(generation=0, members=[], new_members=None)
+        # set start_lsn to the beginning of the first segment to allow reading
+        # WAL from there (could you intidb LSN as well).
+        r = TimelineCreateRequest(
+            tenant_id, timeline_id, mconf, pg_version, Lsn("0/1000000"), commit_lsn=last_lsn
+        )
+        cli.timeline_create(r)
         f_partial_path = (
             Path(sk.data_dir) / str(tenant_id) / str(timeline_id) / f_partial_saved.name
         )

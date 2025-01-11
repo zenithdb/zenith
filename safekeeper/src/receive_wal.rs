@@ -21,6 +21,7 @@ use postgres_backend::PostgresBackend;
 use postgres_backend::PostgresBackendReader;
 use postgres_backend::QueryError;
 use pq_proto::BeMessage;
+use safekeeper_api::membership::Configuration;
 use safekeeper_api::models::{ConnectionId, WalReceiverState, WalReceiverStatus};
 use safekeeper_api::ServerInfo;
 use std::future;
@@ -337,7 +338,13 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> NetworkReader<'_, IO> {
                 };
                 let tli = self
                     .global_timelines
-                    .create(self.ttid, server_info, Lsn::INVALID, Lsn::INVALID)
+                    .create(
+                        self.ttid,
+                        Configuration::empty(),
+                        server_info,
+                        Lsn::INVALID,
+                        Lsn::INVALID,
+                    )
                     .await
                     .context("create timeline")?;
                 tli.wal_residence_guard().await?

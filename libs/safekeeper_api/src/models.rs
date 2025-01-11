@@ -11,7 +11,7 @@ use utils::{
     pageserver_feedback::PageserverFeedback,
 };
 
-use crate::{ServerInfo, Term};
+use crate::{membership::Configuration, ServerInfo, Term};
 
 #[derive(Debug, Serialize)]
 pub struct SafekeeperStatus {
@@ -22,13 +22,16 @@ pub struct SafekeeperStatus {
 pub struct TimelineCreateRequest {
     pub tenant_id: TenantId,
     pub timeline_id: TimelineId,
-    pub peer_ids: Option<Vec<NodeId>>,
+    pub mconf: Configuration,
     pub pg_version: u32,
     pub system_id: Option<u64>,
+    // By default WAL_SEGMENT_SIZE
     pub wal_seg_size: Option<u32>,
-    pub commit_lsn: Lsn,
-    // If not passed, it is assigned to the beginning of commit_lsn segment.
-    pub local_start_lsn: Option<Lsn>,
+    pub start_lsn: Lsn,
+    // Normal creation should omit this field (start_lsn initializes all LSNs).
+    // However, we allow specifying custom value higher than start_lsn for
+    // manual recovery case, see test_s3_wal_replay.
+    pub commit_lsn: Option<Lsn>,
 }
 
 /// Same as TermLsn, but serializes LSN using display serializer

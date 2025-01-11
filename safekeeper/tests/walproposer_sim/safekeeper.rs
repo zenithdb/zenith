@@ -21,7 +21,7 @@ use safekeeper::{
     wal_storage::Storage,
     SafeKeeperConf,
 };
-use safekeeper_api::ServerInfo;
+use safekeeper_api::{membership::Configuration, ServerInfo};
 use tracing::{debug, info_span, warn};
 use utils::{
     id::{NodeId, TenantId, TenantTimelineId, TimelineId},
@@ -96,8 +96,13 @@ impl GlobalMap {
         let commit_lsn = Lsn::INVALID;
         let local_start_lsn = Lsn::INVALID;
 
-        let state =
-            TimelinePersistentState::new(&ttid, server_info, vec![], commit_lsn, local_start_lsn)?;
+        let state = TimelinePersistentState::new(
+            &ttid,
+            Configuration::empty(),
+            server_info,
+            commit_lsn,
+            local_start_lsn,
+        )?;
 
         let disk_timeline = self.disk.put_state(&ttid, state);
         let control_store = DiskStateStorage::new(disk_timeline.clone());

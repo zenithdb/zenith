@@ -5651,10 +5651,12 @@ dependencies = [
 name = "safekeeper_api"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "const_format",
  "postgres_ffi",
  "pq_proto",
  "serde",
+ "serde_json",
  "tokio",
  "utils",
 ]

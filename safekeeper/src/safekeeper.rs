@@ -7,7 +7,6 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use postgres_ffi::{TimeLineID, MAX_SEND_SIZE};
 use safekeeper_api::models::HotStandbyFeedback;
 use safekeeper_api::Term;
-use safekeeper_api::INVALID_TERM;
 use serde::{Deserialize, Serialize};
 use std::cmp::max;
 use std::cmp::min;
@@ -190,36 +189,6 @@ impl AcceptorState {
             Some(e) => e.term,
             None => 0,
         }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PersistedPeerInfo {
-    /// LSN up to which safekeeper offloaded WAL to s3.
-    pub backup_lsn: Lsn,
-    /// Term of the last entry.
-    pub term: Term,
-    /// LSN of the last record.
-    pub flush_lsn: Lsn,
-    /// Up to which LSN safekeeper regards its WAL as committed.
-    pub commit_lsn: Lsn,
-}
-
-impl PersistedPeerInfo {
-    pub fn new() -> Self {
-        Self {
-            backup_lsn: Lsn::INVALID,
-            term: INVALID_TERM,
-            flush_lsn: Lsn(0),
-            commit_lsn: Lsn(0),
-        }
-    }
-}
-
-// make clippy happy
-impl Default for PersistedPeerInfo {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -1010,7 +979,7 @@ where
 
     /// Update commit_lsn from peer safekeeper data.
     pub async fn record_safekeeper_info(&mut self, sk_info: &SafekeeperTimelineInfo) -> Result<()> {
-        if (Lsn(sk_info.commit_lsn) != Lsn::INVALID) && (sk_info.last_log_term != INVALID_TERM) {
+        if Lsn(sk_info.commit_lsn) != Lsn::INVALID {
             // Note: the check is too restrictive, generally we can update local
             // commit_lsn if our history matches (is part of) history of advanced
             // commit_lsn provider.
@@ -1025,12 +994,20 @@ where
 #[cfg(test)]
 mod tests {
     use futures::future::BoxFuture;
+
     use postgres_ffi::{XLogSegNo, WAL_SEGMENT_SIZE};
-    use safekeeper_api::ServerInfo;
+    use safekeeper_api::{
+        membership::{Configuration, MemberSet, SafekeeperId},
+        ServerInfo,
+    };
 
     use super::*;
-    use crate::state::{EvictionState, PersistedPeers, TimelinePersistentState};
-    use std::{ops::Deref, str::FromStr, time::Instant};
+    use crate::state::{EvictionState, TimelinePersistentState};
+    use std::{
+        ops::Deref,
+        str::FromStr,
+        time::{Instant, UNIX_EPOCH},
+    };
 
     // fake storage for tests
     struct InMemoryState {
@@ -1313,12 +1290,21 @@ mod tests {
 
     #[test]
     fn test_sk_state_bincode_serde_roundtrip() {
-        use utils::Hex;
         let tenant_id = TenantId::from_str("cf0480929707ee75372337efaa5ecf96").unwrap();
         let timeline_id = TimelineId::from_str("112ded66422aa5e953e5440fa5427ac4").unwrap();
         let state = TimelinePersistentState {
             tenant_id,
             timeline_id,
+            mconf: Configuration {
+                generation: 42,
+                members: MemberSet::new(vec![SafekeeperId {
+                    id: NodeId(1),
+                    host: "hehe.org".to_owned(),
+                    pg_port: 5432,
+                }])
+                .expect("duplicate member"),
+                new_members: None,
+            },
             acceptor_state: AcceptorState {
                 term: 42,
                 term_history: TermHistory(vec![TermLsn {
@@ -1342,69 +1328,12 @@ mod tests {
             backup_lsn: Lsn(1234567300),
             peer_horizon_lsn: Lsn(9999999),
             remote_consistent_lsn: Lsn(1234560000),
-            peers: PersistedPeers(vec![(
-                NodeId(1),
-                PersistedPeerInfo {
-                    backup_lsn: Lsn(1234567000),
-                    term: 42,
-                    flush_lsn: Lsn(1234567800 - 8),
-                    commit_lsn: Lsn(1234567600),
-                },
-            )]),
             partial_backup: crate::wal_backup_partial::State::default(),
             eviction_state: EvictionState::Present,
+            creation_ts: UNIX_EPOCH,
         };
 
         let ser = state.ser().unwrap();
-
-        #[rustfmt::skip]
-        let expected = [
-            // tenant_id as length prefixed hex
-            0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x63, 0x66, 0x30, 0x34, 0x38, 0x30, 0x39, 0x32, 0x39, 0x37, 0x30, 0x37, 0x65, 0x65, 0x37, 0x35, 0x33, 0x37, 0x32, 0x33, 0x33, 0x37, 0x65, 0x66, 0x61, 0x61, 0x35, 0x65, 0x63, 0x66, 0x39, 0x36,
-            // timeline_id as length prefixed hex
-            0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x31, 0x31, 0x32, 0x64, 0x65, 0x64, 0x36, 0x36, 0x34, 0x32, 0x32, 0x61, 0x61, 0x35, 0x65, 0x39, 0x35, 0x33, 0x65, 0x35, 0x34, 0x34, 0x30, 0x66, 0x61, 0x35, 0x34, 0x32, 0x37, 0x61, 0x63, 0x34,
-            // term
-            0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            // length prefix
-            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            // unsure why this order is swapped
-            0x29, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            // pg_version
-            0x0e, 0x00, 0x00, 0x00,
-            // systemid
-            0x21, 0x43, 0x65, 0x87, 0x78, 0x56, 0x34, 0x12,
-            // wal_seg_size
-            0x78, 0x56, 0x34, 0x12,
-            // pguuid as length prefixed hex
-            0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x63, 0x34, 0x37, 0x61, 0x34, 0x32, 0x61, 0x35, 0x30, 0x66, 0x34, 0x34, 0x65, 0x35, 0x35, 0x33, 0x65, 0x39, 0x61, 0x35, 0x32, 0x61, 0x34, 0x32, 0x36, 0x36, 0x65, 0x64, 0x32, 0x64, 0x31, 0x31,
-
-            // timeline_start_lsn
-            0x00, 0x56, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00,
-            0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x78, 0x02, 0x96, 0x49, 0x00, 0x00, 0x00, 0x00,
-            0x84, 0x00, 0x96, 0x49, 0x00, 0x00, 0x00, 0x00,
-            0x7f, 0x96, 0x98, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0xe4, 0x95, 0x49, 0x00, 0x00, 0x00, 0x00,
-            // length prefix for persistentpeers
-            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            // nodeid
-            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            // backuplsn
-            0x58, 0xff, 0x95, 0x49, 0x00, 0x00, 0x00, 0x00,
-            0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x70, 0x02, 0x96, 0x49, 0x00, 0x00, 0x00, 0x00,
-            0xb0, 0x01, 0x96, 0x49, 0x00, 0x00, 0x00, 0x00,
-            // partial_backup
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            // eviction_state
-            0x00, 0x00, 0x00, 0x00,
-        ];
-
-        assert_eq!(Hex(&ser), Hex(&expected));
 
         let deser = TimelinePersistentState::des(&ser).unwrap();
 

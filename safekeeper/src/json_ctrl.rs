@@ -8,6 +8,7 @@
 
 use anyhow::Context;
 use postgres_backend::QueryError;
+use safekeeper_api::membership::Configuration;
 use safekeeper_api::{ServerInfo, Term};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -105,6 +106,7 @@ async fn prepare_safekeeper(
         .global_timelines
         .create(
             spg.ttid,
+            Configuration::empty(),
             ServerInfo {
                 pg_version,
                 wal_seg_size: WAL_SEGMENT_SIZE as u32,
