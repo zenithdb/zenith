@@ -6,6 +6,7 @@ OBJS = \
 	$(WIN32RES) \
 	extension_server.o \
 	file_cache.o \
+	file_cache_prewarm.o \
 	hll.o \
 	libpagestore.o \
 	logical_replication_monitor.o \
@@ -34,6 +35,8 @@ DATA = \
 	neon--1.2--1.3.sql \
 	neon--1.3--1.4.sql \
 	neon--1.4--1.5.sql \
+	neon--1.5--1.6.sql \
+	neon--1.6--1.5.sql \
 	neon--1.5--1.4.sql \
 	neon--1.4--1.3.sql \
 	neon--1.3--1.2.sql \

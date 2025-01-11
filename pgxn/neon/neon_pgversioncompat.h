@@ -141,4 +141,9 @@ InitBufferTag(BufferTag *tag, const RelFileNode *rnode,
 extern void InitMaterializedSRF(FunctionCallInfo fcinfo, bits32 flags);
 #endif
 
+/* Added in PG16 in pg_config_manual.h */
+#ifndef PG_IO_ALIGN_SIZE
+#define PG_IO_ALIGN_SIZE		4096
+#endif
+
 #endif							/* NEON_PGVERSIONCOMPAT_H */
