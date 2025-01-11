@@ -110,10 +110,9 @@ RUN cd postgres && \
 # Build PostGIS from the upstream PostGIS mirror.
 #
 #########################################################################################
-FROM build-deps AS postgis-build
+FROM pg-build AS postgis-build
 ARG DEBIAN_VERSION
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 RUN apt update && \
     apt install --no-install-recommends --no-install-suggests -y \
     gdal-bin libboost-dev libboost-thread-dev libboost-filesystem-dev \
@@ -232,9 +231,8 @@ RUN case "${PG_VERSION}" in \
 # Build plv8
 #
 #########################################################################################
-FROM build-deps AS plv8-build
+FROM pg-build AS plv8-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 COPY compute/patches/plv8-3.1.10.patch /plv8-3.1.10.patch
 
@@ -296,9 +294,8 @@ RUN case "${PG_VERSION}" in \
 # Build h3_pg
 #
 #########################################################################################
-FROM build-deps AS h3-pg-build
+FROM pg-build AS h3-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # not version-specific
 # last release v4.1.0 - Jan 18, 2023
@@ -331,9 +328,8 @@ RUN wget https://github.com/zachasme/h3-pg/archive/refs/tags/v4.1.3.tar.gz -O h3
 # compile unit extension
 #
 #########################################################################################
-FROM build-deps AS unit-pg-build
+FROM pg-build AS unit-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # not version-specific
 # last release 7.9 - Sep 15, 2024
@@ -355,9 +351,8 @@ RUN wget https://github.com/df7cb/postgresql-unit/archive/refs/tags/7.9.tar.gz -
 # compile pgvector extension
 #
 #########################################################################################
-FROM build-deps AS vector-pg-build
+FROM pg-build AS vector-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 COPY compute/patches/pgvector.patch /pgvector.patch
 
@@ -381,9 +376,8 @@ RUN wget https://github.com/pgvector/pgvector/archive/refs/tags/v0.8.0.tar.gz -O
 # compile pgjwt extension
 #
 #########################################################################################
-FROM build-deps AS pgjwt-pg-build
+FROM pg-build AS pgjwt-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # not version-specific
 # doesn't use releases, last commit f3d82fd - Mar 2, 2023
@@ -399,9 +393,8 @@ RUN wget https://github.com/michelp/pgjwt/archive/f3d82fd30151e754e19ce5d6a06c71
 # compile hypopg extension
 #
 #########################################################################################
-FROM build-deps AS hypopg-pg-build
+FROM pg-build AS hypopg-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # HypoPG 1.4.1 supports v17
 # last release 1.4.1 - Apr 28, 2024
@@ -418,9 +411,8 @@ RUN wget https://github.com/HypoPG/hypopg/archive/refs/tags/1.4.1.tar.gz -O hypo
 # compile pg_hashids extension
 #
 #########################################################################################
-FROM build-deps AS pg-hashids-pg-build
+FROM pg-build AS pg-hashids-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # not version-specific
 # last release v1.2.1 -Jan 12, 2018
@@ -437,9 +429,8 @@ RUN wget https://github.com/iCyberon/pg_hashids/archive/refs/tags/v1.2.1.tar.gz 
 # compile rum extension
 #
 #########################################################################################
-FROM build-deps AS rum-pg-build
+FROM pg-build AS rum-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 COPY compute/patches/rum.patch /rum.patch
 
@@ -460,9 +451,8 @@ RUN wget https://github.com/postgrespro/rum/archive/cb1edffc57736cd2a4455f8d0fea
 # compile pgTAP extension
 #
 #########################################################################################
-FROM build-deps AS pgtap-pg-build
+FROM pg-build AS pgtap-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # pgtap 1.3.3 supports v17
 # last release v1.3.3 - Apr 8, 2024
@@ -479,9 +469,8 @@ RUN wget https://github.com/theory/pgtap/archive/refs/tags/v1.3.3.tar.gz -O pgta
 # compile ip4r extension
 #
 #########################################################################################
-FROM build-deps AS ip4r-pg-build
+FROM pg-build AS ip4r-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # not version-specific
 # last release v2.4.2 - Jul 29, 2023
@@ -498,9 +487,8 @@ RUN wget https://github.com/RhodiumToad/ip4r/archive/refs/tags/2.4.2.tar.gz -O i
 # compile Prefix extension
 #
 #########################################################################################
-FROM build-deps AS prefix-pg-build
+FROM pg-build AS prefix-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # not version-specific
 # last release v1.2.10  - Jul 5, 2023
@@ -517,9 +505,8 @@ RUN wget https://github.com/dimitri/prefix/archive/refs/tags/v1.2.10.tar.gz -O p
 # compile hll extension
 #
 #########################################################################################
-FROM build-deps AS hll-pg-build
+FROM pg-build AS hll-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # not version-specific
 # last release v2.18 - Aug 29, 2023
@@ -536,9 +523,8 @@ RUN wget https://github.com/citusdata/postgresql-hll/archive/refs/tags/v2.18.tar
 # compile plpgsql_check extension
 #
 #########################################################################################
-FROM build-deps AS plpgsql-check-pg-build
+FROM pg-build AS plpgsql-check-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # plpgsql_check v2.7.11 supports v17
 # last release v2.7.11 - Sep 16, 2024
@@ -555,9 +541,7 @@ RUN wget https://github.com/okbob/plpgsql_check/archive/refs/tags/v2.7.11.tar.gz
 # compile timescaledb extension
 #
 #########################################################################################
-FROM build-deps AS timescaledb-pg-build
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
-
+FROM pg-build AS timescaledb-pg-build
 ARG PG_VERSION
 ENV PATH="/usr/local/pgsql/bin:$PATH"
 
@@ -590,9 +574,7 @@ RUN case "${PG_VERSION}" in \
 # compile pg_hint_plan extension
 #
 #########################################################################################
-FROM build-deps AS pg-hint-plan-pg-build
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
-
+FROM pg-build AS pg-hint-plan-pg-build
 ARG PG_VERSION
 ENV PATH="/usr/local/pgsql/bin:$PATH"
 
@@ -632,9 +614,8 @@ RUN case "${PG_VERSION}" in \
 # compile pg_cron extension
 #
 #########################################################################################
-FROM build-deps AS pg-cron-pg-build
+FROM pg-build AS pg-cron-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # This is an experimental extension that we do not support on prod yet.
 # !Do not remove!
@@ -653,9 +634,8 @@ RUN wget https://github.com/citusdata/pg_cron/archive/refs/tags/v1.6.4.tar.gz -O
 # compile rdkit extension
 #
 #########################################################################################
-FROM build-deps AS rdkit-pg-build
+FROM pg-build AS rdkit-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 RUN apt update && \
     apt install --no-install-recommends --no-install-suggests -y \
@@ -726,9 +706,8 @@ RUN case "${PG_VERSION}" in \
 # compile pg_uuidv7 extension
 #
 #########################################################################################
-FROM build-deps AS pg-uuidv7-pg-build
+FROM pg-build AS pg-uuidv7-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # not version-specific
 # last release v1.6.0 - Oct 9, 2024
@@ -746,9 +725,8 @@ RUN wget https://github.com/fboulnois/pg_uuidv7/archive/refs/tags/v1.6.0.tar.gz 
 # compile pg_roaringbitmap extension
 #
 #########################################################################################
-FROM build-deps AS pg-roaringbitmap-pg-build
+FROM pg-build AS pg-roaringbitmap-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # not version-specific
 # last release v0.5.4 - Jun 28, 2022
@@ -766,9 +744,8 @@ RUN wget https://github.com/ChenHuajun/pg_roaringbitmap/archive/refs/tags/v0.5.4
 # compile pg_semver extension
 #
 #########################################################################################
-FROM build-deps AS pg-semver-pg-build
+FROM pg-build AS pg-semver-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # Release 0.40.0 breaks backward compatibility with previous versions
 # see release note https://github.com/theory/pg-semver/releases/tag/v0.40.0
@@ -802,8 +779,7 @@ RUN case "${PG_VERSION}" in \
 # compile pg_embedding extension
 #
 #########################################################################################
-FROM build-deps AS pg-embedding-pg-build
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
+FROM pg-build AS pg-embedding-pg-build
 
 # This is our extension, support stopped in favor of pgvector
 # TODO: deprecate it
@@ -829,9 +805,8 @@ RUN case "${PG_VERSION}" in \
 # compile anon extension
 #
 #########################################################################################
-FROM build-deps AS pg-anon-pg-build
+FROM pg-build AS pg-anon-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # This is an experimental extension, never got to real production.
 # !Do not remove! It can be present in shared_preload_libraries and compute will fail to start if library is not found.
@@ -856,9 +831,8 @@ RUN case "${PG_VERSION}" in "v17") \
 # This layer is used to build `pgrx` deps
 #
 #########################################################################################
-FROM build-deps AS rust-extensions-build
+FROM pg-build AS rust-extensions-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 RUN apt update && \
     apt install --no-install-recommends --no-install-suggests -y curl libclang-dev && \
@@ -893,9 +867,8 @@ USER root
 # and eventually get merged with `rust-extensions-build`
 #
 #########################################################################################
-FROM build-deps AS rust-extensions-build-pgrx12
+FROM pg-build AS rust-extensions-build-pgrx12
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 RUN apt update && \
     apt install --no-install-recommends --no-install-suggests -y curl libclang-dev && \
@@ -1078,9 +1051,8 @@ RUN wget https://github.com/neondatabase/pg_session_jwt/archive/refs/tags/v0.1.2
 #
 #########################################################################################
 
-FROM build-deps AS wal2json-pg-build
+FROM pg-build AS wal2json-pg-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # wal2json wal2json_2_6 supports v17
 # last release wal2json_2_6 - Apr 25, 2024
@@ -1097,9 +1069,8 @@ RUN wget https://github.com/eulerto/wal2json/archive/refs/tags/wal2json_2_6.tar.
 # compile pg_ivm extension
 #
 #########################################################################################
-FROM build-deps AS pg-ivm-build
+FROM pg-build AS pg-ivm-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # pg_ivm v1.9 supports v17
 # last release v1.9 - Jul 31
@@ -1117,9 +1088,8 @@ RUN wget https://github.com/sraoss/pg_ivm/archive/refs/tags/v1.9.tar.gz -O pg_iv
 # compile pg_partman extension
 #
 #########################################################################################
-FROM build-deps AS pg-partman-build
+FROM pg-build AS pg-partman-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 # should support v17 https://github.com/pgpartman/pg_partman/discussions/693
 # last release 5.1.0  Apr 2, 2024
@@ -1139,7 +1109,6 @@ RUN wget https://github.com/pgpartman/pg_partman/archive/refs/tags/v5.1.0.tar.gz
 #########################################################################################
 FROM rust-extensions-build AS pg-mooncake-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 ENV PATH="/usr/local/pgsql/bin/:$PATH"
 
@@ -1157,9 +1126,8 @@ RUN wget https://github.com/Mooncake-Labs/pg_mooncake/releases/download/v0.1.0/p
 #
 #########################################################################################
 
-FROM build-deps AS pg-repack-build
+FROM pg-build AS pg-repack-build
 ARG PG_VERSION
-COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
 
 ENV PATH="/usr/local/pgsql/bin/:$PATH"
 
