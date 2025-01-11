@@ -219,7 +219,7 @@ if SQL_EXPORTER is None:
             #
             # The "host" network mode allows sql_exporter to talk to the
             # endpoint which is running on the host.
-            super().__init__("docker.io/burningalchemist/sql_exporter:0.16.0", network_mode="host")
+            super().__init__("docker.io/burningalchemist/sql_exporter:0.17.0", network_mode="host")
 
             self.__logs_dir = logs_dir
             self.__port = port
@@ -252,7 +252,7 @@ if SQL_EXPORTER is None:
             log.info("Waiting for sql_exporter to be ready")
             wait_for_logs(
                 self,
-                rf'level=info msg="Listening on" address=\[::\]:{self.__port}',
+                rf'msg="Listening on" address=\[::\]:{self.__port}',
                 timeout=5,
             )
 
@@ -344,10 +344,7 @@ else:
                         time.sleep(0.5)
                         continue
 
-                    if (
-                        f'level=info msg="Listening on" address=[::]:{self._sql_exporter_port}'
-                        in line
-                    ):
+                    if f'msg="Listening on" address=[::]:{self._sql_exporter_port}' in line:
                         break
 
         @override

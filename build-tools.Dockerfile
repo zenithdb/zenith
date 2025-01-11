@@ -115,7 +115,7 @@ RUN set -e \
 
 # Keep the version the same as in compute/compute-node.Dockerfile and
 # test_runner/regress/test_compute_metrics.py.
-ENV SQL_EXPORTER_VERSION=0.16.0
+ENV SQL_EXPORTER_VERSION=0.17.0
 RUN curl -fsSL \
     "https://github.com/burningalchemist/sql_exporter/releases/download/${SQL_EXPORTER_VERSION}/sql_exporter-${SQL_EXPORTER_VERSION}.linux-$(case "$(uname -m)" in x86_64) echo amd64;; aarch64) echo arm64;; esac).tar.gz" \
     --output sql_exporter.tar.gz \

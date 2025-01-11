@@ -1284,11 +1284,11 @@ RUN set -e \
 #
 #########################################################################################
 
-FROM quay.io/prometheuscommunity/postgres-exporter:v0.12.1 AS postgres-exporter
+FROM quay.io/prometheuscommunity/postgres-exporter:v0.16.0 AS postgres-exporter
 
 # Keep the version the same as in build-tools.Dockerfile and
 # test_runner/regress/test_compute_metrics.py.
-FROM burningalchemist/sql_exporter:0.16.0 AS sql-exporter
+FROM burningalchemist/sql_exporter:0.17.0 AS sql-exporter
 
 #########################################################################################
 #
