@@ -124,7 +124,10 @@ impl ComputeHookTenant {
                 if let Some(shard_idx) = shard_idx {
                     sharded.shards.remove(shard_idx);
                 } else {
-                    tracing::warn!("Shard not found while handling detach")
+                    // This is a valid but niche case, where the tenant was previously attached
+                    // as a Secondary location and then detached, so has no previously notified
+                    // state.
+                    tracing::info!("Shard not found while handling detach")
                 }
             }
             ComputeHookTenant::Unsharded(_) => {
@@ -761,7 +764,10 @@ impl ComputeHook {
         let mut state_locked = self.state.lock().unwrap();
         match state_locked.entry(tenant_shard_id.tenant_id) {
             Entry::Vacant(_) => {
-                tracing::warn!("Compute hook tenant not found for detach");
+                // This is a valid but niche case, where the tenant was previously attached
+                // as a Secondary location and then detached, so has no previously notified
+                // state.
+                tracing::info!("Compute hook tenant not found for detach");
             }
             Entry::Occupied(mut e) => {
                 let sharded = e.get().is_sharded();

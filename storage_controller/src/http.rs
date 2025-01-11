@@ -690,7 +690,8 @@ async fn handle_node_list(req: Request<Body>) -> Result<Response<Body>, ApiError
     };
 
     let state = get_state(&req);
-    let nodes = state.service.node_list().await?;
+    let mut nodes = state.service.node_list().await?;
+    nodes.sort_by_key(|n| n.get_id());
     let api_nodes = nodes.into_iter().map(|n| n.describe()).collect::<Vec<_>>();
 
     json_response(StatusCode::OK, api_nodes)
@@ -1001,6 +1002,29 @@ async fn handle_tenant_shard_migrate(
         StatusCode::OK,
         service
             .tenant_shard_migrate(tenant_shard_id, migrate_req)
+            .await?,
+    )
+}
+
+async fn handle_tenant_shard_migrate_secondary(
+    service: Arc<Service>,
+    req: Request<Body>,
+) -> Result<Response<Body>, ApiError> {
+    check_permissions(&req, Scope::Admin)?;
+
+    let mut req = match maybe_forward(req).await {
+        ForwardOutcome::Forwarded(res) => {
+            return res;
+        }
+        ForwardOutcome::NotForwarded(req) => req,
+    };
+
+    let tenant_shard_id: TenantShardId = parse_request_param(&req, "tenant_shard_id")?;
+    let migrate_req = json_request::<TenantShardMigrateRequest>(&mut req).await?;
+    json_response(
+        StatusCode::OK,
+        service
+            .tenant_shard_migrate_secondary(tenant_shard_id, migrate_req)
             .await?,
     )
 }
@@ -1855,6 +1879,16 @@ pub fn make_router(
                 RequestName("control_v1_tenant_migrate"),
             )
         })
+        .put(
+            "/control/v1/tenant/:tenant_shard_id/migrate_secondary",
+            |r| {
+                tenant_service_handler(
+                    r,
+                    handle_tenant_shard_migrate_secondary,
+                    RequestName("control_v1_tenant_migrate_secondary"),
+                )
+            },
+        )
         .put(
             "/control/v1/tenant/:tenant_shard_id/cancel_reconcile",
             |r| {

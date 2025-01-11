@@ -112,6 +112,13 @@ enum Command {
         #[arg(long)]
         node: NodeId,
     },
+    /// Migrate the secondary location for a tenant shard to a specific pageserver.
+    TenantShardMigrateSecondary {
+        #[arg(long)]
+        tenant_shard_id: TenantShardId,
+        #[arg(long)]
+        node: NodeId,
+    },
     /// Cancel any ongoing reconciliation for this shard
     TenantShardCancelReconcile {
         #[arg(long)]
@@ -549,6 +556,23 @@ async fn main() -> anyhow::Result<()> {
                 .dispatch::<TenantShardMigrateRequest, TenantShardMigrateResponse>(
                     Method::PUT,
                     format!("control/v1/tenant/{tenant_shard_id}/migrate"),
+                    Some(req),
+                )
+                .await?;
+        }
+        Command::TenantShardMigrateSecondary {
+            tenant_shard_id,
+            node,
+        } => {
+            let req = TenantShardMigrateRequest {
+                tenant_shard_id,
+                node_id: node,
+            };
+
+            storcon_client
+                .dispatch::<TenantShardMigrateRequest, TenantShardMigrateResponse>(
+                    Method::PUT,
+                    format!("control/v1/tenant/{tenant_shard_id}/migrate_secondary"),
                     Some(req),
                 )
                 .await?;
