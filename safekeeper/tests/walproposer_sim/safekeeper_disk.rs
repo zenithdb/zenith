@@ -180,7 +180,7 @@ impl wal_storage::Storage for DiskWALStorage {
         self.write_lsn
     }
     /// LSN of last durably stored WAL record.
-    fn flush_lsn(&self) -> Lsn {
+    fn flush_record_lsn(&self) -> Lsn {
         self.flush_record_lsn
     }
 
