@@ -8,6 +8,7 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 use remote_storage::RemoteStorageConfig;
+use safekeeper::wal_backup::WalBackup;
 use sd_notify::NotifyState;
 use tokio::runtime::Handle;
 use tokio::signal::unix::{signal, SignalKind};
@@ -35,9 +36,9 @@ use safekeeper::http;
 use safekeeper::wal_service;
 use safekeeper::GlobalTimelines;
 use safekeeper::SafeKeeperConf;
+use safekeeper::HTTP_RUNTIME;
 use safekeeper::{broker, WAL_SERVICE_RUNTIME};
 use safekeeper::{control_file, BROKER_RUNTIME};
-use safekeeper::{wal_backup, HTTP_RUNTIME};
 use storage_broker::DEFAULT_ENDPOINT;
 use utils::auth::{JwtAuth, Scope, SwappableJwtAuth};
 use utils::{
@@ -428,14 +429,14 @@ async fn start_safekeeper(conf: Arc<SafeKeeperConf>) -> Result<()> {
         e
     })?;
 
-    let global_timelines = Arc::new(GlobalTimelines::new(conf.clone()));
+    let wal_backup = Arc::new(WalBackup::new(&conf).await?);
+
+    let global_timelines = Arc::new(GlobalTimelines::new(conf.clone(), wal_backup.clone()));
 
     // Register metrics collector for active timelines. It's important to do this
     // after daemonizing, otherwise process collector will be upset.
     let timeline_collector = safekeeper::metrics::TimelineCollector::new(global_timelines.clone());
     metrics::register_internal(Box::new(timeline_collector))?;
-
-    wal_backup::init_remote_storage(&conf).await;
 
     // Keep handles to main tasks to die if any of them disappears.
     let mut tasks_handles: FuturesUnordered<BoxFuture<(String, JoinTaskRes)>> =
@@ -505,6 +506,7 @@ async fn start_safekeeper(conf: Arc<SafeKeeperConf>) -> Result<()> {
             conf.clone(),
             http_listener,
             global_timelines.clone(),
+            wal_backup,
         ))
         .map(|res| ("HTTP service main".to_owned(), res));
     tasks_handles.push(Box::pin(http_handle));
