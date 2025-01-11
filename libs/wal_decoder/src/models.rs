@@ -45,7 +45,7 @@ pub mod proto {
     #![allow(clippy::derive_partial_eq_without_eq)]
     // The generated ValueMeta has a `len` method generate for its `len` field.
     #![allow(clippy::len_without_is_empty)]
-    tonic::include_proto!("interpreted_wal");
+    include!(concat!(env!("OUT_DIR"), concat!("/interpreted_wal.rs")));
 }
 
 #[derive(Serialize, Deserialize)]
