@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use pageserver_api::models::{TenantState, TimelineState};
 
-use super::delete::{delete_local_timeline_directory, DeleteTimelineFlow, DeletionGuard};
+use super::delete::{delete_local_timeline_directory, DeletionGuard};
 use super::Timeline;
 use crate::span::debug_assert_current_span_has_tenant_and_timeline_id;
 use crate::tenant::remote_timeline_client::ShutdownIfArchivedError;
+use crate::tenant::timeline::delete::{make_timeline_delete_guard, TimelineDeleteGuardKind};
 use crate::tenant::{OffloadedTimeline, Tenant, TenantManifestError, TimelineOrOffloaded};
 
 #[derive(thiserror::Error, Debug)]
@@ -36,13 +37,10 @@ pub(crate) async fn offload_timeline(
     debug_assert_current_span_has_tenant_and_timeline_id();
     tracing::info!("offloading archived timeline");
 
-    let allow_offloaded_children = true;
-    let set_stopping = false;
-    let (timeline, guard) = DeleteTimelineFlow::prepare(
+    let (timeline, guard) = make_timeline_delete_guard(
         tenant,
         timeline.timeline_id,
-        allow_offloaded_children,
-        set_stopping,
+        TimelineDeleteGuardKind::Offload,
     )
     .map_err(|e| OffloadError::Other(anyhow::anyhow!(e)))?;
 
@@ -106,7 +104,7 @@ pub(crate) async fn offload_timeline(
 }
 
 /// It is important that this gets called when DeletionGuard is being held.
-/// For more context see comments in [`DeleteTimelineFlow::prepare`]
+/// For more context see comments in [`make_timeline_delete_guard`]
 ///
 /// Returns the strong count of the timeline `Arc`
 fn remove_timeline_from_tenant(
