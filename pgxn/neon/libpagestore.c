@@ -51,7 +51,9 @@ char	   *neon_auth_token;
 int			readahead_buffer_size = 128;
 int			flush_every_n_requests = 8;
 
-int         neon_protocol_version = 2;
+int			neon_protocol_version = 2;
+static int	last_protocol_version = -1;	/* copy of n_p_v used to detect changes
+										 * to the parameter at runtime */
 
 static int	max_reconnect_attempts = 60;
 static int	stripe_size;
@@ -236,6 +238,14 @@ AssignPageserverConnstring(const char *newval, void *extra)
 		memcpy(&pagestore_shared->shard_map, &shard_map, sizeof(ShardMap));
 		pg_write_barrier();
 		pg_atomic_add_fetch_u64(&pagestore_shared->end_update_counter, 1);
+
+		neon_log(LOG, "Updated shard map: %d active shards",
+				 shard_map.num_shards);
+		for (int i = 0; i < shard_map.num_shards; i++)
+		{
+			neon_shard_log(i, LOG, "New connection string: \"%s\"",
+						   shard_map.connstring[i]);
+		}
 	}
 	else
 	{
@@ -642,6 +652,9 @@ pageserver_connect(shardno_t shard_no, int elevel)
 	}
 	/* FALLTHROUGH */
 	case PS_Connected:
+	{
+		int			ll;
+
 		/*
 		 * We successfully connected. Future connections to this PageServer
 		 * will do fast retries again, with exponential backoff.
@@ -649,8 +662,18 @@ pageserver_connect(shardno_t shard_no, int elevel)
 		shard->delay_us = MIN_RECONNECT_INTERVAL_USEC;
 
 		neon_shard_log(shard_no, DEBUG5, "Connection state: Connected");
-		neon_shard_log(shard_no, LOG, "libpagestore: connected to '%s' with protocol version %d", connstr, neon_protocol_version);
+		if (last_protocol_version != neon_protocol_version)
+		{
+			ll = LOG;
+			last_protocol_version = neon_protocol_version;
+		}
+		else
+		{
+			ll = DEBUG1;
+		}
+		neon_shard_log(shard_no, ll, "libpagestore: connected to '%s' with protocol version %d", connstr, neon_protocol_version);
 		return true;
+	}
 	default:
 		neon_shard_log(shard_no, ERROR, "libpagestore: invalid connection state %d", shard->state);
 	}
@@ -810,7 +833,7 @@ pageserver_send(shardno_t shard_no, NeonRequest *request)
 	/* If the connection was lost for some reason, reconnect */
 	if (shard->state == PS_Connected && PQstatus(shard->conn) == CONNECTION_BAD)
 	{
-		neon_shard_log(shard_no, LOG, "pageserver_send disconnect bad connection");
+		neon_shard_log(shard_no, LOG, "pageserver_send disconnect: bad connection");
 		pageserver_disconnect(shard_no);
 		pageserver_conn = NULL;
 	}
@@ -911,7 +934,7 @@ pageserver_receive(shardno_t shard_no)
 		}
 		PG_CATCH();
 		{
-			neon_shard_log(shard_no, LOG, "pageserver_receive: disconnect due malformatted response");
+			neon_shard_log(shard_no, LOG, "pageserver_receive disconnect: malformatted response");
 			pageserver_disconnect(shard_no);
 			PG_RE_THROW();
 		}
@@ -966,7 +989,7 @@ pageserver_flush(shardno_t shard_no)
 			char	   *msg = pchomp(PQerrorMessage(pageserver_conn));
 
 			pageserver_disconnect(shard_no);
-			neon_shard_log(shard_no, LOG, "pageserver_flush disconnect because failed to flush page requests: %s", msg);
+			neon_shard_log(shard_no, LOG, "pageserver_flush disconnect: failed to flush page requests: %s", msg);
 			pfree(msg);
 			return false;
 		}
@@ -1145,6 +1168,14 @@ pg_init_libpagestore(void)
 							0,	/* no flags required */
 							NULL, NULL, NULL);
 
+	/*
+	 * Store last seen protocol version as initialization, so we can log
+	 * differences once we see them appear.
+	 */
+	last_protocol_version = neon_protocol_version;
+	neon_log(LOG, "Initializing libpagestore with protocol version %d",
+			 neon_protocol_version);
+
 	relsize_hash_init();
 
 	if (page_server != NULL)
@@ -1159,7 +1190,7 @@ pg_init_libpagestore(void)
 	 */
 	neon_auth_token = getenv("NEON_AUTH_TOKEN");
 	if (neon_auth_token)
-		neon_log(LOG, "using storage auth token from NEON_AUTH_TOKEN environment variable");
+		neon_log(DEBUG1, "using storage auth token from NEON_AUTH_TOKEN environment variable");
 
 	if (page_server_connstring && page_server_connstring[0])
 	{
