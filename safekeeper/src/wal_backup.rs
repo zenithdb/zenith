@@ -13,6 +13,7 @@ use std::cmp::min;
 use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use postgres_ffi::v14::xlog_utils::XLogSegNoOffsetToRecPtr;
@@ -25,7 +26,7 @@ use tokio::fs::File;
 
 use tokio::select;
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::sync::{watch, OnceCell};
+use tokio::sync::watch;
 use tracing::*;
 
 use utils::{id::TenantTimelineId, lsn::Lsn};
@@ -68,7 +69,12 @@ pub(crate) fn is_wal_backup_required(
 /// Based on peer information determine which safekeeper should offload; if it
 /// is me, run (per timeline) task, if not yet. OTOH, if it is not me and task
 /// is running, kill it.
-pub(crate) async fn update_task(mgr: &mut Manager, need_backup: bool, state: &StateSnapshot) {
+pub(crate) async fn update_task(
+    mgr: &mut Manager,
+    storage: Arc<GenericRemoteStorage>,
+    need_backup: bool,
+    state: &StateSnapshot,
+) {
     let (offloader, election_dbg_str) =
         determine_offloader(&state.peers, state.backup_lsn, mgr.tli.ttid, &mgr.conf);
     let elected_me = Some(mgr.conf.my_id) == offloader;
@@ -87,7 +93,12 @@ pub(crate) async fn update_task(mgr: &mut Manager, need_backup: bool, state: &St
                 return;
             };
 
-            let async_task = backup_task_main(resident, mgr.conf.backup_parallel_jobs, shutdown_rx);
+            let async_task = backup_task_main(
+                resident,
+                storage,
+                mgr.conf.backup_parallel_jobs,
+                shutdown_rx,
+            );
 
             let handle = if mgr.conf.current_thread_runtime {
                 tokio::spawn(async_task)
@@ -174,33 +185,31 @@ fn determine_offloader(
     }
 }
 
-static REMOTE_STORAGE: OnceCell<Option<GenericRemoteStorage>> = OnceCell::const_new();
-
-// Storage must be configured and initialized when this is called.
-fn get_configured_remote_storage() -> &'static GenericRemoteStorage {
-    REMOTE_STORAGE
-        .get()
-        .expect("failed to get remote storage")
-        .as_ref()
-        .unwrap()
+pub struct WalBackup {
+    storage: Option<Arc<GenericRemoteStorage>>,
 }
 
-pub async fn init_remote_storage(conf: &SafeKeeperConf) {
-    // TODO: refactor REMOTE_STORAGE to avoid using global variables, and provide
-    // dependencies to all tasks instead.
-    REMOTE_STORAGE
-        .get_or_init(|| async {
-            if let Some(conf) = conf.remote_storage.as_ref() {
-                Some(
-                    GenericRemoteStorage::from_config(conf)
-                        .await
-                        .expect("failed to create remote storage"),
-                )
-            } else {
-                None
+impl WalBackup {
+    /// Create a new WalBackup instance.
+    pub async fn new(conf: &SafeKeeperConf) -> Result<Self> {
+        if !conf.wal_backup_enabled {
+            return Ok(Self { storage: None });
+        }
+
+        match conf.remote_storage.as_ref() {
+            Some(config) => {
+                let storage = GenericRemoteStorage::from_config(&config).await?;
+                Ok(Self {
+                    storage: Some(Arc::new(storage)),
+                })
             }
-        })
-        .await;
+            None => Ok(Self { storage: None }),
+        }
+    }
+
+    pub fn get_storage(&self) -> Option<Arc<GenericRemoteStorage>> {
+        self.storage.clone()
+    }
 }
 
 struct WalBackupTask {
@@ -209,12 +218,14 @@ struct WalBackupTask {
     wal_seg_size: usize,
     parallel_jobs: usize,
     commit_lsn_watch_rx: watch::Receiver<Lsn>,
+    storage: Arc<GenericRemoteStorage>,
 }
 
 /// Offload single timeline.
 #[instrument(name = "wal_backup", skip_all, fields(ttid = %tli.ttid))]
 async fn backup_task_main(
     tli: WalResidentTimeline,
+    storage: Arc<GenericRemoteStorage>,
     parallel_jobs: usize,
     mut shutdown_rx: Receiver<()>,
 ) {
@@ -228,6 +239,7 @@ async fn backup_task_main(
         timeline_dir: tli.get_timeline_dir(),
         timeline: tli,
         parallel_jobs,
+        storage,
     };
 
     // task is spinned up only when wal_seg_size already initialized
@@ -298,6 +310,7 @@ impl WalBackupTask {
 
             match backup_lsn_range(
                 &self.timeline,
+                self.storage.clone(),
                 &mut backup_lsn,
                 commit_lsn,
                 self.wal_seg_size,
@@ -324,6 +337,7 @@ impl WalBackupTask {
 
 async fn backup_lsn_range(
     timeline: &WalResidentTimeline,
+    storage: Arc<GenericRemoteStorage>,
     backup_lsn: &mut Lsn,
     end_lsn: Lsn,
     wal_seg_size: usize,
@@ -347,7 +361,12 @@ async fn backup_lsn_range(
     loop {
         let added_task = match iter.next() {
             Some(s) => {
-                uploads.push_back(backup_single_segment(s, timeline_dir, remote_timeline_path));
+                uploads.push_back(backup_single_segment(
+                    &storage,
+                    s,
+                    timeline_dir,
+                    remote_timeline_path,
+                ));
                 true
             }
             None => false,
@@ -383,6 +402,7 @@ async fn backup_lsn_range(
 }
 
 async fn backup_single_segment(
+    storage: &GenericRemoteStorage,
     seg: &Segment,
     timeline_dir: &Utf8Path,
     remote_timeline_path: &RemotePath,
@@ -390,7 +410,13 @@ async fn backup_single_segment(
     let segment_file_path = seg.file_path(timeline_dir)?;
     let remote_segment_path = seg.remote_path(remote_timeline_path);
 
-    let res = backup_object(&segment_file_path, &remote_segment_path, seg.size()).await;
+    let res = backup_object(
+        storage,
+        &segment_file_path,
+        &remote_segment_path,
+        seg.size(),
+    )
+    .await;
     if res.is_ok() {
         BACKED_UP_SEGMENTS.inc();
     } else {
@@ -450,12 +476,11 @@ fn get_segments(start: Lsn, end: Lsn, seg_size: usize) -> Vec<Segment> {
 }
 
 async fn backup_object(
+    storage: &GenericRemoteStorage,
     source_file: &Utf8Path,
     target_file: &RemotePath,
     size: usize,
 ) -> Result<()> {
-    let storage = get_configured_remote_storage();
-
     let file = File::open(&source_file)
         .await
         .with_context(|| format!("Failed to open file {source_file:?} for wal backup"))?;
@@ -470,12 +495,11 @@ async fn backup_object(
 }
 
 pub(crate) async fn backup_partial_segment(
+    storage: &GenericRemoteStorage,
     source_file: &Utf8Path,
     target_file: &RemotePath,
     size: usize,
 ) -> Result<()> {
-    let storage = get_configured_remote_storage();
-
     let file = File::open(&source_file)
         .await
         .with_context(|| format!("Failed to open file {source_file:?} for wal backup"))?;
@@ -499,25 +523,20 @@ pub(crate) async fn backup_partial_segment(
 }
 
 pub(crate) async fn copy_partial_segment(
+    storage: &GenericRemoteStorage,
     source: &RemotePath,
     destination: &RemotePath,
 ) -> Result<()> {
-    let storage = get_configured_remote_storage();
     let cancel = CancellationToken::new();
 
     storage.copy_object(source, destination, &cancel).await
 }
 
 pub async fn read_object(
+    storage: &GenericRemoteStorage,
     file_path: &RemotePath,
     offset: u64,
 ) -> anyhow::Result<Pin<Box<dyn tokio::io::AsyncRead + Send + Sync>>> {
-    let storage = REMOTE_STORAGE
-        .get()
-        .context("Failed to get remote storage")?
-        .as_ref()
-        .context("No remote storage configured")?;
-
     info!("segment download about to start from remote path {file_path:?} at offset {offset}");
 
     let cancel = CancellationToken::new();
@@ -542,8 +561,10 @@ pub async fn read_object(
 
 /// Delete WAL files for the given timeline. Remote storage must be configured
 /// when called.
-pub async fn delete_timeline(ttid: &TenantTimelineId) -> Result<()> {
-    let storage = get_configured_remote_storage();
+pub async fn delete_timeline(
+    storage: &GenericRemoteStorage,
+    ttid: &TenantTimelineId,
+) -> Result<()> {
     let remote_path = remote_timeline_path(ttid)?;
 
     // see DEFAULT_MAX_KEYS_PER_LIST_RESPONSE
@@ -607,14 +628,14 @@ pub async fn delete_timeline(ttid: &TenantTimelineId) -> Result<()> {
 }
 
 /// Used by wal_backup_partial.
-pub async fn delete_objects(paths: &[RemotePath]) -> Result<()> {
+pub async fn delete_objects(storage: &GenericRemoteStorage, paths: &[RemotePath]) -> Result<()> {
     let cancel = CancellationToken::new(); // not really used
-    let storage = get_configured_remote_storage();
     storage.delete_objects(paths, &cancel).await
 }
 
 /// Copy segments from one timeline to another. Used in copy_timeline.
 pub async fn copy_s3_segments(
+    storage: &GenericRemoteStorage,
     wal_seg_size: usize,
     src_ttid: &TenantTimelineId,
     dst_ttid: &TenantTimelineId,
@@ -622,12 +643,6 @@ pub async fn copy_s3_segments(
     to_segment: XLogSegNo,
 ) -> Result<()> {
     const SEGMENTS_PROGRESS_REPORT_INTERVAL: u64 = 1024;
-
-    let storage = REMOTE_STORAGE
-        .get()
-        .expect("failed to get remote storage")
-        .as_ref()
-        .unwrap();
 
     let remote_dst_path = remote_timeline_path(dst_ttid)?;
 

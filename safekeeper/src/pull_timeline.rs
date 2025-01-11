@@ -4,6 +4,7 @@ use camino::Utf8PathBuf;
 use chrono::{DateTime, Utc};
 use futures::{SinkExt, StreamExt, TryStreamExt};
 use postgres_ffi::{XLogFileName, XLogSegNo, PG_TLI};
+use remote_storage::GenericRemoteStorage;
 use safekeeper_api::{models::TimelineStatus, Term};
 use safekeeper_client::mgmt_api;
 use safekeeper_client::mgmt_api::Client;
@@ -27,7 +28,7 @@ use crate::{
     state::{EvictionState, TimelinePersistentState},
     timeline::{Timeline, WalResidentTimeline},
     timelines_global_map::{create_temp_timeline_dir, validate_temp_timeline},
-    wal_backup,
+    wal_backup::{self},
     wal_storage::open_wal_file,
     GlobalTimelines,
 };
@@ -46,6 +47,7 @@ pub async fn stream_snapshot(
     source: NodeId,
     destination: NodeId,
     tx: mpsc::Sender<Result<Bytes>>,
+    storage: Arc<GenericRemoteStorage>,
 ) {
     match tli.try_wal_residence_guard().await {
         Err(e) => {
@@ -56,10 +58,19 @@ pub async fn stream_snapshot(
         Ok(maybe_resident_tli) => {
             if let Err(e) = match maybe_resident_tli {
                 Some(resident_tli) => {
-                    stream_snapshot_resident_guts(resident_tli, source, destination, tx.clone())
+                    stream_snapshot_resident_guts(
+                        resident_tli,
+                        source,
+                        destination,
+                        tx.clone(),
+                        &storage,
+                    )
+                    .await
+                }
+                None => {
+                    stream_snapshot_offloaded_guts(tli, source, destination, tx.clone(), &storage)
                         .await
                 }
-                None => stream_snapshot_offloaded_guts(tli, source, destination, tx.clone()).await,
             } {
                 // Error type/contents don't matter as they won't can't reach the client
                 // (hyper likely doesn't do anything with it), but http stream will be
@@ -126,10 +137,12 @@ pub(crate) async fn stream_snapshot_offloaded_guts(
     source: NodeId,
     destination: NodeId,
     tx: mpsc::Sender<Result<Bytes>>,
+    storage: &GenericRemoteStorage,
 ) -> Result<()> {
     let mut ar = prepare_tar_stream(tx);
 
-    tli.snapshot_offloaded(&mut ar, source, destination).await?;
+    tli.snapshot_offloaded(&mut ar, source, destination, storage)
+        .await?;
 
     ar.finish().await?;
 
@@ -142,10 +155,13 @@ pub async fn stream_snapshot_resident_guts(
     source: NodeId,
     destination: NodeId,
     tx: mpsc::Sender<Result<Bytes>>,
+    storage: &GenericRemoteStorage,
 ) -> Result<()> {
     let mut ar = prepare_tar_stream(tx);
 
-    let bctx = tli.start_snapshot(&mut ar, source, destination).await?;
+    let bctx = tli
+        .start_snapshot(&mut ar, source, destination, storage)
+        .await?;
     pausable_failpoint!("sk-snapshot-after-list-pausable");
 
     let tli_dir = tli.get_timeline_dir();
@@ -185,6 +201,7 @@ impl Timeline {
         ar: &mut tokio_tar::Builder<W>,
         source: NodeId,
         destination: NodeId,
+        storage: &GenericRemoteStorage,
     ) -> Result<()> {
         // Take initial copy of control file, then release state lock
         let mut control_file = {
@@ -219,6 +236,7 @@ impl Timeline {
         // can fail if the timeline was un-evicted and modified in the background.
         let remote_timeline_path = &self.remote_path;
         wal_backup::copy_partial_segment(
+            storage,
             &replace.previous.remote_path(remote_timeline_path),
             &replace.current.remote_path(remote_timeline_path),
         )
@@ -265,6 +283,7 @@ impl WalResidentTimeline {
         ar: &mut tokio_tar::Builder<W>,
         source: NodeId,
         destination: NodeId,
+        storage: &GenericRemoteStorage,
     ) -> Result<SnapshotContext> {
         let mut shared_state = self.write_shared_state().await;
         let wal_seg_size = shared_state.get_wal_seg_size();
@@ -286,6 +305,7 @@ impl WalResidentTimeline {
 
             let remote_timeline_path = &self.tli.remote_path;
             wal_backup::copy_partial_segment(
+                storage,
                 &replace.previous.remote_path(remote_timeline_path),
                 &replace.current.remote_path(remote_timeline_path),
             )

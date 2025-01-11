@@ -6,7 +6,7 @@
 
 use anyhow::Context;
 use camino::Utf8PathBuf;
-use remote_storage::RemotePath;
+use remote_storage::{GenericRemoteStorage, RemotePath};
 use tokio::{
     fs::File,
     io::{AsyncRead, AsyncWriteExt},
@@ -73,6 +73,10 @@ impl Manager {
     #[instrument(name = "evict_timeline", skip_all)]
     pub(crate) async fn evict_timeline(&mut self) -> bool {
         assert!(!self.is_offloaded);
+        let Some(storage) = self.wal_backup.get_storage() else {
+            warn!("no remote storage configured, skipping uneviction");
+            return false;
+        };
         let partial_backup_uploaded = match &self.partial_backup_uploaded {
             Some(p) => p.clone(),
             None => {
@@ -92,7 +96,7 @@ impl Manager {
                 .inc();
         });
 
-        if let Err(e) = do_eviction(self, &partial_backup_uploaded).await {
+        if let Err(e) = do_eviction(self, &partial_backup_uploaded, &storage).await {
             warn!("failed to evict timeline: {:?}", e);
             return false;
         }
@@ -107,6 +111,10 @@ impl Manager {
     #[instrument(name = "unevict_timeline", skip_all)]
     pub(crate) async fn unevict_timeline(&mut self) {
         assert!(self.is_offloaded);
+        let Some(storage) = self.wal_backup.get_storage() else {
+            warn!("no remote storage configured, skipping uneviction");
+            return;
+        };
         let partial_backup_uploaded = match &self.partial_backup_uploaded {
             Some(p) => p.clone(),
             None => {
@@ -126,7 +134,7 @@ impl Manager {
                 .inc();
         });
 
-        if let Err(e) = do_uneviction(self, &partial_backup_uploaded).await {
+        if let Err(e) = do_uneviction(self, &partial_backup_uploaded, &storage).await {
             warn!("failed to unevict timeline: {:?}", e);
             return;
         }
@@ -142,8 +150,12 @@ impl Manager {
 /// Ensure that content matches the remote partial backup, if local segment exists.
 /// Then change state in control file and in-memory. If `delete_offloaded_wal` is set,
 /// delete the local segment.
-async fn do_eviction(mgr: &mut Manager, partial: &PartialRemoteSegment) -> anyhow::Result<()> {
-    compare_local_segment_with_remote(mgr, partial).await?;
+async fn do_eviction(
+    mgr: &mut Manager,
+    partial: &PartialRemoteSegment,
+    storage: &GenericRemoteStorage,
+) -> anyhow::Result<()> {
+    compare_local_segment_with_remote(mgr, partial, storage).await?;
 
     mgr.tli.switch_to_offloaded(partial).await?;
     // switch manager state as soon as possible
@@ -158,12 +170,16 @@ async fn do_eviction(mgr: &mut Manager, partial: &PartialRemoteSegment) -> anyho
 
 /// Ensure that content matches the remote partial backup, if local segment exists.
 /// Then download segment to local disk and change state in control file and in-memory.
-async fn do_uneviction(mgr: &mut Manager, partial: &PartialRemoteSegment) -> anyhow::Result<()> {
+async fn do_uneviction(
+    mgr: &mut Manager,
+    partial: &PartialRemoteSegment,
+    storage: &GenericRemoteStorage,
+) -> anyhow::Result<()> {
     // if the local segment is present, validate it
-    compare_local_segment_with_remote(mgr, partial).await?;
+    compare_local_segment_with_remote(mgr, partial, storage).await?;
 
     // atomically download the partial segment
-    redownload_partial_segment(mgr, partial).await?;
+    redownload_partial_segment(mgr, partial, storage).await?;
 
     mgr.tli.switch_to_present().await?;
     // switch manager state as soon as possible
@@ -186,6 +202,7 @@ async fn delete_local_segment(mgr: &Manager, partial: &PartialRemoteSegment) -> 
 async fn redownload_partial_segment(
     mgr: &Manager,
     partial: &PartialRemoteSegment,
+    storage: &GenericRemoteStorage,
 ) -> anyhow::Result<()> {
     let tmp_file = mgr.tli.timeline_dir().join("remote_partial.tmp");
     let remote_segfile = remote_segment_path(mgr, partial);
@@ -195,7 +212,7 @@ async fn redownload_partial_segment(
         remote_segfile, tmp_file
     );
 
-    let mut reader = wal_backup::read_object(&remote_segfile, 0).await?;
+    let mut reader = wal_backup::read_object(storage, &remote_segfile, 0).await?;
     let mut file = File::create(&tmp_file).await?;
 
     let actual_len = tokio::io::copy(&mut reader, &mut file).await?;
@@ -239,13 +256,16 @@ async fn redownload_partial_segment(
 async fn compare_local_segment_with_remote(
     mgr: &Manager,
     partial: &PartialRemoteSegment,
+    storage: &GenericRemoteStorage,
 ) -> anyhow::Result<()> {
     let local_path = local_segment_path(mgr, partial);
 
     match File::open(&local_path).await {
-        Ok(mut local_file) => do_validation(mgr, &mut local_file, mgr.wal_seg_size, partial)
-            .await
-            .context("validation failed"),
+        Ok(mut local_file) => {
+            do_validation(mgr, &mut local_file, mgr.wal_seg_size, partial, storage)
+                .await
+                .context("validation failed")
+        }
         Err(_) => {
             info!(
                 "local WAL file {} is not present, skipping validation",
@@ -263,6 +283,7 @@ async fn do_validation(
     file: &mut File,
     wal_seg_size: usize,
     partial: &PartialRemoteSegment,
+    storage: &GenericRemoteStorage,
 ) -> anyhow::Result<()> {
     let local_size = file.metadata().await?.len() as usize;
     if local_size != wal_seg_size {
@@ -275,7 +296,7 @@ async fn do_validation(
 
     let remote_segfile = remote_segment_path(mgr, partial);
     let mut remote_reader: std::pin::Pin<Box<dyn AsyncRead + Send + Sync>> =
-        wal_backup::read_object(&remote_segfile, 0).await?;
+        wal_backup::read_object(storage, &remote_segfile, 0).await?;
 
     // remote segment should have bytes excatly up to `flush_lsn`
     let expected_remote_size = partial.flush_lsn.segment_offset(mgr.wal_seg_size);
