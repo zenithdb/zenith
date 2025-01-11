@@ -1,0 +1,37 @@
+commit ec6a491d126882966a696f9ad5d3698935361d55
+Author: Alexey Masterov <alexeymasterov@neon.tech>
+Date:   Tue Dec 17 10:25:00 2024 +0100
+
+    Changes required to run tests on Neon
+
+diff --git a/neon-test.sh b/neon-test.sh
+new file mode 100755
+index 0000000..47beef2
+--- /dev/null
++++ b/neon-test.sh
+@@ -0,0 +1,12 @@
++#!/bin/bash
++set -ex
++dropdb --if-exists contrib_regression
++createdb contrib_regression
++PGXS="$(dirname "$(pg_config --pgxs)" )"
++REGRESS="${PGXS}/../test/regress/pg_regress"
++TESTDIR="test"
++TESTS=$(ls "${TESTDIR}/sql" | sort )
++TESTS=${TESTS//\.sql/}
++psql -v ON_ERROR_STOP=1 -f test/fixtures.sql -d contrib_regression
++${REGRESS} --use-existing --dbname=contrib_regression --inputdir=${TESTDIR} ${TESTS}
++
+diff --git a/test/expected/permissions_functions.out b/test/expected/permissions_functions.out
+index 1e9fbc2..94cbe25 100644
+--- a/test/expected/permissions_functions.out
++++ b/test/expected/permissions_functions.out
+@@ -64,7 +64,7 @@ begin;
+     select current_user;
+  current_user 
+ --------------
+- postgres
++ cloud_admin
+ (1 row)
+ 
+     -- revoke default access from the public role for new functions
