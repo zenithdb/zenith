@@ -65,6 +65,7 @@ int			wal_acceptor_connection_timeout = 10000;
 
 /* Set to true in the walproposer bgw. */
 static bool am_walproposer;
+static WalProposer *walProposer = NULL;
 static WalproposerShmemState *walprop_shared;
 static WalProposerConfig walprop_config;
 static XLogRecPtr sentPtr = InvalidXLogRecPtr;
@@ -75,6 +76,7 @@ static bool reported_sigusr2 = false;
 static XLogRecPtr standby_flush_lsn = InvalidXLogRecPtr;
 static XLogRecPtr standby_apply_lsn = InvalidXLogRecPtr;
 static HotStandbyFeedback agg_hs_feedback;
+static MemoryContext WalPropMemCtx = NULL;
 
 static void nwp_shmem_startup_hook(void);
 static void nwp_register_gucs(void);
@@ -113,8 +115,8 @@ static void CheckGracefulShutdown(WalProposer *wp);
 static void
 init_walprop_config(bool syncSafekeepers)
 {
-	walprop_config.neon_tenant = neon_tenant;
-	walprop_config.neon_timeline = neon_timeline;
+	walprop_config.neon_tenant = pstrdup(neon_tenant);
+	walprop_config.neon_timeline = pstrdup(neon_timeline);
 	/* WalProposerCreate scribbles directly on it, so pstrdup */
 	walprop_config.safekeepers_list = pstrdup(wal_acceptors_list);
 	walprop_config.safekeeper_reconnect_timeout = wal_acceptor_reconnect_timeout;
@@ -135,13 +137,21 @@ PGDLLEXPORT void
 WalProposerSync(int argc, char *argv[])
 {
 	WalProposer *wp;
+	MemoryContext ctx;
+	/* contains copies of GUCs and other runtime allocations */
+	WalPropMemCtx = AllocSetContextCreate(TopMemoryContext,
+										  "WalProposer Config",
+										  ALLOCSET_DEFAULT_SIZES);
+	ctx = MemoryContextSwitchTo(WalPropMemCtx);
 
 	init_walprop_config(true);
 	WalproposerShmemInit_SyncSafekeeper();
 	walprop_pg_init_standalone_sync_safekeepers();
 	walprop_pg_load_libpqwalreceiver();
 
-	wp = WalProposerCreate(&walprop_config, walprop_pg);
+	walProposer = wp = WalProposerCreate(&walprop_config, walprop_pg);
+
+	MemoryContextSwitchTo(ctx);
 
 	WalProposerStart(wp);
 }
@@ -153,16 +163,25 @@ PGDLLEXPORT void
 WalProposerMain(Datum main_arg)
 {
 	WalProposer *wp;
+	MemoryContext ctx;
+
+	/* contains copies of GUCs and other runtime allocations */
+	WalPropMemCtx = AllocSetContextCreate(TopMemoryContext,
+										  "WalProposer Config",
+										  ALLOCSET_DEFAULT_SIZES);
+	ctx = MemoryContextSwitchTo(WalPropMemCtx);
 
 	init_walprop_config(false);
 	walprop_pg_init_bgworker();
 	am_walproposer = true;
 	walprop_pg_load_libpqwalreceiver();
 
-	wp = WalProposerCreate(&walprop_config, walprop_pg);
+	walProposer = wp = WalProposerCreate(&walprop_config, walprop_pg);
 	wp->last_reconnect_attempt = walprop_pg_get_current_timestamp(wp);
 
 	walprop_pg_init_walsender();
+	MemoryContextSwitchTo(ctx);
+
 	WalProposerStart(wp);
 }
 
@@ -222,29 +241,6 @@ nwp_register_gucs(void)
 }
 
 
-static int
-split_safekeepers_list(char *safekeepers_list, char *safekeepers[])
-{
-	int n_safekeepers = 0;
-	char *curr_sk = safekeepers_list;
-
-	for (char *coma = safekeepers_list; coma != NULL && *coma != '\0'; curr_sk = coma)
-	{
-		if (++n_safekeepers >= MAX_SAFEKEEPERS) {
-			wpg_log(FATAL, "too many safekeepers");
-		}
-
-		coma = strchr(coma, ',');
-		safekeepers[n_safekeepers-1] = curr_sk;
-
-		if (coma != NULL) {
-			*coma++ = '\0';
-		}
-	}
-
-	return n_safekeepers;
-}
-
 /*
  * Accept two coma-separated strings with list of safekeeper host:port addresses.
  * Split them into arrays and return false if two sets do not match, ignoring the order.
@@ -257,8 +253,8 @@ safekeepers_cmp(char *old, char *new)
 	int len_old = 0;
 	int len_new = 0;
 
-	len_old = split_safekeepers_list(old, safekeepers_old);
-	len_new = split_safekeepers_list(new, safekeepers_new);
+	len_old = split_safekeepers_list(walProposer, old, safekeepers_old);
+	len_new = split_safekeepers_list(walProposer, new, safekeepers_new);
 
 	if (len_old != len_new)
 	{
@@ -302,15 +298,15 @@ assign_neon_safekeepers(const char *newval, void *extra)
 	oldval = pstrdup(wal_acceptors_list);
 
 	/* 
-	 * TODO: restarting through FATAL is stupid and introduces 1s delay before
-	 * next bgw start. We should refactor walproposer to allow graceful exit and
-	 * thus remove this delay.
 	 * XXX: If you change anything here, sync with test_safekeepers_reconfigure_reorder.
 	 */
 	if (!safekeepers_cmp(oldval, newval_copy))
 	{
-		wpg_log(FATAL, "restarting walproposer to change safekeeper list from %s to %s",
-				wal_acceptors_list, newval);
+		WalProposerConfig newConfig = walprop_config;
+		MemoryContext old = MemoryContextSwitchTo(WalPropMemCtx);
+		newConfig.safekeepers_list = pstrdup(newval);
+		WalProposerUpdateConfig(walProposer, &newConfig);
+		MemoryContextSwitchTo(old);
 	}
 	pfree(newval_copy);
 	pfree(oldval);
@@ -1373,7 +1369,6 @@ WalSndLoop(WalProposer *wp)
 	for (;;)
 	{
 		CHECK_FOR_INTERRUPTS();
-
 		XLogBroadcastWalProposer(wp);
 		WalProposerPoll(wp);
 	}
@@ -2014,8 +2009,6 @@ GetNeonCurrentClusterSize(void)
 {
 	return pg_atomic_read_u64(&walprop_shared->currentClusterSize);
 }
-uint64		GetNeonCurrentClusterSize(void);
-
 
 static const walproposer_api walprop_pg = {
 	.get_shmem_state = walprop_pg_get_shmem_state,

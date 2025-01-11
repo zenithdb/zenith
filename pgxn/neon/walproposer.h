@@ -103,6 +103,19 @@ typedef enum
 	SS_ACTIVE,
 } SafekeeperState;
 
+typedef enum SKReconfigureState
+{
+	SRS_NONE,
+	/*
+	 * SK host/port config was updated
+	 * Happens when the set of Safekeepers associated with a tenant is modified.  
+	 */
+	SRS_HOST_UPDATED,
+
+	/* End state for configuration changes w/ active Safekeeper */
+	SRS_CHANGES_APPLIED,
+} SKReconfigureState;
+
 /*
  * Sending WAL substates of SS_ACTIVE.
  */
@@ -364,6 +377,7 @@ typedef struct Safekeeper
 	AppendRequestHeader appendRequest;	/* request for sending to safekeeper */
 
 	SafekeeperState state;		/* safekeeper state machine state */
+	SKReconfigureState reconfigureState;
 	SafekeeperActiveState active_state;
 	TimestampTz latestMsgReceivedAt;	/* when latest msg is received */
 	AcceptorGreeting greetResponse; /* acceptor greeting */
@@ -660,6 +674,7 @@ typedef struct WalProposer
 
 	/* (n_safekeepers / 2) + 1 */
 	int			quorum;
+	int			pendingReconnects;
 
 	Safekeeper	safekeeper[MAX_SAFEKEEPERS];
 
@@ -720,8 +735,10 @@ typedef struct WalProposer
 } WalProposer;
 
 extern WalProposer *WalProposerCreate(WalProposerConfig *config, walproposer_api api);
+extern void WalProposerUpdateConfig(WalProposer *wp, WalProposerConfig *config);
 extern void WalProposerStart(WalProposer *wp);
 extern void WalProposerBroadcast(WalProposer *wp, XLogRecPtr startpos, XLogRecPtr endpos);
+extern void WalProposerHandleReconnects(WalProposer *wp);
 extern void WalProposerPoll(WalProposer *wp);
 extern void WalProposerFree(WalProposer *wp);
 
@@ -733,7 +750,6 @@ extern WalproposerShmemState *GetWalpropShmemState(void);
  */
 extern void SafekeeperStateDesiredEvents(Safekeeper *sk, uint32 *sk_events, uint32 *nwr_events);
 extern TimeLineID walprop_pg_get_timeline_id(void);
-
 
 #define WPEVENT		1337		/* special log level for walproposer internal
 								 * events */
@@ -756,5 +772,36 @@ extern void WalProposerLibLog(WalProposer *wp, int elevel, char *fmt,...) pg_att
  * adding prefix.
  */
 #define wpg_log(elevel, fmt, ...) elog(elevel, WP_LOG_PREFIX fmt, ## __VA_ARGS__)
+
+/* Utility tooling */
+
+/*
+ * Split the safekeepers list into separate strings, adding them to
+ * safekeepers[].
+ * 
+ * This modifies both safekeepers_list and safekeepers.
+ */
+static inline int
+split_safekeepers_list(WalProposer *wp, char *safekeepers_list, char *safekeepers[])
+{
+	int n_safekeepers = 0;
+	char *curr_sk = safekeepers_list;
+
+	for (char *coma = safekeepers_list; coma != NULL && *coma != '\0'; curr_sk = coma)
+	{
+		if (++n_safekeepers >= MAX_SAFEKEEPERS) {
+			wp_log(FATAL, "too many safekeepers");
+		}
+
+		coma = strchr(coma, ',');
+		safekeepers[n_safekeepers-1] = curr_sk;
+
+		if (coma != NULL) {
+			*coma++ = '\0';
+		}
+	}
+
+	return n_safekeepers;
+}
 
 #endif							/* __NEON_WALPROPOSER_H__ */
