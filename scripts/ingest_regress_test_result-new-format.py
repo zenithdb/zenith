@@ -134,7 +134,7 @@ def ingest_test_result(
             if p["name"].startswith("__")
         }
         arch = parameters.get("arch", "UNKNOWN").strip("'")
-        lfc = parameters.get("lfc", "False") == "True"
+        lfc = parameters.get("lfc", "without-lfc") == "with-lfc"
 
         build_type, pg_version, unparametrized_name = parse_test_name(test["name"])
         labels = {label["name"]: label["value"] for label in test["labels"]}

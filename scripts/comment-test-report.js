@@ -84,6 +84,12 @@ const parseReportJson = async ({ reportJsonUrl, fetch }) => {
                 } else {
                     arch = "unknown"
                 }
+                let lfcState = ""
+                if (test.parameters.includes("'with-lfc'")) {
+                    lfcState = "with-lfc"
+                } else {
+                    lfcState = "without-lfc"
+                }
 
                 // Removing build type and PostgreSQL version from the test name to make it shorter
                 const testName = test.name.replace(new RegExp(`${buildType}-pg${pgVersion}-?`), "").replace("[]", "")
@@ -91,6 +97,7 @@ const parseReportJson = async ({ reportJsonUrl, fetch }) => {
                 test.pgVersion = pgVersion
                 test.buildType = buildType
                 test.arch = arch
+                test.lfcState = lfcState
 
                 if (test.status === "passed") {
                     passedTests[pgVersion][testName].push(test)
@@ -157,7 +164,7 @@ const reportSummary = async (params) => {
                 const links = []
                 for (const test of tests) {
                     const allureLink = `${reportUrl}#suites/${test.parentUid}/${test.uid}`
-                    links.push(`[${test.buildType}-${test.arch}](${allureLink})`)
+                    links.push(`[${test.buildType}-${test.arch}-${test.lfcState}](${allureLink})`)
                 }
                 summary += `- \`${testName}\`: ${links.join(", ")}\n`
             }
