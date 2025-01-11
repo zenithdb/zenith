@@ -16,3 +16,25 @@ rustflags = ["-Cforce-frame-pointers=yes"]
 [alias]
 build_testing = ["build", "--features", "testing"]
 neon = ["run", "--bin", "neon_local"]
+
+[env]
+
+# Set AWS_SDK_RUST_BUILD_UA_METADATA to avoid a cargo issue that
+# caused recompiling aws-sdk crates every time.
+#
+# Without this, running "cargo build" would recompile the aws-sdk
+# crates every time, even if nothing changed. Cargo fingerprint
+# debugging showed this:
+#
+# $ CARGO_LOG=cargo::core::compiler::fingerprint=info  cargo build --features testing --bins
+#    0.422450751s  INFO cargo::core::compiler::fingerprint: stale: changed env "AWS_SDK_RUST_BUILD_UA_METADATA"
+#    0.422465658s  INFO cargo::core::compiler::fingerprint:        Some("") != None
+#  ...
+#
+# That seems bogus. Seems that something in cargo or the build scripts
+# is being confused about the variable being set to empty string, or
+# not set at all.
+#
+# To work around that, set the env variable explicitly. That way,
+# cargo recognizes it as "not changed"
+AWS_SDK_RUST_BUILD_UA_METADATA=""
