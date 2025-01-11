@@ -16,7 +16,7 @@ use utils::bin_ser::DeserializeError;
 use utils::lsn::Lsn;
 
 #[repr(C)]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct XlMultiXactCreate {
     pub mid: MultiXactId,
     /* new MultiXact's ID */
@@ -46,7 +46,7 @@ impl XlMultiXactCreate {
 }
 
 #[repr(C)]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct XlMultiXactTruncate {
     pub oldest_multi_db: Oid,
     /* to-be-truncated range of multixact offsets */
@@ -72,7 +72,7 @@ impl XlMultiXactTruncate {
 }
 
 #[repr(C)]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct XlRelmapUpdate {
     pub dbid: Oid,   /* database ID, or 0 for shared map */
     pub tsid: Oid,   /* database's tablespace, or pg_global */
@@ -90,7 +90,7 @@ impl XlRelmapUpdate {
 }
 
 #[repr(C)]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct XlReploriginDrop {
     pub node_id: RepOriginId,
 }
@@ -104,7 +104,7 @@ impl XlReploriginDrop {
 }
 
 #[repr(C)]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct XlReploriginSet {
     pub remote_lsn: Lsn,
     pub node_id: RepOriginId,
@@ -911,7 +911,7 @@ impl XlSmgrCreate {
 }
 
 #[repr(C)]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct XlSmgrTruncate {
     pub blkno: BlockNumber,
     pub rnode: RelFileNode,
@@ -984,7 +984,7 @@ impl XlDropDatabase {
 /// xl_xact_parsed_abort structs in PostgreSQL, but we use the same
 /// struct for commits and aborts.
 ///
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct XlXactParsedRecord {
     pub xid: TransactionId,
     pub info: u8,

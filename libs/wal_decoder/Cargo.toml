@@ -20,7 +20,23 @@ tokio = { workspace = true, features = ["io-util"] }
 tonic.workspace = true
 tracing.workspace = true
 utils.workspace = true
+smallvec.workspace = true
 workspace_hack = { version = "0.1", path = "../../workspace_hack" }
 
 [build-dependencies]
 tonic-build.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+camino.workspace = true
+camino-tempfile.workspace = true
+remote_storage.workspace = true
+tokio-util.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+tikv-jemallocator.workspace = true
+pprof.workspace = true
+
+[[bench]]
+name = "bench_interpret_wal"
+harness = false

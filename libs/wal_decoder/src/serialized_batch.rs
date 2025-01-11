@@ -5,7 +5,7 @@
 //! Such batches are created from decoded PG wal records and ingested
 //! by the pageserver by writing directly to the ephemeral file.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use bytes::{Bytes, BytesMut};
 use pageserver_api::key::rel_block_to_key;
@@ -21,6 +21,8 @@ use utils::bin_ser::BeSer;
 use utils::lsn::Lsn;
 
 use pageserver_api::key::Key;
+
+use crate::models::InterpretedWalRecord;
 
 static ZERO_PAGE: Bytes = Bytes::from_static(&[0u8; BLCKSZ as usize]);
 
@@ -136,21 +138,18 @@ impl SerializedValueBatch {
     /// but absent from the raw buffer [`SerializedValueBatch::raw`]).
     pub(crate) fn from_decoded_filtered(
         decoded: DecodedWALRecord,
-        shard: &ShardIdentity,
+        shard_records: &mut HashMap<ShardIdentity, InterpretedWalRecord>,
         next_record_lsn: Lsn,
         pg_version: u32,
-    ) -> anyhow::Result<SerializedValueBatch> {
-        // First determine how big the buffer needs to be and allocate it up-front.
+    ) -> anyhow::Result<()> {
+        // First determine how big the buffers need to be and allocate it up-front.
         // This duplicates some of the work below, but it's empirically much faster.
-        let estimated_buffer_size = Self::estimate_buffer_size(&decoded, shard, pg_version);
-        let mut buf = Vec::<u8>::with_capacity(estimated_buffer_size);
+        for (shard, record) in shard_records.iter_mut() {
+            let estimate = Self::estimate_buffer_size(&decoded, shard, pg_version);
+            record.batch.raw = Vec::with_capacity(estimate);
+        }
 
-        let mut metadata: Vec<ValueMeta> = Vec::with_capacity(decoded.blocks.len());
-        let mut max_lsn: Lsn = Lsn(0);
-        let mut len: usize = 0;
         for blk in decoded.blocks.iter() {
-            let relative_off = buf.len() as u64;
-
             let rel = RelTag {
                 spcnode: blk.rnode_spcnode,
                 dbnode: blk.rnode_dbnode,
@@ -168,99 +167,98 @@ impl SerializedValueBatch {
                 );
             }
 
-            let key_is_local = shard.is_key_local(&key);
+            for (shard, record) in shard_records.iter_mut() {
+                let key_is_local = shard.is_key_local(&key);
 
-            tracing::debug!(
-                lsn=%next_record_lsn,
-                key=%key,
-                "ingest: shard decision {}",
-                if !key_is_local { "drop" } else { "keep" },
-            );
+                tracing::debug!(
+                    lsn=%next_record_lsn,
+                    key=%key,
+                    "ingest: shard decision {}",
+                    if !key_is_local { "drop" } else { "keep" },
+                );
 
-            if !key_is_local {
-                if shard.is_shard_zero() {
-                    // Shard 0 tracks relation sizes.  Although we will not store this block, we will observe
-                    // its blkno in case it implicitly extends a relation.
-                    metadata.push(ValueMeta::Observed(ObservedValueMeta {
+                if !key_is_local {
+                    if shard.is_shard_zero() {
+                        // Shard 0 tracks relation sizes.  Although we will not store this block, we will observe
+                        // its blkno in case it implicitly extends a relation.
+                        record
+                            .batch
+                            .metadata
+                            .push(ValueMeta::Observed(ObservedValueMeta {
+                                key: key.to_compact(),
+                                lsn: next_record_lsn,
+                            }))
+                    }
+
+                    continue;
+                }
+
+                // Instead of storing full-page-image WAL record,
+                // it is better to store extracted image: we can skip wal-redo
+                // in this case. Also some FPI records may contain multiple (up to 32) pages,
+                // so them have to be copied multiple times.
+                //
+                let val = if Self::block_is_image(&decoded, blk, pg_version) {
+                    // Extract page image from FPI record
+                    let img_len = blk.bimg_len as usize;
+                    let img_offs = blk.bimg_offset as usize;
+                    let mut image = BytesMut::with_capacity(BLCKSZ as usize);
+                    // TODO(vlad): skip the copy
+                    image.extend_from_slice(&decoded.record[img_offs..img_offs + img_len]);
+
+                    if blk.hole_length != 0 {
+                        let tail = image.split_off(blk.hole_offset as usize);
+                        image.resize(image.len() + blk.hole_length as usize, 0u8);
+                        image.unsplit(tail);
+                    }
+                    //
+                    // Match the logic of XLogReadBufferForRedoExtended:
+                    // The page may be uninitialized. If so, we can't set the LSN because
+                    // that would corrupt the page.
+                    //
+                    if !page_is_new(&image) {
+                        page_set_lsn(&mut image, next_record_lsn)
+                    }
+                    assert_eq!(image.len(), BLCKSZ as usize);
+
+                    Value::Image(image.freeze())
+                } else {
+                    Value::WalRecord(NeonWalRecord::Postgres {
+                        will_init: blk.will_init || blk.apply_image,
+                        rec: decoded.record.clone(),
+                    })
+                };
+
+                let relative_off = record.batch.raw.len() as u64;
+
+                val.ser_into(&mut record.batch.raw)
+                    .expect("Writing into in-memory buffer is infallible");
+
+                let val_ser_size = record.batch.raw.len() - relative_off as usize;
+
+                record
+                    .batch
+                    .metadata
+                    .push(ValueMeta::Serialized(SerializedValueMeta {
                         key: key.to_compact(),
                         lsn: next_record_lsn,
-                    }))
-                }
-
-                continue;
+                        batch_offset: relative_off,
+                        len: val_ser_size,
+                        will_init: val.will_init(),
+                    }));
+                record.batch.max_lsn = std::cmp::max(record.batch.max_lsn, next_record_lsn);
+                record.batch.len += 1;
             }
-
-            // Instead of storing full-page-image WAL record,
-            // it is better to store extracted image: we can skip wal-redo
-            // in this case. Also some FPI records may contain multiple (up to 32) pages,
-            // so them have to be copied multiple times.
-            //
-            let val = if Self::block_is_image(&decoded, blk, pg_version) {
-                // Extract page image from FPI record
-                let img_len = blk.bimg_len as usize;
-                let img_offs = blk.bimg_offset as usize;
-                let mut image = BytesMut::with_capacity(BLCKSZ as usize);
-                // TODO(vlad): skip the copy
-                image.extend_from_slice(&decoded.record[img_offs..img_offs + img_len]);
-
-                if blk.hole_length != 0 {
-                    let tail = image.split_off(blk.hole_offset as usize);
-                    image.resize(image.len() + blk.hole_length as usize, 0u8);
-                    image.unsplit(tail);
-                }
-                //
-                // Match the logic of XLogReadBufferForRedoExtended:
-                // The page may be uninitialized. If so, we can't set the LSN because
-                // that would corrupt the page.
-                //
-                if !page_is_new(&image) {
-                    page_set_lsn(&mut image, next_record_lsn)
-                }
-                assert_eq!(image.len(), BLCKSZ as usize);
-
-                Value::Image(image.freeze())
-            } else {
-                Value::WalRecord(NeonWalRecord::Postgres {
-                    will_init: blk.will_init || blk.apply_image,
-                    rec: decoded.record.clone(),
-                })
-            };
-
-            val.ser_into(&mut buf)
-                .expect("Writing into in-memory buffer is infallible");
-
-            let val_ser_size = buf.len() - relative_off as usize;
-
-            metadata.push(ValueMeta::Serialized(SerializedValueMeta {
-                key: key.to_compact(),
-                lsn: next_record_lsn,
-                batch_offset: relative_off,
-                len: val_ser_size,
-                will_init: val.will_init(),
-            }));
-            max_lsn = std::cmp::max(max_lsn, next_record_lsn);
-            len += 1;
         }
 
         if cfg!(any(debug_assertions, test)) {
-            let batch = Self {
-                raw: buf,
-                metadata,
-                max_lsn,
-                len,
-            };
-
-            batch.validate_lsn_order();
-
-            return Ok(batch);
+            // Validate that the batches are correct
+            for record in shard_records.values() {
+                record.batch.validate_lsn_order();
+            }
         }
 
-        Ok(Self {
-            raw: buf,
-            metadata,
-            max_lsn,
-            len,
-        })
+        Ok(())
     }
 
     /// Look into the decoded PG WAL record and determine

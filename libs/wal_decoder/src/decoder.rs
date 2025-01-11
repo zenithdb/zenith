@@ -1,6 +1,8 @@
 //! This module contains logic for decoding and interpreting
 //! raw bytes which represent a raw Postgres WAL record.
 
+use std::collections::HashMap;
+
 use crate::models::*;
 use crate::serialized_batch::SerializedValueBatch;
 use bytes::{Buf, Bytes};
@@ -14,15 +16,15 @@ use utils::lsn::Lsn;
 
 impl InterpretedWalRecord {
     /// Decode and interpreted raw bytes which represent one Postgres WAL record.
-    /// Data blocks which do not match the provided shard identity are filtered out.
+    /// Data blocks which do not match any of the provided shard identities are filtered out.
     /// Shard 0 is a special case since it tracks all relation sizes. We only give it
     /// the keys that are being written as that is enough for updating relation sizes.
     pub fn from_bytes_filtered(
         buf: Bytes,
-        shard: &ShardIdentity,
+        shards: &[ShardIdentity],
         next_record_lsn: Lsn,
         pg_version: u32,
-    ) -> anyhow::Result<InterpretedWalRecord> {
+    ) -> anyhow::Result<HashMap<ShardIdentity, InterpretedWalRecord>> {
         let mut decoded = DecodedWALRecord::default();
         decode_wal_record(buf, &mut decoded, pg_version)?;
         let xid = decoded.xl_xid;
@@ -33,43 +35,61 @@ impl InterpretedWalRecord {
             FlushUncommittedRecords::No
         };
 
-        let metadata_record =
-            MetadataRecord::from_decoded_filtered(&decoded, shard, next_record_lsn, pg_version)?;
-        let batch = SerializedValueBatch::from_decoded_filtered(
+        let mut shard_records: HashMap<ShardIdentity, InterpretedWalRecord> =
+            HashMap::with_capacity(shards.len());
+        for shard in shards {
+            shard_records.insert(
+                *shard,
+                InterpretedWalRecord {
+                    metadata_record: None,
+                    batch: SerializedValueBatch {
+                        raw: Vec::new(),
+                        metadata: Default::default(),
+                        max_lsn: Lsn(0),
+                        len: 0,
+                    },
+                    next_record_lsn,
+                    flush_uncommitted,
+                    xid,
+                },
+            );
+        }
+
+        MetadataRecord::from_decoded_filtered(
+            &decoded,
+            &mut shard_records,
+            next_record_lsn,
+            pg_version,
+        )?;
+        SerializedValueBatch::from_decoded_filtered(
             decoded,
-            shard,
+            &mut shard_records,
             next_record_lsn,
             pg_version,
         )?;
 
-        Ok(InterpretedWalRecord {
-            metadata_record,
-            batch,
-            next_record_lsn,
-            flush_uncommitted,
-            xid,
-        })
+        Ok(shard_records)
     }
 }
 
 impl MetadataRecord {
-    /// Builds a metadata record for this WAL record, if any.
+    /// Builds metadata records for this WAL record for the specified shards if any, if any.
     ///
-    /// Only metadata records relevant for the given shard are emitted. Currently, most metadata
+    /// Only metadata records relevant for the given shards is emitted. Currently, most metadata
     /// records are broadcast to all shards for simplicity, but this should be improved.
     fn from_decoded_filtered(
         decoded: &DecodedWALRecord,
-        shard: &ShardIdentity,
+        shard_records: &mut HashMap<ShardIdentity, InterpretedWalRecord>,
         next_record_lsn: Lsn,
         pg_version: u32,
-    ) -> anyhow::Result<Option<MetadataRecord>> {
+    ) -> anyhow::Result<()> {
         // Note: this doesn't actually copy the bytes since
         // the [`Bytes`] type implements it via a level of indirection.
         let mut buf = decoded.record.clone();
         buf.advance(decoded.main_data_offset);
 
         // First, generate metadata records from the decoded WAL record.
-        let mut metadata_record = match decoded.xl_rmid {
+        let metadata_record = match decoded.xl_rmid {
             pg_constants::RM_HEAP_ID | pg_constants::RM_HEAP2_ID => {
                 Self::decode_heapam_record(&mut buf, decoded, pg_version)?
             }
@@ -112,41 +132,65 @@ impl MetadataRecord {
         };
 
         // Next, filter the metadata record by shard.
-        match metadata_record {
-            Some(
-                MetadataRecord::Heapam(HeapamRecord::ClearVmBits(ref mut clear_vm_bits))
-                | MetadataRecord::Neonrmgr(NeonrmgrRecord::ClearVmBits(ref mut clear_vm_bits)),
-            ) => {
-                // Route VM page updates to the shards that own them. VM pages are stored in the VM fork
-                // of the main relation. These are sharded and managed just like regular relation pages.
-                // See: https://github.com/neondatabase/neon/issues/9855
-                let is_local_vm_page = |heap_blk| {
-                    let vm_blk = pg_constants::HEAPBLK_TO_MAPBLOCK(heap_blk);
-                    shard.is_key_local(&rel_block_to_key(clear_vm_bits.vm_rel, vm_blk))
-                };
-                // Send the old and new VM page updates to their respective shards.
-                clear_vm_bits.old_heap_blkno = clear_vm_bits
-                    .old_heap_blkno
-                    .filter(|&blkno| is_local_vm_page(blkno));
-                clear_vm_bits.new_heap_blkno = clear_vm_bits
-                    .new_heap_blkno
-                    .filter(|&blkno| is_local_vm_page(blkno));
-                // If neither VM page belongs to this shard, discard the record.
-                if clear_vm_bits.old_heap_blkno.is_none() && clear_vm_bits.new_heap_blkno.is_none()
-                {
-                    metadata_record = None
+        for (shard, record) in shard_records.iter_mut() {
+            let metadata_record_for_shard = match metadata_record {
+                Some(
+                    MetadataRecord::Heapam(HeapamRecord::ClearVmBits(ref clear_vm_bits))
+                    | MetadataRecord::Neonrmgr(NeonrmgrRecord::ClearVmBits(ref clear_vm_bits)),
+                ) => {
+                    // Route VM page updates to the shards that own them. VM pages are stored in the VM fork
+                    // of the main relation. These are sharded and managed just like regular relation pages.
+                    // See: https://github.com/neondatabase/neon/issues/9855
+                    let is_local_vm_page = |heap_blk| {
+                        let vm_blk = pg_constants::HEAPBLK_TO_MAPBLOCK(heap_blk);
+                        shard.is_key_local(&rel_block_to_key(clear_vm_bits.vm_rel, vm_blk))
+                    };
+                    // Send the old and new VM page updates to their respective shards.
+                    let updated_old_heap_blkno = clear_vm_bits
+                        .old_heap_blkno
+                        .filter(|&blkno| is_local_vm_page(blkno));
+                    let updated_new_heap_blkno = clear_vm_bits
+                        .new_heap_blkno
+                        .filter(|&blkno| is_local_vm_page(blkno));
+                    // If neither VM page belongs to this shard, discard the record.
+                    if updated_old_heap_blkno.is_none() && updated_new_heap_blkno.is_none() {
+                        None
+                    } else {
+                        let mut for_shard = metadata_record.clone();
+                        match for_shard {
+                            Some(
+                                MetadataRecord::Heapam(HeapamRecord::ClearVmBits(
+                                    ref mut clear_vm_bits,
+                                ))
+                                | MetadataRecord::Neonrmgr(NeonrmgrRecord::ClearVmBits(
+                                    ref mut clear_vm_bits,
+                                )),
+                            ) => {
+                                clear_vm_bits.old_heap_blkno = updated_old_heap_blkno;
+                                clear_vm_bits.new_heap_blkno = updated_new_heap_blkno;
+                                for_shard
+                            }
+                            _ => {
+                                unreachable!("for_shard is a clone of what we checked above")
+                            }
+                        }
+                    }
                 }
-            }
-            Some(MetadataRecord::LogicalMessage(LogicalMessageRecord::Put(_))) => {
-                // Filter LogicalMessage records (AUX files) to only be stored on shard zero
-                if !shard.is_shard_zero() {
-                    metadata_record = None;
+                Some(MetadataRecord::LogicalMessage(LogicalMessageRecord::Put(_))) => {
+                    // Filter LogicalMessage records (AUX files) to only be stored on shard zero
+                    if shard.is_shard_zero() {
+                        metadata_record.clone()
+                    } else {
+                        None
+                    }
                 }
-            }
-            _ => {}
+                _ => metadata_record.clone(),
+            };
+
+            record.metadata_record = metadata_record_for_shard;
         }
 
-        Ok(metadata_record)
+        Ok(())
     }
 
     fn decode_heapam_record(
