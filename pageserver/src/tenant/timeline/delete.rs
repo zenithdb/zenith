@@ -301,6 +301,7 @@ impl DeleteTimelineFlow {
                 TimelineResources {
                     remote_client,
                     pagestream_throttle: tenant.pagestream_throttle.clone(),
+                    pagestream_throttle_metrics: tenant.pagestream_throttle_metrics.clone(),
                     l0_flush_global_state: tenant.l0_flush_global_state.clone(),
                 },
                 // Important. We dont pass ancestor above because it can be missing.

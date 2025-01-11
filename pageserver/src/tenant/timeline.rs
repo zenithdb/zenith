@@ -208,8 +208,8 @@ fn drop_wlock<T>(rlock: tokio::sync::RwLockWriteGuard<'_, T>) {
 /// The outward-facing resources required to build a Timeline
 pub struct TimelineResources {
     pub remote_client: RemoteTimelineClient,
-    pub pagestream_throttle:
-        Arc<crate::tenant::throttle::Throttle<crate::metrics::tenant_throttling::Pagestream>>,
+    pub pagestream_throttle: Arc<crate::tenant::throttle::Throttle>,
+    pub pagestream_throttle_metrics: Arc<crate::metrics::tenant_throttling::Pagestream>,
     pub l0_flush_global_state: l0_flush::L0FlushGlobalState,
 }
 
@@ -412,8 +412,7 @@ pub struct Timeline {
     gc_lock: tokio::sync::Mutex<()>,
 
     /// Cloned from [`super::Tenant::pagestream_throttle`] on construction.
-    pub(crate) pagestream_throttle:
-        Arc<crate::tenant::throttle::Throttle<crate::metrics::tenant_throttling::Pagestream>>,
+    pub(crate) pagestream_throttle: Arc<crate::tenant::throttle::Throttle>,
 
     /// Size estimator for aux file v2
     pub(crate) aux_file_size_estimator: AuxFileSizeEstimator,
@@ -2310,6 +2309,7 @@ impl Timeline {
                 query_metrics: crate::metrics::SmgrQueryTimePerTimeline::new(
                     &tenant_shard_id,
                     &timeline_id,
+                    resources.pagestream_throttle_metrics,
                 ),
 
                 directory_metrics: array::from_fn(|_| AtomicU64::new(0)),
