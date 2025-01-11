@@ -56,7 +56,7 @@ pub const SIZE_OF_XLOG_RECORD_DATA_HEADER_SHORT: usize = 1 * 2;
 /// metadata checkpoint only once per XID_CHECKPOINT_INTERVAL transactions.
 /// XID_CHECKPOINT_INTERVAL should not be larger than BLCKSZ*CLOG_XACTS_PER_BYTE
 /// in order to let CLOG_TRUNCATE mechanism correctly extend CLOG.
-const XID_CHECKPOINT_INTERVAL: u32 = 1024;
+const XID_CHECKPOINT_INTERVAL: u32 = 128;
 
 pub fn XLogSegmentsPerXLogId(wal_segsz_bytes: usize) -> XLogSegNo {
     (0x100000000u64 / wal_segsz_bytes as u64) as XLogSegNo

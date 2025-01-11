@@ -190,19 +190,19 @@ pub fn test_update_next_xid() {
     // The input XID gets rounded up to the next XID_CHECKPOINT_INTERVAL
     // boundary
     checkpoint.update_next_xid(100);
-    assert_eq!(checkpoint.nextXid.value, 1024);
+    assert_eq!(checkpoint.nextXid.value, 128);
 
     // No change
-    checkpoint.update_next_xid(500);
-    assert_eq!(checkpoint.nextXid.value, 1024);
-    checkpoint.update_next_xid(1023);
-    assert_eq!(checkpoint.nextXid.value, 1024);
+    checkpoint.update_next_xid(100);
+    assert_eq!(checkpoint.nextXid.value, 128);
+    checkpoint.update_next_xid(127);
+    assert_eq!(checkpoint.nextXid.value, 128);
 
     // The function returns the *next* XID, given the highest XID seen so
-    // far. So when we pass 1024, the nextXid gets bumped up to the next
+    // far. So when we pass 128, the nextXid gets bumped up to the next
     // XID_CHECKPOINT_INTERVAL boundary.
-    checkpoint.update_next_xid(1024);
-    assert_eq!(checkpoint.nextXid.value, 2048);
+    checkpoint.update_next_xid(128);
+    assert_eq!(checkpoint.nextXid.value, 256);
 }
 
 #[test]
