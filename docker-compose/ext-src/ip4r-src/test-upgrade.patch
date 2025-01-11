@@ -1,0 +1,23 @@
+diff --git a/expected/ip4r.out b/expected/ip4r.out
+index 7527af3..b38ed29 100644
+--- a/expected/ip4r.out
++++ b/expected/ip4r.out
+@@ -1,6 +1,5 @@
+ --
+ /*CUT-HERE*/
+-CREATE EXTENSION ip4r;
+ -- Check whether any of our opclasses fail amvalidate
+ DO $d$
+   DECLARE
+diff --git a/sql/ip4r.sql b/sql/ip4r.sql
+index 65c49ec..24ade09 100644
+--- a/sql/ip4r.sql
++++ b/sql/ip4r.sql
+@@ -1,7 +1,6 @@
+ --
+
+ /*CUT-HERE*/
+-CREATE EXTENSION ip4r;
+
+ -- Check whether any of our opclasses fail amvalidate
+

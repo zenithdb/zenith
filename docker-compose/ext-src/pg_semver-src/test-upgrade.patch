@@ -1,0 +1,24 @@
+diff --git a/test/sql/base.sql b/test/sql/base.sql
+index af599d8..2eed91b 100644
+--- a/test/sql/base.sql
++++ b/test/sql/base.sql
+@@ -2,7 +2,6 @@
+ BEGIN;
+ 
+ \i test/pgtap-core.sql
+-\i sql/semver.sql
+ 
+ SELECT plan(334);
+ --SELECT * FROM no_plan();
+diff --git a/test/sql/corpus.sql b/test/sql/corpus.sql
+index 1f5f637..a519905 100644
+--- a/test/sql/corpus.sql
++++ b/test/sql/corpus.sql
+@@ -4,7 +4,6 @@ BEGIN;
+ -- Test the SemVer corpus from https://regex101.com/r/Ly7O1x/3/.
+ 
+ \i test/pgtap-core.sql
+-\i sql/semver.sql
+ 
+ SELECT plan(71);
+ --SELECT * FROM no_plan();

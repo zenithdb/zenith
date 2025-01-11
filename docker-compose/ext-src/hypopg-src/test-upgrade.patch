@@ -1,0 +1,27 @@
+diff --git a/expected/hypopg.out b/expected/hypopg.out
+index 90121d0..859260b 100644
+--- a/expected/hypopg.out
++++ b/expected/hypopg.out
+@@ -11,7 +11,8 @@ BEGIN
+ END;
+ $_$
+ LANGUAGE plpgsql;
+-CREATE EXTENSION hypopg;
++CREATE EXTENSION IF NOT EXISTS hypopg;
++NOTICE:  extension "hypopg" already exists, skipping
+ CREATE TABLE hypo (id integer, val text, "Id2" bigint);
+ INSERT INTO hypo SELECT i, 'line ' || i
+ FROM generate_series(1,100000) f(i);
+diff --git a/test/sql/hypopg.sql b/test/sql/hypopg.sql
+index 99722b0..8d6bacb 100644
+--- a/test/sql/hypopg.sql
++++ b/test/sql/hypopg.sql
+@@ -12,7 +12,7 @@ END;
+ $_$
+ LANGUAGE plpgsql;
+
+-CREATE EXTENSION hypopg;
++CREATE EXTENSION IF NOT EXISTS hypopg;
+
+ CREATE TABLE hypo (id integer, val text, "Id2" bigint);
+

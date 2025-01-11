@@ -886,6 +886,18 @@ jobs:
           TEST_VERSION_ONLY: ${{ matrix.pg_version }}
         run: ./docker-compose/docker_compose_test.sh
 
+      - name: Get the prevous staging build tag
+        id: oldtag
+        run: echo oldtag=$(git rev-list --count main) >>$GITHUB_OUTPUT
+
+      - name: Test extension upgrade
+        timeout-minutes: 20
+        if: ${{ needs.tag.outputs.build-tag == github.run_id }}
+        env:
+          NEWTAG: ${{ needs.tag.outputs.build-tag }}
+          OLDTAG: ${{ steps.oldtag.outputs.oldtag }}
+        run: ./docker-compose/test_extensions_upgrade.sh
+
       - name: Print logs and clean up
         if: always()
         run: |

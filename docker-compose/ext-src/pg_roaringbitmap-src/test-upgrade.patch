@@ -1,0 +1,25 @@
+diff --git a/expected/roaringbitmap.out b/expected/roaringbitmap.out
+index de70531..a5f7c15 100644
+--- a/expected/roaringbitmap.out
++++ b/expected/roaringbitmap.out
+@@ -1,7 +1,6 @@
+ --
+ --  Test roaringbitmap extension
+ --
+-CREATE EXTENSION if not exists roaringbitmap;
+ -- Test input and output
+ set roaringbitmap.output_format='array';
+ set extra_float_digits = 0;
+diff --git a/sql/roaringbitmap.sql b/sql/roaringbitmap.sql
+index a0e9c74..84bc966 100644
+--- a/sql/roaringbitmap.sql
++++ b/sql/roaringbitmap.sql
+@@ -2,8 +2,6 @@
+ --  Test roaringbitmap extension
+ --
+ 
+-CREATE EXTENSION if not exists roaringbitmap;
+-
+ -- Test input and output
+ 
+ set roaringbitmap.output_format='array';

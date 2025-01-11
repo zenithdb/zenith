@@ -18,9 +18,6 @@ cd $(dirname $0)
 COMPUTE_CONTAINER_NAME=docker-compose-compute-1
 TEST_CONTAINER_NAME=docker-compose-neon-test-extensions-1
 PSQL_OPTION="-h localhost -U cloud_admin -p 55433 -d postgres"
-: ${http_proxy:=}
-: ${https_proxy:=}
-export http_proxy https_proxy
 
 cleanup() {
     echo "show container information"
@@ -36,11 +33,6 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
     cleanup
     PG_TEST_VERSION=$((pg_version < 16 ? 16 : pg_version))
     # The support of pg_anon not yet added to PG17, so we have to add the corresponding option for other PG versions
-    if [ "${pg_version}" -ne 17 ]; then
-      SPEC_PATH="compute_wrapper/var/db/postgres/specs"
-      mv $SPEC_PATH/spec.json $SPEC_PATH/spec.bak
-      jq '.cluster.settings += [{"name": "session_preload_libraries","value": "anon","vartype": "string"}]' "${SPEC_PATH}/spec.bak" > "${SPEC_PATH}/spec.json"
-    fi
     PG_VERSION=$pg_version PG_TEST_VERSION=$PG_TEST_VERSION docker compose --profile test-extensions -f $COMPOSE_FILE up --build -d
 
     echo "wait until the compute is ready. timeout after 60s. "
@@ -106,8 +98,4 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
         fi
     fi
     cleanup
-    # Restore the original spec.json
-    if [ "$pg_version" -ne 17 ]; then
-      mv "$SPEC_PATH/spec.bak" "$SPEC_PATH/spec.json"
-    fi
 done

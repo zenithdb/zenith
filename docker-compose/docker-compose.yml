@@ -149,11 +149,13 @@ services:
       args:
         - REPOSITORY=${REPOSITORY:-neondatabase}
         - COMPUTE_IMAGE=compute-node-v${PG_VERSION:-16}
-        - TAG=${TAG:-latest}
-        - http_proxy=$http_proxy
-        - https_proxy=$https_proxy
+        - TAG=${COMPUTE_TAG:-${TAG:-latest}}
+        - http_proxy=${http_proxy:-}
+        - https_proxy=${https_proxy:-}
     environment:
       - PG_VERSION=${PG_VERSION:-16}
+      - TENANT_ID=${TENANT_ID:-}
+      - TIMELINE_ID=${TIMELINE_ID:-}
       #- RUST_BACKTRACE=1
     # Mount the test files directly, for faster editing cycle.
     volumes:

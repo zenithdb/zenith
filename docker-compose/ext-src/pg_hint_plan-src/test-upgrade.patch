@@ -1,0 +1,21 @@
+diff --git a/expected/init.out b/expected/init.out
+index d8dc31a..b89999d 100644
+--- a/expected/init.out
++++ b/expected/init.out
+@@ -1,5 +1,4 @@
+ SET search_path TO public;
+-CREATE EXTENSION pg_hint_plan;
+ CREATE SCHEMA s0;
+ CREATE TABLE t1 (id int PRIMARY KEY, val int);
+ CREATE TABLE t2 (id int PRIMARY KEY, val int);
+diff --git a/sql/init.sql b/sql/init.sql
+index ba14b40..5c1ab1e 100644
+--- a/sql/init.sql
++++ b/sql/init.sql
+@@ -1,6 +1,5 @@
+ SET search_path TO public;
+
+-CREATE EXTENSION pg_hint_plan;
+ CREATE SCHEMA s0;
+
+ CREATE TABLE t1 (id int PRIMARY KEY, val int);

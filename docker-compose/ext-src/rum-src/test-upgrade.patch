@@ -1,0 +1,19 @@
+diff --git a/expected/rum.out b/expected/rum.out
+index 5966d19..8860b79 100644
+--- a/expected/rum.out
++++ b/expected/rum.out
+@@ -1,4 +1,3 @@
+-CREATE EXTENSION rum;
+ CREATE TABLE test_rum( t text, a tsvector );
+ CREATE TRIGGER tsvectorupdate
+ BEFORE UPDATE OR INSERT ON test_rum
+diff --git a/sql/rum.sql b/sql/rum.sql
+index 8414bb9..898e6ab 100644
+--- a/sql/rum.sql
++++ b/sql/rum.sql
+@@ -1,5 +1,3 @@
+-CREATE EXTENSION rum;
+-
+ CREATE TABLE test_rum( t text, a tsvector );
+
+ CREATE TRIGGER tsvectorupdate
