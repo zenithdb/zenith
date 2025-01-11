@@ -67,13 +67,15 @@ impl Default for FileCacheConfig {
     }
 }
 
+const LFC_ACTIVE_RATIO: f64 = 0.1;
+
 impl FileCacheConfig {
     /// Make sure fields of the config are consistent.
     pub fn validate(&self) -> anyhow::Result<()> {
         // Single field validity
         anyhow::ensure!(
-            0.0 < self.resource_multiplier && self.resource_multiplier < 1.0,
-            "resource_multiplier must be between 0.0 and 1.0 exclusive, got {}",
+            self.resource_multiplier > 0.0,
+            "resource_multiplier must be above 0.0 exclusive, got {}",
             self.resource_multiplier
         );
         anyhow::ensure!(
@@ -87,28 +89,37 @@ impl FileCacheConfig {
         // As shown in `calculate_cache_size`, we have two lines resulting from `resource_multiplier` and
         // `spread_factor`, respectively. They are:
         //
-        //                 `total`           `min_remaining_after_cache`
-        //   size = ————————————————————— - —————————————————————————————
-        //           `spread_factor` + 1         `spread_factor` + 1
+        //   active size is the portion of LFC data residing in the OS page cache.
+        //
+        //                          `total`           `min_remaining_after_cache`
+        //   active_size = ( ————————————————————— - ————————————————————————————— )
+        //                    `spread_factor` + 1         `spread_factor` + 1
+        //
+        //   We assume an `active_ratio` of data in the LFC needs to reside in the OS page cache.
+        //
+        //   lfc_size = active_size / active_ratio (== 0.1)
         //
         // and
         //
-        //   size = `resource_multiplier` × total
+        //   lfc_size = `resource_multiplier` × total
+        //
+        //   => active_size = lfc_size × `active_ratio` = `resource_multiplier` × total × `active_ratio`
         //
         // .. where `total` is the total resources. These are isomorphic to the typical 'y = mx + b'
-        // form, with y = "size" and x = "total".
+        // form, with y = "active_size" and x = "total".
         //
         // These lines intersect at:
         //
-        //               `min_remaining_after_cache`
-        //   ———————————————————————————————————————————————————
-        //    1 - `resource_multiplier` × (`spread_factor` + 1)
+        //                         `min_remaining_after_cache`
+        //   —————————————————————————————------------------——————————————————————
+        //    1 - `resource_multiplier` × `active_ratio` × (`spread_factor` + 1)
         //
         // We want to ensure that this value (a) exists, and (b) is >= `min_remaining_after_cache`. This is
         // guaranteed when '`resource_multiplier` × (`spread_factor` + 1)' is less than 1.
         // (We also need it to be >= 0, but that's already guaranteed.)
 
-        let intersect_factor = self.resource_multiplier * (self.spread_factor + 1.0);
+        let intersect_factor =
+            self.resource_multiplier * LFC_ACTIVE_RATIO * (self.spread_factor + 1.0);
         anyhow::ensure!(
             intersect_factor < 1.0,
             "incompatible resource_multipler and spread_factor"
@@ -125,8 +136,10 @@ impl FileCacheConfig {
         }
 
         // Conversions to ensure we don't overflow from floating-point ops
-        let size_from_spread =
-            i64::max(0, (available as f64 / (1.0 + self.spread_factor)) as i64) as u64;
+        let size_from_spread = i64::max(
+            0,
+            (available as f64 / (1.0 + self.spread_factor) / LFC_ACTIVE_RATIO) as i64,
+        ) as u64;
 
         let size_from_normal = (total as f64 * self.resource_multiplier) as u64;
 
