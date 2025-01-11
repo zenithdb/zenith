@@ -21,12 +21,12 @@ Dynamically parametrize tests by different parameters
 
 @pytest.fixture(scope="function", autouse=True)
 def pg_version() -> PgVersion | None:
-    return None
+    return PgVersion(os.getenv("DEFAULT_PG_VERSION", PgVersion.DEFAULT))
 
 
 @pytest.fixture(scope="function", autouse=True)
 def build_type() -> str | None:
-    return None
+    return os.getenv("BUILD_TYPE", "debug").lower()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -59,21 +59,6 @@ def pageserver_default_tenant_config_compaction_algorithm() -> dict[str, Any] | 
 
 
 def pytest_generate_tests(metafunc: Metafunc):
-    if (bt := os.getenv("BUILD_TYPE")) is None:
-        build_types = ["debug", "release"]
-    else:
-        build_types = [bt.lower()]
-
-    metafunc.parametrize("build_type", build_types)
-
-    pg_versions: list[PgVersion]
-    if (v := os.getenv("DEFAULT_PG_VERSION")) is None:
-        pg_versions = [version for version in PgVersion if version != PgVersion.NOT_SET]
-    else:
-        pg_versions = [PgVersion(v)]
-
-    metafunc.parametrize("pg_version", pg_versions, ids=map(lambda v: f"pg{v}", pg_versions))
-
     # A hacky way to parametrize tests only for `pageserver_virtual_file_io_engine=std-fs`
     # And do not change test name for default `pageserver_virtual_file_io_engine=tokio-epoll-uring` to keep tests statistics
     if (io_engine := os.getenv("PAGESERVER_VIRTUAL_FILE_IO_ENGINE", "")) not in (
@@ -117,5 +102,11 @@ def pytest_runtest_makereport(*args, **kwargs):
     arch = os.getenv("RUNNER_ARCH", uname_m)
     allure.dynamic.parameter("__arch", arch)
     allure.dynamic.parameter("__lfc", os.getenv("USE_LFC") != "false")
+
+    pg_version = int(PgVersion(os.getenv("DEFAULT_PG_VERSION", PgVersion.DEFAULT)))
+    allure.dynamic.parameter("__pg_version", pg_version)
+
+    build_type = os.getenv("BUILD_TYPE", "debug").lower()
+    allure.dynamic.parameter("__build_type", build_type)
 
     yield

@@ -55,3 +55,6 @@ class PgVersion(StrEnum):
             return cls(v)
 
         return None
+
+    def __int__(self) -> int:
+        return int(self.value)
