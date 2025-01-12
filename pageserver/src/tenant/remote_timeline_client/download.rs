@@ -228,6 +228,7 @@ async fn download_object(
 
                 let mut buffered = owned_buffers_io::write::BufferedWriter::<IoBufferMut, _>::new(
                     destination_file,
+                    0,
                     || IoBufferMut::with_capacity(super::BUFFER_SIZE),
                     gate.enter().map_err(|_| DownloadError::Cancelled)?,
                     ctx,
@@ -245,7 +246,7 @@ async fn download_object(
                         };
                         buffered.write_buffered_borrowed(&chunk, ctx).await?;
                     }
-                    let inner = buffered.flush_and_into_inner(ctx).await?;
+                    let inner = buffered.shutdown(|_| None).await?;
                     Ok(inner)
                 }
                 .await?;

@@ -1,6 +1,7 @@
 mod flush;
 use std::sync::Arc;
 
+use bytes::BufMut;
 use flush::FlushHandle;
 use tokio_epoll_uring::IoBuf;
 
@@ -10,7 +11,7 @@ use crate::{
 };
 
 use super::{
-    io_buf_aligned::IoBufAligned,
+    io_buf_aligned::{IoBufAligned, IoBufAlignedMut},
     io_buf_ext::{FullSlice, IoBufExt},
 };
 
@@ -51,16 +52,16 @@ pub struct BufferedWriter<B: Buffer, W> {
     /// - after an IO error => stays `None` forever
     ///
     /// In these exceptional cases, it's `None`.
-    mutable: Option<B>,
+    tail: Option<B>,
     /// A handle to the background flush task for writting data to disk.
     flush_handle: FlushHandle<B::IoBuf, W>,
-    /// The number of bytes submitted to the background task.
-    bytes_submitted: u64,
+    /// The next offset to be submitted to the background task.
+    submit_offset: u64,
 }
 
 impl<B, Buf, W> BufferedWriter<B, W>
 where
-    B: Buffer<IoBuf = Buf> + Send + 'static,
+    B: IoBufAlignedMut + Buffer<IoBuf = Buf> + Send + 'static,
     Buf: IoBufAligned + Send + Sync + CheapCloneForRead,
     W: OwnedAsyncWriter + Send + Sync + 'static + std::fmt::Debug,
 {
@@ -69,20 +70,21 @@ where
     /// The `buf_new` function provides a way to initialize the owned buffers used by this writer.
     pub fn new(
         writer: Arc<W>,
+        start_offset: u64,
         buf_new: impl Fn() -> B,
         gate_guard: utils::sync::gate::GateGuard,
         ctx: &RequestContext,
     ) -> Self {
         Self {
             writer: writer.clone(),
-            mutable: Some(buf_new()),
+            tail: Some(buf_new()),
             flush_handle: FlushHandle::spawn_new(
                 writer,
                 buf_new(),
                 gate_guard,
                 ctx.attached_child(),
             ),
-            bytes_submitted: 0,
+            submit_offset: start_offset,
         }
     }
 
@@ -91,13 +93,13 @@ where
     }
 
     /// Returns the number of bytes submitted to the background flush task.
-    pub fn bytes_submitted(&self) -> u64 {
-        self.bytes_submitted
+    pub fn submit_offset(&self) -> u64 {
+        self.submit_offset
     }
 
     /// Panics if used after any of the write paths returned an error
-    pub fn inspect_mutable(&self) -> &B {
-        self.mutable()
+    pub fn inspect_tail(&self) -> &B {
+        self.tail()
     }
 
     /// Gets a reference to the maybe flushed read-only buffer.
@@ -107,28 +109,43 @@ where
     }
 
     #[cfg_attr(target_os = "macos", allow(dead_code))]
-    pub async fn flush_and_into_inner(
-        mut self,
-        ctx: &RequestContext,
-    ) -> std::io::Result<(u64, Arc<W>)> {
-        self.flush(ctx).await?;
-
+    pub async fn shutdown(
+        self,
+        mut handle_tail: impl FnMut(B) -> Option<B>,
+    ) -> std::io::Result<(u64, W)> {
         let Self {
-            mutable: buf,
+            tail,
             writer,
             mut flush_handle,
-            bytes_submitted: bytes_amount,
+            submit_offset,
         } = self;
-        flush_handle.shutdown().await?;
-        assert!(buf.is_some());
+
+        let ctx = flush_handle.shutdown().await?;
+        let buf = tail.expect("must not use after an error");
+        let writer = Arc::into_inner(writer).expect("writer is the only strong reference");
+        let mut bytes_amount = submit_offset;
+        if let Some(buf) = handle_tail(buf) {
+            bytes_amount += buf.pending() as u64;
+            let _ = writer
+                .write_all_at(buf.flush(), submit_offset, &ctx)
+                .await?;
+        }
         Ok((bytes_amount, writer))
     }
 
-    /// Gets a reference to the mutable in-memory buffer.
+    /// Gets a immutable reference to the tail in-memory buffer.
     #[inline(always)]
-    fn mutable(&self) -> &B {
-        self.mutable
+    fn tail(&self) -> &B {
+        self.tail
             .as_ref()
+            .expect("must not use after we returned an error")
+    }
+
+    /// Gets a mutable reference to the tail in-memory buffer.
+    #[inline(always)]
+    fn tail_mut(&mut self) -> &mut B {
+        self.tail
+            .as_mut()
             .expect("must not use after we returned an error")
     }
 
@@ -154,7 +171,7 @@ where
         let chunk_len = chunk.len();
         let mut control: Option<FlushControl> = None;
         while !chunk.is_empty() {
-            let buf = self.mutable.as_mut().expect("must not use after an error");
+            let buf = self.tail_mut();
             let need = buf.cap() - buf.pending();
             let have = chunk.len();
             let n = std::cmp::min(need, have);
@@ -173,15 +190,15 @@ where
 
     #[must_use = "caller must explcitly check the flush control"]
     async fn flush(&mut self, _ctx: &RequestContext) -> std::io::Result<Option<FlushControl>> {
-        let buf = self.mutable.take().expect("must not use after an error");
+        let buf = self.tail.take().expect("must not use after an error");
         let buf_len = buf.pending();
         if buf_len == 0 {
-            self.mutable = Some(buf);
+            self.tail = Some(buf);
             return Ok(None);
         }
-        let (recycled, flush_control) = self.flush_handle.flush(buf, self.bytes_submitted).await?;
-        self.bytes_submitted += u64::try_from(buf_len).unwrap();
-        self.mutable = Some(recycled);
+        let (recycled, flush_control) = self.flush_handle.flush(buf, self.submit_offset).await?;
+        self.submit_offset += u64::try_from(buf_len).unwrap();
+        self.tail = Some(recycled);
         Ok(Some(flush_control))
     }
 }
@@ -197,6 +214,10 @@ pub trait Buffer {
     /// Panics if there is not enough room to accomodate `other`'s content, i.e.,
     /// panics if `other.len() > self.cap() - self.pending()`.
     fn extend_from_slice(&mut self, other: &[u8]);
+
+    /// Add `count` bytes `val` into `self`.
+    /// Panics if `count > self.cap() - self.pending()`.
+    fn extend_with(&mut self, val: u8, count: usize);
 
     /// Number of bytes in the buffer.
     fn pending(&self) -> usize;
@@ -223,6 +244,14 @@ impl Buffer for IoBufferMut {
         }
 
         IoBufferMut::extend_from_slice(self, other);
+    }
+
+    fn extend_with(&mut self, val: u8, count: usize) {
+        if self.len() + count > self.cap() {
+            panic!("Buffer capacity exceeded");
+        }
+
+        IoBufferMut::put_bytes(self, val, count);
     }
 
     fn pending(&self) -> usize {
@@ -296,6 +325,7 @@ mod tests {
         let gate = utils::sync::gate::Gate::default();
         let mut writer = BufferedWriter::<_, RecorderWriter>::new(
             recorder,
+            0,
             || IoBufferMut::with_capacity(2),
             gate.enter()?,
             ctx,
@@ -310,7 +340,7 @@ mod tests {
         writer.write_buffered_borrowed(b"j", ctx).await?;
         writer.write_buffered_borrowed(b"klmno", ctx).await?;
 
-        let (_, recorder) = writer.flush_and_into_inner(ctx).await?;
+        let (_, recorder) = writer.shutdown(|buf| Some(buf)).await?;
         assert_eq!(
             recorder.get_writes(),
             {

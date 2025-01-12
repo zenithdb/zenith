@@ -72,6 +72,7 @@ impl EphemeralFile {
             bytes_written: 0,
             buffered_writer: owned_buffers_io::write::BufferedWriter::new(
                 file,
+                0,
                 || IoBufferMut::with_capacity(TAIL_SZ),
                 gate.enter()?,
                 ctx,
@@ -180,10 +181,10 @@ impl super::storage_layer::inmemory_layer::vectored_dio_read::File for Ephemeral
         dst: tokio_epoll_uring::Slice<B>,
         ctx: &RequestContext,
     ) -> std::io::Result<(tokio_epoll_uring::Slice<B>, usize)> {
-        let submitted_offset = self.buffered_writer.bytes_submitted();
+        let submitted_offset = self.buffered_writer.submit_offset();
 
-        let mutable = self.buffered_writer.inspect_mutable();
-        let mutable = &mutable[0..mutable.pending()];
+        let tail = self.buffered_writer.inspect_tail();
+        let tail = &tail[0..tail.pending()];
 
         let maybe_flushed = self.buffered_writer.inspect_maybe_flushed();
 
@@ -213,7 +214,7 @@ impl super::storage_layer::inmemory_layer::vectored_dio_read::File for Ephemeral
 
         let (written_range, maybe_flushed_range) = {
             if maybe_flushed.is_some() {
-                // [       written       ][ maybe_flushed ][    mutable    ]
+                // [       written       ][ maybe_flushed ][     tail      ]
                 //                        <-   TAIL_SZ   -><-   TAIL_SZ   ->
                 //                                         ^
                 //                                 `submitted_offset`
@@ -229,7 +230,7 @@ impl super::storage_layer::inmemory_layer::vectored_dio_read::File for Ephemeral
                     ),
                 )
             } else {
-                // [       written                        ][    mutable    ]
+                // [       written                        ][     tail      ]
                 //                                         <-   TAIL_SZ   ->
                 //                                         ^
                 //                                 `submitted_offset`
@@ -287,7 +288,7 @@ impl super::storage_layer::inmemory_layer::vectored_dio_read::File for Ephemeral
                 .unwrap()
                 .into_usize();
             let to_copy =
-                &mutable[offset_in_buffer..(offset_in_buffer + mutable_range.len().into_usize())];
+                &tail[offset_in_buffer..(offset_in_buffer + mutable_range.len().into_usize())];
             let bounds = dst.bounds();
             let mut view = dst.slice({
                 let start =
@@ -398,9 +399,9 @@ mod tests {
             .await
             .unwrap();
 
-        let mutable = file.buffered_writer.inspect_mutable();
-        let cap = mutable.capacity();
-        let align = mutable.align();
+        let tail = file.buffered_writer.inspect_tail();
+        let cap = tail.capacity();
+        let align = tail.align();
 
         let write_nbytes = cap * 2 + cap / 2;
 
@@ -441,8 +442,8 @@ mod tests {
         let maybe_flushed_buffer_contents = file.buffered_writer.inspect_maybe_flushed().unwrap();
         assert_eq!(&maybe_flushed_buffer_contents[..], &content[cap..cap * 2]);
 
-        let mutable_buffer_contents = file.buffered_writer.inspect_mutable();
-        assert_eq!(mutable_buffer_contents, &content[cap * 2..write_nbytes]);
+        let tail_buffer_contents = file.buffered_writer.inspect_tail();
+        assert_eq!(tail_buffer_contents, &content[cap * 2..write_nbytes]);
     }
 
     #[tokio::test]
@@ -456,7 +457,7 @@ mod tests {
             .unwrap();
 
         // mutable buffer and maybe_flushed buffer each has `cap` bytes.
-        let cap = file.buffered_writer.inspect_mutable().capacity();
+        let cap = file.buffered_writer.inspect_tail().capacity();
 
         let content: Vec<u8> = rand::thread_rng()
             .sample_iter(rand::distributions::Standard)
@@ -481,7 +482,7 @@ mod tests {
             &content[cap..cap * 2]
         );
         assert_eq!(
-            &file.buffered_writer.inspect_mutable()[0..cap / 2],
+            &file.buffered_writer.inspect_tail()[0..cap / 2],
             &content[cap * 2..cap * 2 + cap / 2]
         );
     }
@@ -502,7 +503,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mutable = file.buffered_writer.inspect_mutable();
+        let mutable = file.buffered_writer.inspect_tail();
         let cap = mutable.capacity();
         let align = mutable.align();
         let content: Vec<u8> = rand::thread_rng()
