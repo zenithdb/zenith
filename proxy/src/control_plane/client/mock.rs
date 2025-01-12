@@ -74,44 +74,39 @@ impl MockControlPlane {
 
             tokio::spawn(connection);
 
-            let secret = if let Some(entry) = get_execute_postgres_query(
-                &client,
-                "select rolpassword from pg_catalog.pg_authid where rolname = $1",
-                &[&&*user_info.user],
-                "rolpassword",
-            )
-            .await?
-            {
-                info!("got a secret: {entry}"); // safe since it's not a prod scenario
-                let secret = scram::ServerSecret::parse(&entry).map(AuthSecret::Scram);
-                secret.or_else(|| parse_md5(&entry).map(AuthSecret::Md5))
-            } else {
-                warn!("user '{}' does not exist", user_info.user);
-                None
+            let secret = {
+                let query = "select rolpassword from pg_catalog.pg_authid where rolname = $1";
+                if let Some(row) = client.query_opt(query, &[&&*user_info.user]).await? {
+                    let entry: String = row.get("rolpassword");
+
+                    info!("got a secret: {entry}"); // safe since it's not a prod scenario
+                    let secret = scram::ServerSecret::parse(&entry).map(AuthSecret::Scram);
+                    secret.or_else(|| parse_md5(&entry).map(AuthSecret::Md5))
+                } else {
+                    warn!("user '{}' does not exist", user_info.user);
+                    None
+                }
             };
 
-            let allowed_ips = if self.ip_allowlist_check_enabled {
-                match get_execute_postgres_query(
-                    &client,
-                    "select allowed_ips from neon_control_plane.endpoints where endpoint_id = $1",
-                    &[&user_info.endpoint.as_str()],
-                    "allowed_ips",
-                )
-                .await?
-                {
-                    Some(s) => {
-                        info!("got allowed_ips: {s}");
-                        s.split(',')
-                            .map(|s| {
-                                IpPattern::from_str(s).expect("mocked ip pattern should be correct")
-                            })
-                            .collect()
-                    }
-                    None => vec![],
+            let mut allowed_ips = vec![];
+            if self.ip_allowlist_check_enabled {
+                let query =
+                    "select allowed_ips from neon_control_plane.endpoints where endpoint_id = $1";
+                let row = client
+                    .query_one(query, &[&user_info.endpoint.as_str()])
+                    .await?;
+
+                let s: Option<String> = row.get("allowed_ips");
+                if let Some(s) = s {
+                    info!("got allowed_ips: {s}");
+                    allowed_ips = s
+                        .split(',')
+                        .map(|s| {
+                            IpPattern::from_str(s).expect("mocked ip pattern should be correct")
+                        })
+                        .collect();
                 }
-            } else {
-                vec![]
-            };
+            }
 
             Ok((secret, allowed_ips))
         }
@@ -134,11 +129,8 @@ impl MockControlPlane {
 
         let connection = tokio::spawn(connection);
 
-        let res = client.query(
-                "select id, jwks_url, audience, role_names from neon_control_plane.endpoint_jwks where endpoint_id = $1",
-                &[&endpoint.as_str()],
-            )
-            .await?;
+        let query = "select id, jwks_url, audience, role_names from neon_control_plane.endpoint_jwks where endpoint_id = $1";
+        let res = client.query(query, &[&endpoint.as_str()]).await?;
 
         let mut rows = vec![];
         for row in res {
@@ -161,11 +153,23 @@ impl MockControlPlane {
         Ok(rows)
     }
 
-    async fn do_wake_compute(&self) -> Result<NodeInfo, WakeComputeError> {
-        let mut config = compute::ConnCfg::new(
-            self.endpoint.host_str().unwrap_or("localhost").to_owned(),
-            self.endpoint.port().unwrap_or(5432),
-        );
+    async fn do_wake_compute(
+        &self,
+        user_info: &ComputeUserInfo,
+    ) -> Result<NodeInfo, WakeComputeError> {
+        let (client, connection) =
+            tokio_postgres::connect(self.endpoint.as_str(), tokio_postgres::NoTls).await?;
+        tokio::spawn(connection);
+
+        let query = "select host, port from neon_control_plane.endpoints where endpoint_id = $1";
+        let row = client
+            .query_one(query, &[&user_info.endpoint.as_str()])
+            .await?;
+
+        let host: String = row.get("host");
+        let port: i32 = row.get("port");
+
+        let mut config = compute::ConnCfg::new(host, port as u16);
         config.ssl_mode(postgres_client::config::SslMode::Disable);
 
         let node = NodeInfo {
@@ -180,26 +184,6 @@ impl MockControlPlane {
 
         Ok(node)
     }
-}
-
-async fn get_execute_postgres_query(
-    client: &Client,
-    query: &str,
-    params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
-    idx: &str,
-) -> Result<Option<String>, GetAuthInfoError> {
-    let rows = client.query(query, params).await?;
-
-    // We can get at most one row, because `rolname` is unique.
-    let Some(row) = rows.first() else {
-        // This means that the user doesn't exist, so there can be no secret.
-        // However, this is still a *valid* outcome which is very similar
-        // to getting `404 Not found` from the Neon console.
-        return Ok(None);
-    };
-
-    let entry = row.try_get(idx).map_err(MockApiError::PasswordNotSet)?;
-    Ok(Some(entry))
 }
 
 impl super::ControlPlaneApi for MockControlPlane {
@@ -239,9 +223,11 @@ impl super::ControlPlaneApi for MockControlPlane {
     async fn wake_compute(
         &self,
         _ctx: &RequestContext,
-        _user_info: &ComputeUserInfo,
+        user_info: &ComputeUserInfo,
     ) -> Result<CachedNodeInfo, WakeComputeError> {
-        self.do_wake_compute().map_ok(Cached::new_uncached).await
+        self.do_wake_compute(user_info)
+            .map_ok(Cached::new_uncached)
+            .await
     }
 }
 
