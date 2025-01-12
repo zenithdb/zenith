@@ -1,0 +1,33 @@
+name: cargo deny checks
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.lock'
+  schedule:
+    - cron: '0 0 * * *'
+
+jobs:
+  cargo-deny:
+    strategy:
+      matrix: ${{ fromJSON(github.event_name == 'schedule' && '{"ref":["main","release","release-proxy"]}' || format('{{"ref":["{0}"]}}', github.sha)) }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+
+      # https://github.com/EmbarkStudios/cargo-deny
+      - name: Check rust licenses/bans/advisories/sources
+        if: ${{ !cancelled() }}
+        run: cargo deny check --hide-inclusion-graph
+
+      - name: Post to a Slack channel
+        if: ${{ github.event_name == 'schedule' && failure() }}
+        uses: slackapi/slack-github-action@v1
+        with:
+          channel-id: ${{ vars.CARGO_DENY_SCHEDULE_FAILURE_CHANNEL }}
+          slack-message: |
+            Periodic cargo-deny on ${{ matrix.ref }}: ${{ job.status }}
+            <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|GitHub Run>

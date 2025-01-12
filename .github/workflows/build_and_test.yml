@@ -231,11 +231,6 @@ jobs:
           cargo hakari generate --diff  # workspace-hack Cargo.toml is up-to-date
           cargo hakari manage-deps --dry-run  # all workspace crates depend on workspace-hack
 
-      # https://github.com/EmbarkStudios/cargo-deny
-      - name: Check rust licenses/bans/advisories/sources
-        if: ${{ !cancelled() }}
-        run: cargo deny check --hide-inclusion-graph
-
   build-and-test-locally:
     needs: [ tag, build-build-tools-image ]
     strategy:
