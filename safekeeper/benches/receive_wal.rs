@@ -21,14 +21,13 @@ const KB: usize = 1024;
 const MB: usize = 1024 * KB;
 const GB: usize = 1024 * MB;
 
-/// Use jemalloc, and configure it to sample allocations for profiles every 1 MB.
-/// This mirrors the configuration in bin/safekeeper.rs.
+/// Use jemalloc and enable profiling, to mirror bin/safekeeper.rs.
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 #[allow(non_upper_case_globals)]
 #[export_name = "malloc_conf"]
-pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:20\0";
+pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:21\0";
 
 // Register benchmarks with Criterion.
 criterion_group!(
