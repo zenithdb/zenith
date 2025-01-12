@@ -1,0 +1,41 @@
+name: Regenerate Postgres Settings
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - pgxn/neon/**.c
+      - vendor/postgres-v*
+      - vendor/revisions.json
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+permissions:
+  pull-requests: write
+
+jobs:
+  regenerate-pg-settings:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Add comment
+        uses: thollander/actions-comment-pull-request@v3
+        with:
+          comment-tag: ${{ github.job }}
+          pr-number: ${{ github.event.number }}
+          message: |
+            If this PR added a GUC in the Postgres fork or `neon` extension,
+            please regenerate the Postgres settings in the `cloud` repo:
+
+            ```
+            make NEON_WORKDIR=path/to/neon/checkout \
+              -C goapp/internal/shareddomain/postgres generate
+            ```
+
+            If you're an external contributor, a Neon employee will assist in
+            making sure this step is done.
