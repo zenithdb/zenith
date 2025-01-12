@@ -3,7 +3,7 @@ use pageserver_compaction::interface::CompactionLayer;
 use pageserver_compaction::simulator::MockTimeline;
 use utils::logging;
 
-static LOG_HANDLE: OnceCell<()> = OnceCell::new();
+static LOG_HANDLE: OnceCell<logging::FlushGuard> = OnceCell::new();
 
 pub(crate) fn setup_logging() {
     LOG_HANDLE.get_or_init(|| {

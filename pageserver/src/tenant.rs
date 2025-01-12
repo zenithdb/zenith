@@ -5470,7 +5470,7 @@ pub(crate) mod harness {
         pub deletion_queue: MockDeletionQueue,
     }
 
-    static LOG_HANDLE: OnceCell<()> = OnceCell::new();
+    static LOG_HANDLE: OnceCell<logging::FlushGuard> = OnceCell::new();
 
     pub(crate) fn setup_logging() {
         LOG_HANDLE.get_or_init(|| {

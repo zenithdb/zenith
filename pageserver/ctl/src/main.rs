@@ -115,7 +115,7 @@ struct AnalyzeLayerMapCmd {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    logging::init(
+    let _guard = logging::init(
         LogFormat::Plain,
         TracingErrorLayerEnablement::EnableWithRustLogFilter,
         logging::Output::Stdout,

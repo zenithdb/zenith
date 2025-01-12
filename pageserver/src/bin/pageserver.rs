@@ -112,7 +112,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         TracingErrorLayerEnablement::Disabled
     };
-    logging::init(
+    let _guard = logging::init(
         conf.log_format,
         tracing_error_layer_enablement,
         logging::Output::Stdout,

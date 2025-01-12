@@ -636,7 +636,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. init logging
     // 2. tracing panic hook
     // 3. sentry
-    logging::init(
+    let _guard = logging::init(
         LogFormat::from_config(&args.log_format)?,
         logging::TracingErrorLayerEnablement::Disabled,
         logging::Output::Stdout,

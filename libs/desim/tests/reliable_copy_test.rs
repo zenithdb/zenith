@@ -154,7 +154,7 @@ mod reliable_copy_test {
     /// Run test simulations.
     #[test]
     fn sim_example_reliable_copy() {
-        utils::logging::init(
+        let _guard = utils::logging::init(
             utils::logging::LogFormat::Test,
             utils::logging::TracingErrorLayerEnablement::Disabled,
             utils::logging::Output::Stdout,

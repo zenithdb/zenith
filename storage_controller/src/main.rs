@@ -188,7 +188,7 @@ impl Secrets {
 }
 
 fn main() -> anyhow::Result<()> {
-    logging::init(
+    let _guard = logging::init(
         LogFormat::Plain,
         logging::TracingErrorLayerEnablement::Disabled,
         logging::Output::Stdout,
@@ -220,6 +220,12 @@ fn main() -> anyhow::Result<()> {
 
 async fn async_main() -> anyhow::Result<()> {
     let launch_ts = Box::leak(Box::new(LaunchTimestamp::generate()));
+
+    let _guard = logging::init(
+        LogFormat::Plain,
+        logging::TracingErrorLayerEnablement::Disabled,
+        logging::Output::Stdout,
+    )?;
 
     preinitialize_metrics();
 

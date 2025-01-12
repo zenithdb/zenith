@@ -13,7 +13,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
-static LOGGING_DONE: OnceCell<()> = OnceCell::new();
+static LOGGING_DONE: OnceCell<utils::logging::FlushGuard> = OnceCell::new();
 
 pub(crate) fn upload_stream(
     content: std::borrow::Cow<'static, [u8]>,
@@ -210,6 +210,6 @@ pub(crate) fn ensure_logging_ready() {
             utils::logging::TracingErrorLayerEnablement::Disabled,
             utils::logging::Output::Stdout,
         )
-        .expect("logging init failed");
+        .expect("logging init failed")
     });
 }
