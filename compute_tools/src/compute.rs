@@ -47,8 +47,7 @@ use crate::spec_apply::ApplySpecPhase::{
 };
 use crate::spec_apply::PerDatabasePhase;
 use crate::spec_apply::PerDatabasePhase::{
-    ChangeSchemaPerms, DeleteDBRoleReferences, DropSubscriptionsForDeletedDatabases,
-    HandleAnonExtension,
+    ChangeSchemaPerms, DeleteDBRoleReferences, DropLogicalSubscriptions, HandleAnonExtension,
 };
 use crate::spec_apply::{apply_operations, MutableApplyContext, DB};
 use crate::sync_sk::{check_if_synced, ping_safekeeper};
@@ -996,7 +995,7 @@ impl ComputeNode {
                         jwks_roles.clone(),
                         concurrency_token.clone(),
                         db,
-                        [DropSubscriptionsForDeletedDatabases].to_vec(),
+                        [DropLogicalSubscriptions].to_vec(),
                     );
 
                     Ok(spawn(fut))
@@ -1064,6 +1063,17 @@ impl ComputeNode {
                     }
 
                     let conf = Arc::new(conf);
+                    let mut phases = vec![
+                        DeleteDBRoleReferences,
+                        ChangeSchemaPerms,
+                        HandleAnonExtension,
+                    ];
+
+                    if spec.drop_subscriptions_before_start {
+                        info!("adding DropLogicalSubscriptions phase because drop_subscriptions_before_start is set");
+                        phases.push(DropLogicalSubscriptions);
+                    }
+
                     let fut = Self::apply_spec_sql_db(
                         spec.clone(),
                         conf,
@@ -1071,12 +1081,7 @@ impl ComputeNode {
                         jwks_roles.clone(),
                         concurrency_token.clone(),
                         db,
-                        [
-                            DeleteDBRoleReferences,
-                            ChangeSchemaPerms,
-                            HandleAnonExtension,
-                        ]
-                        .to_vec(),
+                        phases,
                     );
 
                     Ok(spawn(fut))
@@ -1463,6 +1468,16 @@ impl ComputeNode {
                         Ok(())
                     },
                 )?;
+
+                let postgresql_conf_path = pgdata_path.join("postgresql.conf");
+                if config::line_in_file(
+                    &postgresql_conf_path,
+                    "neon.disable_logical_replication_subscribers=false",
+                )? {
+                    info!("updated postgresql.conf to set neon.disable_logical_replication_subscribers=false");
+                } else {
+                    info!("postgresql.conf is up-to-date");
+                }
                 self.pg_reload_conf()?;
             }
             self.post_apply_config()?;

@@ -129,6 +129,13 @@ pub fn write_postgres_conf(
 
     writeln!(file, "neon.extension_server_port={}", extension_server_port)?;
 
+    if spec.drop_subscriptions_before_start {
+        writeln!(file, "neon.disable_logical_replication_subscribers=true")?;
+    } else {
+        // be explicit about the default value
+        writeln!(file, "neon.disable_logical_replication_subscribers=false")?;
+    }
+
     // This is essential to keep this line at the end of the file,
     // because it is intended to override any settings above.
     writeln!(file, "include_if_exists = 'compute_ctl_temp_override.conf'")?;

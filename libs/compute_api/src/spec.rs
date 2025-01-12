@@ -138,6 +138,13 @@ pub struct ComputeSpec {
     /// enough spare connections for reconfiguration process to succeed.
     #[serde(default = "default_reconfigure_concurrency")]
     pub reconfigure_concurrency: usize,
+
+    /// If set to true, the compute_ctl will drop all subscriptions before starting the
+    /// compute. This is needed when we start an endpoint on a branch, so that child
+    /// would not compete with parent branch subscriptions
+    /// over the same replication content from publisher.
+    #[serde(default)] // Default false
+    pub drop_subscriptions_before_start: bool,
 }
 
 /// Feature flag to signal `compute_ctl` to enable certain experimental functionality.

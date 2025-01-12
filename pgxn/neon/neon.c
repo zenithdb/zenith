@@ -19,6 +19,7 @@
 #include "access/xlogrecovery.h"
 #endif
 #include "replication/logical.h"
+#include "replication/logicallauncher.h"
 #include "replication/slot.h"
 #include "replication/walsender.h"
 #include "storage/proc.h"
@@ -434,6 +435,15 @@ _PG_init(void)
 
 	restore_running_xacts_callback = RestoreRunningXactsFromClog;
 
+	DefineCustomBoolVariable(
+							"neon.disable_logical_replication_subscribers",
+							"Disables incomming logical replication",
+							NULL,
+							&disable_logical_replication_subscribers,
+							false,
+							PGC_SIGHUP,
+							0,
+							NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
 							"neon.allow_replica_misconfig",

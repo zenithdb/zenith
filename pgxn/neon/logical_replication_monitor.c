@@ -237,11 +237,8 @@ LogicalSlotsMonitorMain(Datum main_arg)
 		XLogRecPtr	cutoff_lsn;
 
 		/* In case of a SIGHUP, just reload the configuration. */
-		if (ConfigReloadPending)
-		{
-			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
-		}
+
+		ProcessConfigFile(PGC_SIGHUP);
 
 		/* Get the cutoff LSN */
 		cutoff_lsn = get_snapshots_cutoff_lsn();

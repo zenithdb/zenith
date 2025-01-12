@@ -47,7 +47,7 @@ pub enum PerDatabasePhase {
     DeleteDBRoleReferences,
     ChangeSchemaPerms,
     HandleAnonExtension,
-    DropSubscriptionsForDeletedDatabases,
+    DropLogicalSubscriptions,
 }
 
 #[derive(Clone, Debug)]
@@ -331,7 +331,7 @@ async fn get_operations<'a>(
                             // NB: there could be other db states, which prevent us from dropping
                             // the database. For example, if db is used by any active subscription
                             // or replication slot.
-                            // Such cases are handled in the DropSubscriptionsForDeletedDatabases
+                            // Such cases are handled in the DropLogicalSubscriptions
                             // phase. We do all the cleanup before actually dropping the database.
                             let drop_db_query: String = format!(
                                 "DROP DATABASE IF EXISTS {} WITH (FORCE)",
@@ -444,7 +444,7 @@ async fn get_operations<'a>(
         }
         ApplySpecPhase::RunInEachDatabase { db, subphase } => {
             match subphase {
-                PerDatabasePhase::DropSubscriptionsForDeletedDatabases => {
+                PerDatabasePhase::DropLogicalSubscriptions => {
                     match &db {
                         DB::UserDB(db) => {
                             let drop_subscription_query: String = format!(
