@@ -3990,6 +3990,7 @@ dependencies = [
  "postgres_connection",
  "postgres_ffi",
  "postgres_initdb",
+ "pprof",
  "pq_proto",
  "procfs",
  "rand 0.8.5",

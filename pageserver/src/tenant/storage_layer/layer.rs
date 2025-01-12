@@ -1812,7 +1812,7 @@ enum LayerKind {
 
 /// Guard for forcing a layer be resident while it exists.
 #[derive(Clone)]
-pub(crate) struct ResidentLayer {
+pub struct ResidentLayer {
     owner: Layer,
     downloaded: Arc<DownloadedLayer>,
 }

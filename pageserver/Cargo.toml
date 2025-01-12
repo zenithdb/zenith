@@ -44,6 +44,7 @@ postgres_backend.workspace = true
 postgres-protocol.workspace = true
 postgres-types.workspace = true
 postgres_initdb.workspace = true
+pprof.workspace = true
 rand.workspace = true
 range-set-blaze = { version = "0.1.16", features = ["alloc"] }
 regex.workspace = true
@@ -107,4 +108,8 @@ harness = false
 
 [[bench]]
 name = "bench_ingest"
+harness = false
+
+[[bench]]
+name = "upload_queue"
 harness = false

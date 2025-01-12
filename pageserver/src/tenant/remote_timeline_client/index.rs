@@ -104,7 +104,7 @@ impl IndexPart {
 
     pub const FILE_NAME: &'static str = "index_part.json";
 
-    pub(crate) fn empty(metadata: TimelineMetadata) -> Self {
+    pub fn empty(metadata: TimelineMetadata) -> Self {
         IndexPart {
             version: Self::LATEST_VERSION,
             layer_metadata: Default::default(),
