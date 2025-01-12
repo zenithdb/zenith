@@ -53,6 +53,22 @@ class Workload:
         self._endpoint: Endpoint | None = None
         self._endpoint_opts = endpoint_opts or {}
 
+    def branch(
+        self,
+        timeline_id: TimelineId,
+        branch_name: str | None = None,
+        endpoint_opts: dict[str, Any] | None = None,
+    ) -> Workload:
+        """
+        Checkpoint the current status of the workload in case of branching
+        """
+        branch_workload = Workload(
+            self.env, self.tenant_id, timeline_id, branch_name, endpoint_opts
+        )
+        branch_workload.expect_rows = self.expect_rows
+        branch_workload.churn_cursor = self.churn_cursor
+        return branch_workload
+
     def reconfigure(self) -> None:
         """
         Request the endpoint to reconfigure based on location reported by storage controller

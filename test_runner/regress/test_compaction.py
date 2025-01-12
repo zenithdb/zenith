@@ -112,7 +112,11 @@ page_cache_size=10
 
 
 @skip_in_debug_build("only run with release build")
-def test_pageserver_gc_compaction_smoke(neon_env_builder: NeonEnvBuilder):
+@pytest.mark.parametrize(
+    "with_branches",
+    ["with_branches", "no_branches"],
+)
+def test_pageserver_gc_compaction_smoke(neon_env_builder: NeonEnvBuilder, with_branches: str):
     SMOKE_CONF = {
         # Run both gc and gc-compaction.
         "gc_period": "5s",
@@ -143,12 +147,17 @@ def test_pageserver_gc_compaction_smoke(neon_env_builder: NeonEnvBuilder):
     log.info("Writing initial data ...")
     workload.write_rows(row_count, env.pageserver.id)
 
+    child_workloads: list[Workload] = []
+
     for i in range(1, churn_rounds + 1):
         if i % 10 == 0:
             log.info(f"Running churn round {i}/{churn_rounds} ...")
-
-        if (i - 1) % 10 == 0:
-            # Run gc-compaction every 10 rounds to ensure the test doesn't take too long time.
+        if i % 10 == 5 and with_branches == "with_branches":
+            branch_name = f"child-{i}"
+            branch_timeline_id = env.create_branch(branch_name)
+            child_workloads.append(workload.branch(branch_timeline_id, branch_name))
+        if (i - 1) % 10 == 0 or (i - 1) % 10 == 1:
+            # Run gc-compaction twice every 10 rounds to ensure the test doesn't take too long time.
             ps_http.timeline_compact(
                 tenant_id,
                 timeline_id,
@@ -179,6 +188,9 @@ def test_pageserver_gc_compaction_smoke(neon_env_builder: NeonEnvBuilder):
 
     log.info("Validating at workload end ...")
     workload.validate(env.pageserver.id)
+    for child_workload in child_workloads:
+        log.info(f"Validating at branch {child_workload.branch_name}")
+        child_workload.validate(env.pageserver.id)
 
     # Run a legacy compaction+gc to ensure gc-compaction can coexist with legacy compaction.
     ps_http.timeline_checkpoint(tenant_id, timeline_id, wait_until_uploaded=True)
