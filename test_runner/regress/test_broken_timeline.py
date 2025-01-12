@@ -29,6 +29,8 @@ def test_local_corruption(neon_env_builder: NeonEnvBuilder):
             ".*failed to load metadata.*",
             ".*load failed.*load local timeline.*",
             ".*: layer load failed, assuming permanent failure:.*",
+            ".*failed to get checkpoint bytes.*",
+            ".*failed get control bytes.*",
         ]
     )
 
@@ -75,7 +77,7 @@ def test_local_corruption(neon_env_builder: NeonEnvBuilder):
     # (We don't check layer file contents on startup, when loading the timeline)
     #
     # This will change when we implement checksums for layers
-    with pytest.raises(Exception, match="get_values_reconstruct_data for layer ") as err:
+    with pytest.raises(Exception, match="failed to get checkpoint bytes") as err:
         pg1.start()
     log.info(
         f"As expected, compute startup failed for timeline {tenant1}/{timeline1} with corrupt layers: {err}"

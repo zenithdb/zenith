@@ -278,7 +278,7 @@ pub fn generate_pg_control(
     checkpoint_bytes: &[u8],
     lsn: Lsn,
     pg_version: u32,
-) -> anyhow::Result<(Bytes, u64)> {
+) -> anyhow::Result<(Bytes, u64, bool)> {
     dispatch_pgversion!(
         pg_version,
         pgv::xlog_utils::generate_pg_control(pg_control_bytes, checkpoint_bytes, lsn),

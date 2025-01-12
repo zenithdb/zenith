@@ -411,6 +411,8 @@ def test_tx_abort_with_many_relations(
     create()
     truncate()
 
+    env.pageserver.allowed_errors.extend(".*removing non-existing aux file.*")
+
     # Run in a thread because the failure case is to take pathologically long time, and we don't want
     # to block the test executor on that.
     with ThreadPoolExecutor(max_workers=1) as exec:
