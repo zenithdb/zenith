@@ -1013,7 +1013,7 @@ fn log_query_error(query: &str, e: &QueryError) {
             }
         }
         QueryError::Disconnected(other_connection_error) => {
-            error!("query handler for '{query}' failed with connection error: {other_connection_error:?}")
+            error!("query handler for '{query}' failed with connection error: {other_connection_error}")
         }
         QueryError::SimulatedConnectionError => {
             error!("query handler for query '{query}' failed due to a simulated connection error")
@@ -1031,7 +1031,7 @@ fn log_query_error(query: &str, e: &QueryError) {
             warn!("query handler for '{query}' failed with authentication error: {e}");
         }
         QueryError::Other(e) => {
-            error!("query handler for '{query}' failed: {e:?}");
+            error!("query handler for '{query}' failed: {e}");
         }
     }
 }
