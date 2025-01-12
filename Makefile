@@ -3,7 +3,6 @@ ROOT_PROJECT_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 # Where to install Postgres, default is ./pg_install, maybe useful for package managers
 POSTGRES_INSTALL_DIR ?= $(ROOT_PROJECT_DIR)/pg_install/
 
-OPENSSL_PREFIX_DIR := /usr/local/openssl
 ICU_PREFIX_DIR := /usr/local/icu
 
 #
@@ -26,11 +25,9 @@ endif
 ifeq ($(shell test -e /home/nonroot/.docker_build && echo -n yes),yes)
 	# Exclude static build openssl, icu for local build (MacOS, Linux)
 	# Only keep for build type release and debug
-	PG_CFLAGS += -I$(OPENSSL_PREFIX_DIR)/include
 	PG_CONFIGURE_OPTS += --with-icu
 	PG_CONFIGURE_OPTS += ICU_CFLAGS='-I/$(ICU_PREFIX_DIR)/include -DU_STATIC_IMPLEMENTATION'
 	PG_CONFIGURE_OPTS += ICU_LIBS='-L$(ICU_PREFIX_DIR)/lib -L$(ICU_PREFIX_DIR)/lib64 -licui18n -licuuc -licudata -lstdc++ -Wl,-Bdynamic -lm'
-	PG_CONFIGURE_OPTS += LDFLAGS='-L$(OPENSSL_PREFIX_DIR)/lib -L$(OPENSSL_PREFIX_DIR)/lib64 -L$(ICU_PREFIX_DIR)/lib -L$(ICU_PREFIX_DIR)/lib64 -Wl,-Bstatic -lssl -lcrypto -Wl,-Bdynamic -lrt -lm -ldl -lpthread'
 endif
 
 UNAME_S := $(shell uname -s)

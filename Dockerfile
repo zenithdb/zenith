@@ -71,6 +71,7 @@ RUN set -e \
         ca-certificates \
 	# System postgres for use with client libraries (e.g. in storage controller)
         postgresql-15 \
+        openssl \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
     && useradd -d /data neon \
     && chown -R neon:neon /data

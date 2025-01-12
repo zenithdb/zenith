@@ -190,21 +190,6 @@ RUN for package in Capture::Tiny DateTime Devel::Cover Digest::MD5 File::Spec JS
     && make install \
     && rm -rf ../lcov.tar.gz
 
-# Compile and install the static OpenSSL library
-ENV OPENSSL_VERSION=1.1.1w
-ENV OPENSSL_PREFIX=/usr/local/openssl
-RUN wget -O /tmp/openssl-${OPENSSL_VERSION}.tar.gz https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz && \
-    echo "cf3098950cb4d853ad95c0841f1f9c6d3dc102dccfcacd521d93925208b76ac8 /tmp/openssl-${OPENSSL_VERSION}.tar.gz" | sha256sum --check && \
-    cd /tmp && \
-    tar xzvf /tmp/openssl-${OPENSSL_VERSION}.tar.gz && \
-    rm /tmp/openssl-${OPENSSL_VERSION}.tar.gz && \
-    cd /tmp/openssl-${OPENSSL_VERSION} && \
-    ./config --prefix=${OPENSSL_PREFIX}  -static --static no-shared -fPIC && \
-    make -j "$(nproc)" && \
-    make install && \
-    cd /tmp && \
-    rm -rf /tmp/openssl-${OPENSSL_VERSION}
-
 # Use the same version of libicu as the compute nodes so that
 # clusters created using inidb on pageserver can be used by computes.
 #
