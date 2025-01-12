@@ -1,6 +1,7 @@
 use std::time::UNIX_EPOCH;
 
 use pageserver_api::key::CONTROLFILE_KEY;
+use serial_test::serial;
 use tokio::task::JoinSet;
 use utils::{
     completion::{self, Completion},
@@ -21,7 +22,10 @@ const FOREVER: std::time::Duration = std::time::Duration::from_secs(ADVANCE.as_s
 
 /// Demonstrate the API and resident -> evicted -> resident -> deleted transitions.
 #[tokio::test]
+#[serial]
 async fn smoke_test() {
+    LAYER_IMPL_METRICS.reset();
+
     let handle = tokio::runtime::Handle::current();
 
     let h = TenantHarness::create("smoke_test").await.unwrap();
@@ -198,7 +202,10 @@ async fn smoke_test() {
 /// This test demonstrates a previous hang when a eviction and deletion were requested at the same
 /// time. Now both of them complete per Arc drop semantics.
 #[tokio::test(start_paused = true)]
+#[serial]
 async fn evict_and_wait_on_wanted_deleted() {
+    LAYER_IMPL_METRICS.reset();
+
     // this is the runtime on which Layer spawns the blocking tasks on
     let handle = tokio::runtime::Handle::current();
 
@@ -275,7 +282,10 @@ async fn evict_and_wait_on_wanted_deleted() {
 /// This test ensures we are able to read the layer while the layer eviction has been
 /// started but not completed.
 #[test]
+#[serial]
 fn read_wins_pending_eviction() {
+    LAYER_IMPL_METRICS.reset();
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(1)
         .enable_all()
@@ -395,6 +405,7 @@ fn read_wins_pending_eviction() {
 
 /// Use failpoint to delay an eviction starting to get a VersionCheckFailed.
 #[test]
+#[serial]
 fn multiple_pending_evictions_in_order() {
     let name = "multiple_pending_evictions_in_order";
     let in_order = true;
@@ -403,6 +414,7 @@ fn multiple_pending_evictions_in_order() {
 
 /// Use failpoint to reorder later eviction before first to get a UnexpectedEvictedState.
 #[test]
+#[serial]
 fn multiple_pending_evictions_out_of_order() {
     let name = "multiple_pending_evictions_out_of_order";
     let in_order = false;
@@ -410,6 +422,8 @@ fn multiple_pending_evictions_out_of_order() {
 }
 
 fn multiple_pending_evictions_scenario(name: &'static str, in_order: bool) {
+    LAYER_IMPL_METRICS.reset();
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(1)
         .enable_all()
@@ -587,7 +601,10 @@ fn multiple_pending_evictions_scenario(name: &'static str, in_order: bool) {
 /// disk but the layer internal state says it has not been initialized. Futhermore, it allows us to
 /// have non-repairing `Layer::is_likely_resident`.
 #[tokio::test(start_paused = true)]
+#[serial]
 async fn cancelled_get_or_maybe_download_does_not_cancel_eviction() {
+    LAYER_IMPL_METRICS.reset();
+
     let handle = tokio::runtime::Handle::current();
     let h = TenantHarness::create("cancelled_get_or_maybe_download_does_not_cancel_eviction")
         .await
@@ -665,8 +682,8 @@ async fn cancelled_get_or_maybe_download_does_not_cancel_eviction() {
 }
 
 #[tokio::test(start_paused = true)]
+#[serial]
 async fn evict_and_wait_does_not_wait_for_download() {
-    // let handle = tokio::runtime::Handle::current();
     let h = TenantHarness::create("evict_and_wait_does_not_wait_for_download")
         .await
         .unwrap();
@@ -759,9 +776,12 @@ async fn evict_and_wait_does_not_wait_for_download() {
 ///
 /// Also checks that the same does not happen on a non-evicted layer (regression test).
 #[tokio::test(start_paused = true)]
+#[serial]
 async fn eviction_cancellation_on_drop() {
     use bytes::Bytes;
     use pageserver_api::value::Value;
+
+    LAYER_IMPL_METRICS.reset();
 
     // this is the runtime on which Layer spawns the blocking tasks on
     let handle = tokio::runtime::Handle::current();
