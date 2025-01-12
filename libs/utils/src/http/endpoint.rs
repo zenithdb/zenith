@@ -15,7 +15,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use routerify::ext::RequestExt;
 use routerify::{Middleware, RequestInfo, Router, RouterBuilder};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::io::ReaderStream;
 use tracing::{debug, info, info_span, warn, Instrument};
@@ -358,25 +358,41 @@ pub async fn profile_cpu_handler(req: Request<Body>) -> Result<Response<Body>, A
         Some(1001..) => return Err(ApiError::BadRequest(anyhow!("frequency must be <=1000 Hz"))),
         Some(frequency) => frequency,
     };
-
-    // Only allow one profiler at a time.
-    static PROFILE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
-    let _lock = PROFILE_LOCK
-        .try_lock()
-        .map_err(|_| ApiError::Conflict("profiler already running".into()))?;
+    let force: bool = parse_query_param(&req, "force")?.unwrap_or_default();
 
     // Take the profile.
-    let report = tokio::task::spawn_blocking(move || {
+    static PROFILE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+    static PROFILE_CANCEL: Lazy<Notify> = Lazy::new(Notify::new);
+
+    let report = {
+        // Only allow one profiler at a time. If force is true, cancel a running profile (e.g. a
+        // Grafana continuous profile). We use a try_lock() loop when cancelling instead of waiting
+        // for a lock(), to avoid races where the notify isn't currently awaited.
+        let _lock = loop {
+            match PROFILE_LOCK.try_lock() {
+                Ok(lock) => break lock,
+                Err(_) if force => PROFILE_CANCEL.notify_waiters(),
+                Err(_) => return Err(ApiError::Conflict("profiler already running".into())),
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await; // don't busy-wait
+        };
+
         let guard = ProfilerGuardBuilder::default()
             .frequency(frequency_hz)
             .blocklist(&["libc", "libgcc", "pthread", "vdso"])
-            .build()?;
-        std::thread::sleep(Duration::from_secs(seconds));
-        guard.report().build()
-    })
-    .await
-    .map_err(|join_err| ApiError::InternalServerError(join_err.into()))?
-    .map_err(|pprof_err| ApiError::InternalServerError(pprof_err.into()))?;
+            .build()
+            .map_err(|err| ApiError::InternalServerError(err.into()))?;
+
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(seconds)) => {},
+            _ = PROFILE_CANCEL.notified() => {},
+        };
+
+        guard
+            .report()
+            .build()
+            .map_err(|err| ApiError::InternalServerError(err.into()))?
+    };
 
     // Return the report in the requested format.
     match format {
