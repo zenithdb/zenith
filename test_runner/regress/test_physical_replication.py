@@ -187,7 +187,7 @@ def test_physical_replication_config_mismatch_too_many_known_xids(neon_simple_en
         origin=primary,
         endpoint_id="secondary",
         config_lines=[
-            "max_connections=2",
+            "max_connections=5",
             "autovacuum_max_workers=1",
             "max_worker_processes=5",
             "max_wal_senders=1",
