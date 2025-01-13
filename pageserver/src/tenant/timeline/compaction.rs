@@ -181,16 +181,6 @@ impl GcCompactionQueue {
         id
     }
 
-    /// Schedule an auto compaction job.
-    fn schedule_auto_compaction(&self, options: CompactOptions) -> GcCompactionJobId {
-        let mut guard = self.inner.lock().unwrap();
-        let id = guard.next_id();
-        guard
-            .queued
-            .push_back((id, GcCompactionQueueItem::MetaJob(options, true)));
-        id
-    }
-
     /// Trigger an auto compaction.
     pub async fn trigger_auto_compaction(&self, timeline: &Arc<Timeline>) {
         let (
@@ -277,9 +267,10 @@ impl GcCompactionQueue {
         options: CompactOptions,
         timeline: &Arc<Timeline>,
         gc_block: &GcBlock,
+        update_l2_lsn: bool,
     ) -> Result<(), CompactionError> {
         info!("running scheduled enhanced gc bottom-most compaction with sub-compaction, splitting compaction jobs");
-        let jobs: Vec<GcCompactJob> = timeline
+        let (jobs, expected_l2_lsn) = timeline
             .gc_compaction_split_jobs(
                 GcCompactJob::from_compact_options(options.clone()),
                 options.sub_compaction_max_job_size_mb,
@@ -319,7 +310,13 @@ impl GcCompactionQueue {
                 };
                 pending_tasks.push(GcCompactionQueueItem::SubCompactionJob(options));
             }
-            pending_tasks.push(GcCompactionQueueItem::Notify(id));
+
+            if update_l2_lsn {
+                pending_tasks.push(GcCompactionQueueItem::Notify(id, Some(expected_l2_lsn)));
+            } else {
+                pending_tasks.push(GcCompactionQueueItem::Notify(id, None));
+            }
+
             {
                 let mut guard = self.inner.lock().unwrap();
                 guard.gc_guards.insert(id, gc_guard);
@@ -333,6 +330,7 @@ impl GcCompactionQueue {
                     guard.queued.push_front(item);
                 }
             }
+
             info!("scheduled enhanced gc bottom-most compaction with sub-compaction, split into {} jobs", jobs_len);
         }
         Ok(())
@@ -359,14 +357,15 @@ impl GcCompactionQueue {
         };
 
         match item {
-            GcCompactionQueueItem::Manual(options) => {
+            GcCompactionQueueItem::MetaJob(options, update_l2_lsn) => {
                 if !options
                     .flags
                     .contains(CompactFlags::EnhancedGcBottomMostCompaction)
                 {
                     warn!("ignoring scheduled compaction task: scheduled task must be gc compaction: {:?}", options);
                 } else if options.sub_compaction {
-                    self.handle_sub_compaction(id, options, timeline, gc_block)
+                    info!("running scheduled enhanced gc bottom-most compaction with sub-compaction, splitting compaction jobs");
+                    self.handle_sub_compaction(id, options, timeline, gc_block, update_l2_lsn)
                         .await?;
                 } else {
                     // Auto compaction always enables sub-compaction so we don't need to handle update_l2_lsn
