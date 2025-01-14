@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
 use enumset::EnumSet;
@@ -90,6 +91,7 @@ use crate::tenant::timeline::CompactFlags;
 use crate::tenant::timeline::CompactOptions;
 use crate::tenant::timeline::CompactRequest;
 use crate::tenant::timeline::CompactionError;
+use crate::tenant::timeline::PageTrace;
 use crate::tenant::timeline::Timeline;
 use crate::tenant::GetTimelineError;
 use crate::tenant::OffloadedTimeline;
@@ -1519,6 +1521,60 @@ async fn timeline_gc_unblocking_handler(
     _cancel: CancellationToken,
 ) -> Result<Response<Body>, ApiError> {
     block_or_unblock_gc(request, false).await
+}
+
+async fn timeline_page_trace_handler(
+    request: Request<Body>,
+    _cancel: CancellationToken,
+) -> Result<Response<Body>, ApiError> {
+    let tenant_shard_id: TenantShardId = parse_request_param(&request, "tenant_shard_id")?;
+    let timeline_id: TimelineId = parse_request_param(&request, "timeline_id")?;
+    let state = get_state(&request);
+
+    let size_limit =
+        parse_query_param::<_, u64>(&request, "size_limit_bytes")?.unwrap_or(1024 * 1024);
+    let time_limit_secs = parse_query_param::<_, u64>(&request, "time_limit_secs")?.unwrap_or(5);
+
+    // Convert size limit to event limit based on known serialized size of an event
+    let event_limit = size_limit / 32;
+
+    let timeline =
+        active_timeline_of_active_tenant(&state.tenant_manager, tenant_shard_id, timeline_id)
+            .await?;
+
+    let (page_trace, mut trace_rx) = PageTrace::new(event_limit);
+    timeline.page_trace.store(Arc::new(Some(page_trace)));
+
+    let mut buffer = Vec::with_capacity(size_limit as usize);
+
+    let deadline = Instant::now() + Duration::from_secs(time_limit_secs);
+
+    loop {
+        let timeout = deadline.saturating_duration_since(Instant::now());
+        tokio::select! {
+            event = trace_rx.recv() => {
+                buffer.extend(bincode::serialize(&event).unwrap());
+
+                if buffer.len() >= size_limit as usize {
+                    // Size threshold reached
+                    break;
+                }
+            }
+            _ = tokio::time::sleep(timeout) => {
+                // Time threshold reached
+                break;
+            }
+        }
+    }
+
+    // Above code is infallible, so we guarantee to switch the trace off when done
+    timeline.page_trace.store(Arc::new(None));
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(hyper::Body::from(buffer))
+        .unwrap())
 }
 
 /// Adding a block is `POST ../block_gc`, removing a block is `POST ../unblock_gc`.
@@ -3486,6 +3542,10 @@ pub fn make_router(
         .post(
             "/v1/tenant/:tenant_shard_id/timeline/:timeline_id/unblock_gc",
             |r| api_handler(r, timeline_gc_unblocking_handler),
+        )
+        .post(
+            "/v1/tenant/:tenant_shard_id/timeline/:timeline_id/page_trace",
+            |r| api_handler(r, timeline_page_trace_handler),
         )
         .post("/v1/tenant/:tenant_shard_id/heatmap_upload", |r| {
             api_handler(r, secondary_upload_handler)

@@ -3896,6 +3896,7 @@ dependencies = [
  "arc-swap",
  "async-compression",
  "async-stream",
+ "bincode",
  "bit_field",
  "byteorder",
  "bytes",

@@ -16,6 +16,7 @@ arc-swap.workspace = true
 async-compression.workspace = true
 async-stream.workspace = true
 bit_field.workspace = true
+bincode.workspace = true
 byteorder.workspace = true
 bytes.workspace = true
 camino.workspace = true
