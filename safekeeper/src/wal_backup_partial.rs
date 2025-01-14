@@ -19,9 +19,11 @@
 //! file. Code updates state in the control file before doing any S3 operations.
 //! This way control file stores information about all potentially existing
 //! remote partial segments and can clean them up after uploading a newer version.
+use std::sync::Arc;
+
 use camino::Utf8PathBuf;
 use postgres_ffi::{XLogFileName, XLogSegNo, PG_TLI};
-use remote_storage::RemotePath;
+use remote_storage::{GenericRemoteStorage, RemotePath};
 use safekeeper_api::Term;
 use serde::{Deserialize, Serialize};
 
@@ -34,8 +36,7 @@ use crate::{
     rate_limit::{rand_duration, RateLimiter},
     timeline::WalResidentTimeline,
     timeline_manager::StateSnapshot,
-    wal_backup::{self},
-    SafeKeeperConf,
+    wal_backup, SafeKeeperConf,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -154,12 +155,16 @@ pub struct PartialBackup {
     conf: SafeKeeperConf,
     local_prefix: Utf8PathBuf,
     remote_timeline_path: RemotePath,
-
+    storage: Arc<GenericRemoteStorage>,
     state: State,
 }
 
 impl PartialBackup {
-    pub async fn new(tli: WalResidentTimeline, conf: SafeKeeperConf) -> PartialBackup {
+    pub async fn new(
+        tli: WalResidentTimeline,
+        conf: SafeKeeperConf,
+        storage: Arc<GenericRemoteStorage>,
+    ) -> PartialBackup {
         let (_, persistent_state) = tli.get_state().await;
         let wal_seg_size = tli.get_wal_seg_size().await;
 
@@ -173,6 +178,7 @@ impl PartialBackup {
             conf,
             local_prefix,
             remote_timeline_path,
+            storage,
         }
     }
 
@@ -240,7 +246,8 @@ impl PartialBackup {
         let remote_path = prepared.remote_path(&self.remote_timeline_path);
 
         // Upload first `backup_bytes` bytes of the segment to the remote storage.
-        wal_backup::backup_partial_segment(&local_path, &remote_path, backup_bytes).await?;
+        wal_backup::backup_partial_segment(&self.storage, &local_path, &remote_path, backup_bytes)
+            .await?;
         PARTIAL_BACKUP_UPLOADED_BYTES.inc_by(backup_bytes as u64);
 
         // We uploaded the segment, now let's verify that the data is still actual.
@@ -326,7 +333,7 @@ impl PartialBackup {
             let remote_path = self.remote_timeline_path.join(seg);
             objects_to_delete.push(remote_path);
         }
-        wal_backup::delete_objects(&objects_to_delete).await
+        wal_backup::delete_objects(&self.storage, &objects_to_delete).await
     }
 
     /// Delete all non-Uploaded segments from the remote storage. There should be only one
@@ -424,6 +431,7 @@ pub async fn main_task(
     conf: SafeKeeperConf,
     limiter: RateLimiter,
     cancel: CancellationToken,
+    storage: Arc<GenericRemoteStorage>,
 ) -> Option<PartialRemoteSegment> {
     debug!("started");
     let await_duration = conf.partial_backup_timeout;
@@ -432,7 +440,7 @@ pub async fn main_task(
     let mut commit_lsn_rx = tli.get_commit_lsn_watch_rx();
     let mut flush_lsn_rx = tli.get_term_flush_lsn_watch_rx();
 
-    let mut backup = PartialBackup::new(tli, conf).await;
+    let mut backup = PartialBackup::new(tli, conf, storage).await;
 
     debug!("state: {:?}", backup.state);
 

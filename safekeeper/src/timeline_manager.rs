@@ -38,7 +38,7 @@ use crate::{
     timeline::{ManagerTimeline, ReadGuardSharedState, StateSK, WalResidentTimeline},
     timeline_guard::{AccessService, GuardId, ResidenceGuard},
     timelines_set::{TimelineSetGuard, TimelinesSet},
-    wal_backup::{self, WalBackupTaskHandle},
+    wal_backup::{self, WalBackup, WalBackupTaskHandle},
     wal_backup_partial::{self, PartialBackup, PartialRemoteSegment},
     SafeKeeperConf,
 };
@@ -205,6 +205,7 @@ pub(crate) struct Manager {
     pub(crate) conf: SafeKeeperConf,
     pub(crate) wal_seg_size: usize,
     pub(crate) walsenders: Arc<WalSenders>,
+    pub(crate) wal_backup: Arc<WalBackup>,
 
     // current state
     pub(crate) state_version_rx: tokio::sync::watch::Receiver<usize>,
@@ -243,6 +244,7 @@ pub async fn main_task(
     manager_tx: tokio::sync::mpsc::UnboundedSender<ManagerCtlMessage>,
     mut manager_rx: tokio::sync::mpsc::UnboundedReceiver<ManagerCtlMessage>,
     global_rate_limiter: RateLimiter,
+    wal_backup: Arc<WalBackup>,
 ) {
     tli.set_status(Status::Started);
 
@@ -261,6 +263,7 @@ pub async fn main_task(
         broker_active_set,
         manager_tx,
         global_rate_limiter,
+        wal_backup,
     )
     .await;
 
@@ -376,7 +379,7 @@ pub async fn main_task(
     mgr.tli_broker_active.set(false);
 
     // shutdown background tasks
-    if mgr.conf.is_wal_backup_enabled() {
+    if let Some(storage) = mgr.wal_backup.get_storage() {
         if let Some(backup_task) = mgr.backup_task.take() {
             // If we fell through here, then the timeline is shutting down. This is important
             // because otherwise joining on the wal_backup handle might hang.
@@ -384,7 +387,7 @@ pub async fn main_task(
 
             backup_task.join().await;
         }
-        wal_backup::update_task(&mut mgr, false, &last_state).await;
+        wal_backup::update_task(&mut mgr, storage, false, &last_state).await;
     }
 
     if let Some(recovery_task) = &mut mgr.recovery_task {
@@ -420,11 +423,13 @@ impl Manager {
         broker_active_set: Arc<TimelinesSet>,
         manager_tx: tokio::sync::mpsc::UnboundedSender<ManagerCtlMessage>,
         global_rate_limiter: RateLimiter,
+        wal_backup: Arc<WalBackup>,
     ) -> Manager {
         let (is_offloaded, partial_backup_uploaded) = tli.bootstrap_mgr().await;
         Manager {
             wal_seg_size: tli.get_wal_seg_size().await,
             walsenders: tli.get_walsenders().clone(),
+            wal_backup,
             state_version_rx: tli.get_state_version_rx(),
             num_computes_rx: tli.get_walreceivers().get_num_rx(),
             tli_broker_active: broker_active_set.guard(tli.clone()),
@@ -482,8 +487,8 @@ impl Manager {
         let is_wal_backup_required =
             wal_backup::is_wal_backup_required(self.wal_seg_size, num_computes, state);
 
-        if self.conf.is_wal_backup_enabled() {
-            wal_backup::update_task(self, is_wal_backup_required, state).await;
+        if let Some(storage) = self.wal_backup.get_storage() {
+            wal_backup::update_task(self, storage, is_wal_backup_required, state).await;
         }
 
         // update the state in Arc<Timeline>
@@ -629,9 +634,9 @@ impl Manager {
     /// Spawns partial WAL backup task if needed.
     async fn update_partial_backup(&mut self, state: &StateSnapshot) {
         // check if WAL backup is enabled and should be started
-        if !self.conf.is_wal_backup_enabled() {
+        let Some(storage) = self.wal_backup.get_storage() else {
             return;
-        }
+        };
 
         if self.partial_backup_task.is_some() {
             // partial backup is already running
@@ -655,6 +660,7 @@ impl Manager {
             self.conf.clone(),
             self.global_rate_limiter.clone(),
             cancel.clone(),
+            storage,
         ));
         self.partial_backup_task = Some((handle, cancel));
     }
@@ -674,6 +680,10 @@ impl Manager {
     /// Reset partial backup state and remove its remote storage data. Since it
     /// might concurrently uploading something, cancel the task first.
     async fn backup_partial_reset(&mut self) -> anyhow::Result<Vec<String>> {
+        let Some(storage) = self.wal_backup.get_storage() else {
+            anyhow::bail!("remote storage is not enabled");
+        };
+
         info!("resetting partial backup state");
         // Force unevict timeline if it is evicted before erasing partial backup
         // state. The intended use of this function is to drop corrupted remote
@@ -694,7 +704,7 @@ impl Manager {
         }
 
         let tli = self.wal_resident_timeline()?;
-        let mut partial_backup = PartialBackup::new(tli, self.conf.clone()).await;
+        let mut partial_backup = PartialBackup::new(tli, self.conf.clone(), storage).await;
         // Reset might fail e.g. when cfile is already reset but s3 removal
         // failed, so set manager state to None beforehand. In any case caller
         // is expected to retry until success.

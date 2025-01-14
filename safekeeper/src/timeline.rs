@@ -28,7 +28,6 @@ use utils::{
 use storage_broker::proto::SafekeeperTimelineInfo;
 use storage_broker::proto::TenantTimelineId as ProtoTenantTimelineId;
 
-use crate::control_file;
 use crate::rate_limit::RateLimiter;
 use crate::receive_wal::WalReceivers;
 use crate::safekeeper::{AcceptorProposerMessage, ProposerAcceptorMessage, SafeKeeper, TermLsn};
@@ -37,8 +36,9 @@ use crate::state::{EvictionState, TimelineMemState, TimelinePersistentState, Tim
 use crate::timeline_guard::ResidenceGuard;
 use crate::timeline_manager::{AtomicStatus, ManagerCtl};
 use crate::timelines_set::TimelinesSet;
-use crate::wal_backup::{self, remote_timeline_path};
+use crate::wal_backup::{remote_timeline_path, WalBackup};
 use crate::wal_backup_partial::PartialRemoteSegment;
+use crate::{control_file, wal_backup};
 
 use crate::metrics::{FullTimelineInfo, WalStorageMetrics, MISC_OPERATION_SECONDS};
 use crate::wal_storage::{Storage as wal_storage_iface, WalReader};
@@ -444,6 +444,8 @@ pub struct Timeline {
     manager_ctl: ManagerCtl,
     conf: Arc<SafeKeeperConf>,
 
+    pub(crate) wal_backup: Arc<WalBackup>,
+
     /// Hold this gate from code that depends on the Timeline's non-shut-down state.  While holding
     /// this gate, you must respect [`Timeline::cancel`]
     pub(crate) gate: Gate,
@@ -466,6 +468,7 @@ impl Timeline {
         remote_path: &RemotePath,
         shared_state: SharedState,
         conf: Arc<SafeKeeperConf>,
+        wal_backup: Arc<WalBackup>,
     ) -> Arc<Self> {
         let (commit_lsn_watch_tx, commit_lsn_watch_rx) =
             watch::channel(shared_state.sk.state().commit_lsn);
@@ -498,6 +501,7 @@ impl Timeline {
             wal_backup_active: AtomicBool::new(false),
             last_removed_segno: AtomicU64::new(0),
             mgr_status: AtomicStatus::new(),
+            wal_backup,
         })
     }
 
@@ -505,6 +509,7 @@ impl Timeline {
     pub fn load_timeline(
         conf: Arc<SafeKeeperConf>,
         ttid: TenantTimelineId,
+        wal_backup: Arc<WalBackup>,
     ) -> Result<Arc<Timeline>> {
         let _enter = info_span!("load_timeline", timeline = %ttid.timeline_id).entered();
 
@@ -518,6 +523,7 @@ impl Timeline {
             &remote_path,
             shared_state,
             conf,
+            wal_backup,
         ))
     }
 
@@ -528,6 +534,7 @@ impl Timeline {
         conf: &SafeKeeperConf,
         broker_active_set: Arc<TimelinesSet>,
         partial_backup_rate_limiter: RateLimiter,
+        wal_backup: Arc<WalBackup>,
     ) {
         let (tx, rx) = self.manager_ctl.bootstrap_manager();
 
@@ -550,6 +557,7 @@ impl Timeline {
                     tx,
                     rx,
                     partial_backup_rate_limiter,
+                    wal_backup,
                 )
                 .await
             }
@@ -586,12 +594,16 @@ impl Timeline {
         // it is cancelled, so WAL storage won't be opened again.
         shared_state.sk.close_wal_store();
 
-        if !only_local && self.conf.is_wal_backup_enabled() {
-            // Note: we concurrently delete remote storage data from multiple
-            // safekeepers. That's ok, s3 replies 200 if object doesn't exist and we
-            // do some retries anyway.
-            wal_backup::delete_timeline(&self.ttid).await?;
+        match (self.wal_backup.get_storage(), only_local) {
+            (Some(storage), false) => {
+                // Note: we concurrently delete remote storage data from multiple
+                // safekeepers. That's ok, s3 replies 200 if object doesn't exist and we
+                // do some retries anyway.
+                wal_backup::delete_timeline(&storage, &self.ttid).await?;
+            }
+            _ => {}
         }
+
         let dir_existed = delete_dir(&self.timeline_dir).await?;
         Ok(dir_existed)
     }
@@ -932,14 +944,13 @@ impl WalResidentTimeline {
 
     pub async fn get_walreader(&self, start_lsn: Lsn) -> Result<WalReader> {
         let (_, persisted_state) = self.get_state().await;
-        let enable_remote_read = self.conf.is_wal_backup_enabled();
 
         WalReader::new(
             &self.ttid,
             self.timeline_dir.clone(),
             &persisted_state,
             start_lsn,
-            enable_remote_read,
+            self.wal_backup.clone(),
         )
     }
 

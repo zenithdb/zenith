@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use camino::Utf8PathBuf;
 use postgres_ffi::{MAX_SEND_SIZE, WAL_SEGMENT_SIZE};
+use remote_storage::GenericRemoteStorage;
 use std::sync::Arc;
 use tokio::{
     fs::OpenOptions,
@@ -31,6 +32,7 @@ pub struct Request {
 pub async fn handle_request(
     request: Request,
     global_timelines: Arc<GlobalTimelines>,
+    storage: Arc<GenericRemoteStorage>,
 ) -> Result<()> {
     // TODO: request.until_lsn MUST be a valid LSN, and we cannot check it :(
     //   if LSN will point to the middle of a WAL record, timeline will be in "broken" state
@@ -128,6 +130,7 @@ pub async fn handle_request(
     assert!(first_ondisk_segment >= first_segment);
 
     copy_s3_segments(
+        &storage,
         wal_seg_size,
         &request.source_ttid,
         &request.destination_ttid,

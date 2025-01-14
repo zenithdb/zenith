@@ -5,7 +5,7 @@ use crate::safekeeper::{ProposerAcceptorMessage, ProposerElected, SafeKeeper, Te
 use crate::state::{TimelinePersistentState, TimelineState};
 use crate::timeline::{get_timeline_dir, SharedState, StateSK, Timeline};
 use crate::timelines_set::TimelinesSet;
-use crate::wal_backup::remote_timeline_path;
+use crate::wal_backup::{remote_timeline_path, WalBackup};
 use crate::{control_file, wal_storage, SafeKeeperConf};
 use camino_tempfile::Utf8TempDir;
 use tokio::fs::create_dir_all;
@@ -92,18 +92,22 @@ impl Env {
         let safekeeper = self.make_safekeeper(node_id, ttid, start_lsn).await?;
         let shared_state = SharedState::new(StateSK::Loaded(safekeeper));
 
+        let wal_backup = Arc::new(WalBackup::new(&conf).await?);
+
         let timeline = Timeline::new(
             ttid,
             &timeline_dir,
             &remote_path,
             shared_state,
             conf.clone(),
+            wal_backup.clone(),
         );
         timeline.bootstrap(
             &mut timeline.write_shared_state().await,
             &conf,
             Arc::new(TimelinesSet::default()), // ignored for now
             RateLimiter::new(0, 0),
+            wal_backup,
         );
         Ok(timeline)
     }

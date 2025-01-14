@@ -111,12 +111,6 @@ pub struct SafeKeeperConf {
 }
 
 impl SafeKeeperConf {
-    pub fn is_wal_backup_enabled(&self) -> bool {
-        self.remote_storage.is_some() && self.wal_backup_enabled
-    }
-}
-
-impl SafeKeeperConf {
     pub fn dummy() -> Self {
         SafeKeeperConf {
             workdir: Utf8PathBuf::from("./"),
