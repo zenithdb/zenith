@@ -1,3 +1,81 @@
+#
+# This Dockerfile builds the compute image. It is built multiple times to produce
+# different images for each PostgreSQL major version.
+#
+# We use Debian as the base for all the steps. The production images use Debian bookworm
+# for v17, and Debian bullseye for older PostgreSQL versions.
+#
+# ## Intermediary layers
+#
+# build-tools:   This contains Rust compiler toolchain and other tools needed at compile
+#                time. This is also used for the storage builds. This image is defined in
+#                build-tools.Dockerfile.
+#
+# build-deps:    Contains C compiler, other build tools, and compile-time dependencies
+#                needed to compile PostgreSQL and most extensions. (Some extensions need
+#                extra tools and libraries that are not included in this image. They are
+#                installed in the extension-specific build stages.)
+#
+# pg-build:      Result of compiling PostgreSQL. The PostgreSQL binaries are copied from
+#                this to the final image. This is also used as the base for compiling all
+#                the extensions.
+#
+# compute-tools: This contains compute_ctl, the launcher program that starts Postgres
+#                in Neon. It also contains a few other tools that are built from the
+#                sources from this repository and used in compute VMs: 'fast_import' and
+#                'local_proxy'
+#
+# ## Extensions
+#
+# By convention, the build of each extension consists of two layers:
+#
+# {extension}-src:   Contains the source tarball, possible neon-specific patches, and
+#                    the extracted tarball with the patches applied. All of these are
+#                    under the /ext-src/ directory.
+#
+# {extension}-build: Contains the installed extension files, under /usr/local/pgsql
+#                    (in addition to the PostgreSQL binaries inherited from the pg-build
+#                    image). A few extensions need extra libraries or other files
+#                    installed elsewhere in the filesystem. They are installed by ONBUILD
+#                    directives.
+#
+# These are merged together into two layers:
+#
+# all-extensions:    All the extension -build layers merged together
+#
+# extension-tests:   All the extension -src layers merged together. This is used by the
+#                    extension tests. The tests are executed against the compiled image,
+#                    but the tests need test scripts, expected result files etc. from the
+#                    original sources, which are not included in the binary image.
+#
+# ## Extra components
+#
+# These are extra included in the compute image, but are not directly used by PostgreSQL
+# itself.
+#
+# pgbouncer:         pgbouncer and its configuration
+#
+# sql_exporter:      Metrics exporter daemon.
+#
+# postgres_exporter: Another metrics exporter daemon, for different sets of metrics.
+#
+# The configuration files for the metrics exporters are under etc/ directory. We use
+# a templating system to handle variations between different PostgreSQL versions,
+# building slightly different config files for each PostgreSQL version.
+#
+#
+# ## Final image
+#
+# The final image puts together the PostgreSQL binaries (pg-build), the compute tools
+# (compute-tools), all the extensions (all-extensions) and the extra components into
+# one image.
+#
+# VM image: The final image built by this dockerfile isn't actually the final image that
+# we use in computes VMs. There's an extra step that adds some files and makes other
+# small adjustments, and builds the QCOV2 filesystem image suitable for using in a VM.
+# That step is done by the 'vm-builder' tool. See the vm-compute-node-image job in the
+# build_and_test.yml github workflow for how that's done.
+
 ARG PG_VERSION
 ARG REPOSITORY=neondatabase
 ARG IMAGE=build-tools
