@@ -17,7 +17,7 @@ by serializing the directory data in a single key (see `pgdatadir_mapping.rs`).
 // 00 SPCNODE  DBNODE   00000000 00   00000001 (Postgres never uses relfilenode 0)
 ```
 
-On the write path, we have a dedicated structure to serialize the relation directory into this single key.
+We have a dedicated structure on the ingestion path to serialize the relation directory into this single key.
 
 ```rust
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -36,25 +36,25 @@ The current codebase has the following two access patterns for the relation dire
 2. List all relations.
 3. Create/drop a relation.
 
-For (1), we currently have to get the reldir key, deserialize it, and check if the relation exists in the
-hashset or not. For (2), we simply get the reldir key and get the hashset. For (3), we need to first get
-and deserialize the key, add the new relation record to the hashset, and then serialize it and write it back.
+For (1), we currently have to get the reldir key, deserialize it, and check whether the relation exists in the
+hash set. For (2), we get the reldir key and the hash set. For (3), we need first to get
+and deserialize the key, add the new relation record to the hash set, and then serialize it and write it back.
 
-Consider the case we have 100k relations in a database, then we would have a 100k-large hashset. Then, every
-relation create and drop would have deserialized and serialized this 100k-large hashset. This makes the
-relation create/drop process to be quadratic. And when we check if a relation exists in the ingestion path,
+If we have 100k relations in a database, we would have a 100k-large hash set. Then, every
+relation created and dropped would have deserialized and serialized this 100k-large hash set. This makes the
+relation create/drop process to be quadratic. When we check if a relation exists in the ingestion path,
 we would have to deserialize this super big 100k-large key before checking if a single relation exists.
 
-In this RFC, we will propose a new way to store the reldir data in the sparse keyspace, and propose how
+In this RFC, we will propose a new way to store the reldir data in the sparse keyspace and propose how
 to seamlessly migrate users to use the new keyspace.
 
 The PoC patch is implemented in [PR10316](https://github.com/neondatabase/neon/pull/10316).
 
 ## Key Mapping
 
-We will use the recently-introduced sparse keyspace to store reldir data. Sparse keyspace was proposed in
+We will use the recently introduced sparse keyspace to store actual data. Sparse keyspace was proposed in
 [038-aux-file-v2.md](038-aux-file-v2.md). The original reldir has one single value of `HashSet<(Oid, u8)>`
-for each of the database (identified as `spcnode, dbnode`). We simply encode the `Oid`, which is `relnode, forknum`,
+for each of the databases (identified as `spcnode, dbnode`). We encode the `Oid` (`relnode, forknum`),
 into the key.
 
 ```
@@ -62,44 +62,44 @@ into the key.
 (REL_DIR_KEY_PREFIX, spcnode, dbnode, relnode, forknum, 1) -> exists
 ```
 
-Assume all reldir data are stored in this new keyspace, the 3 reldir operations we mentioned before can be
+Assume all reldir data are stored in this new keyspace; the 3 reldir operations we mentioned before can be
 implemented as follows.
 
 1. Check if a relation exists: check if the key maps to "exists".
-2. List all relations: do a sprase keyspace scan over the `rel_dir_key_prefix`. Extract relnode and forknum from the key.
+2. List all relations: scan the sprase keyspace over the `rel_dir_key_prefix`. Extract relnode and forknum from the key.
 3. Create/drop a relation: write "exists" or "deleted" to the corresponding key of the relation.
 
 The mapping is implemented as `rel_tag_sparse_key` in the PoC patch.
 
 ## Changes to Sparse Keyspace
 
-Previously, we only use sparse keyspaces for the aux files, which does not carry over when branching. The reldir
-information needs to be preserved from the parent branch to the child branch, and therefore, the read path needs
-to be updated accordingly to accomodate such "inherited sparse keys". This is done in
+Previously, we only used sparse keyspaces for the aux files, which did not carry over when branching. The reldir
+information needs to be preserved from the parent branch to the child branch. Therefore, the read path needs
+to be updated accordingly to accommodate such "inherited sparse keys". This is done in
 [PR#10313](https://github.com/neondatabase/neon/pull/10313).
 
 ## Coexistence of the Old and New Keyspaces
 
 Migrating to the new keyspace will be done gradually: when we flip a config item to enable the new reldir keyspace, the
-ingestion path will start to write to the new keyspace, and the old reldir data will be kept in the old one. The read
+ingestion path will start to write to the new keyspace and the old reldir data will be kept in the old one. The read
 path needs to combine the data from both keyspaces.
 
-In theory, we could do a rewrite at the startup time that scans all relation directories and copy that data into the
+Theoretically, we could do a rewrite at the startup time that scans all relation directories and copies that data into the
 new keyspace. However, this could take a long time, especially if we have thousands of tenants doing the migration
-process at the same time after the pageserver restarts. Therefore, we propose the co-existence strategy so that the
+process simultaneously after the pageserver restarts. Therefore, we propose the coexistence strategy so that the
 migration can happen seamlessly and imposes no potential downtime for the user.
 
-With the co-existence assumption, the 3 reldir operations will be implemented as follows:
+With the coexistence assumption, the 3 reldir operations will be implemented as follows:
 
 1. Check if a relation exists
   - Check the new keyspace if the key maps to any value. If it maps to "exists" or "deleted", directly
     return it to the user.
   - Otherwise, deserialize the old reldir key and get the result.
-2. List all relations: do a sprase keyspace scan over the `rel_dir_key_prefix`, and deserialize the old reldir key.
-   combine them to obtain the final result.
+2. List all relations: scan the sparse keyspace over the `rel_dir_key_prefix` and deserialize the old reldir key.
+   Combine them to obtain the final result.
 3. Create/drop a relation: write "exists" or "deleted" to the corresponding key of the relation into the new keyspace.
-  - Alternatively, when a user removes a relation when the new keyspace is enabled but that relation is created in the
-    old reldir key, we can both remove it from the old reldir key and write the delete tombstone in the new keyspace.
+  - Alternatively, when a user removes a relation when the new keyspace is enabled but it is created in the
+    old reldir key, we can remove it from the old reldir key and write the delete tombstone in the new keyspace.
 
 We will introduce a config item and an index_part record to record the current status of the migration process.
 
@@ -113,9 +113,9 @@ read/write to the new keyspace to avoid data inconsistency.
 
 ## Full Migration
 
-This won't be implemented in the first phase of the project, but might be implemented in the future. Having both v1 and
-v2 existing in the system would have us keep the code to deserialize the old reldir key forever. To fully deprecate this
-code path, we need to ensure the timeline does not have any old reldir data.
+This won't be implemented in the project's first phase but might be implemented in the future. Having both v1 and
+v2 existing in the system would force us to keep the code to deserialize the old reldir key forever. To entirely deprecate this
+code path, we must ensure the timeline has no old reldir data.
 
 We can trigger a special image layer generation process at the gc-horizon. The generated image layers will cover several keyspaces:
 the old reldir key in each of the databases, and the new reldir sparse keyspace. It will remove the old reldir key while
@@ -166,11 +166,11 @@ We have relsize at the end of all relation nodes.
 ```
 
 This means that computing logical size requires us to do several single-key gets across the keyspace,
-which potentially requires downloading a lot of layer files. We could consolidate them into a single
-keyspace, therefore improving the performance of logical size calculation.
+potentially requiring downloading many layer files. We could consolidate them into a single
+keyspace, improving logical size calculation performance.
 
 ### Migrate DBDir Keys
 
-We assume the number of databases created by the users will be small, and therefore the currently way
-of storing database directory would be fine. In the future, we could also migrate DBDir keys into
+We assume the number of databases created by the users will be small, and therefore, the current way
+of storing the database directory would be acceptable. In the future, we could also migrate DBDir keys into
 the sparse keyspace to support large amount of databases.
