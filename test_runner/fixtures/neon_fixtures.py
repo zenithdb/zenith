@@ -370,6 +370,7 @@ class NeonEnvBuilder:
         pageserver_config_override: str | Callable[[dict[str, Any]], None] | None = None,
         num_safekeepers: int = 1,
         num_pageservers: int = 1,
+        num_azs: int = 3,
         # Use non-standard SK ids to check for various parsing bugs
         safekeepers_id_start: int = 0,
         # fsync is disabled by default to make the tests go faster
@@ -401,6 +402,7 @@ class NeonEnvBuilder:
         self.pageserver_config_override = pageserver_config_override
         self.num_safekeepers = num_safekeepers
         self.num_pageservers = num_pageservers
+        self.num_azs = num_azs
         self.safekeepers_id_start = safekeepers_id_start
         self.safekeepers_enable_fsync = safekeepers_enable_fsync
         self.auth_enabled = auth_enabled
@@ -990,6 +992,7 @@ class NeonEnv:
         self.endpoints = EndpointFactory(self)
         self.safekeepers: list[Safekeeper] = []
         self.pageservers: list[NeonPageserver] = []
+        self.num_azs = config.num_azs
         self.broker = NeonBroker(self)
         self.pageserver_remote_storage = config.pageserver_remote_storage
         self.safekeepers_remote_storage = config.safekeepers_remote_storage
@@ -1090,14 +1093,21 @@ class NeonEnv:
                 http=self.port_distributor.get_port(),
             )
 
+            # Availabilty zones may also be configured manually with `NeonEnvBuilder.pageserver_config_override`
+            if self.num_azs > 1:
+                # Round-robin assignment of AZ names like us-east-2a, us-east-2b, etc.
+                az_prefix = DEFAULT_AZ_ID[:-1]
+                availability_zone = f"{az_prefix}{chr(ord('a') + (ps_id - 1) % self.num_azs)}"
+            else:
+                availability_zone = DEFAULT_AZ_ID
+
             ps_cfg: dict[str, Any] = {
                 "id": ps_id,
                 "listen_pg_addr": f"localhost:{pageserver_port.pg}",
                 "listen_http_addr": f"localhost:{pageserver_port.http}",
                 "pg_auth_type": pg_auth_type,
                 "http_auth_type": http_auth_type,
-                # Default which can be overriden with `NeonEnvBuilder.pageserver_config_override`
-                "availability_zone": DEFAULT_AZ_ID,
+                "availability_zone": availability_zone,
                 # Disable pageserver disk syncs in tests: when running tests concurrently, this avoids
                 # the pageserver taking a long time to start up due to syncfs flushing other tests' data
                 "no_sync": True,
