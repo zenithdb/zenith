@@ -1026,6 +1026,8 @@ def test_sharded_tad_interleaved_after_partial_success(neon_env_builder: NeonEnv
     """
 
     shard_count = 2
+    # Single AZ so that a sharded tenant can spread across all pageservers
+    neon_env_builder.num_azs = 1
     neon_env_builder.num_pageservers = shard_count
     env = neon_env_builder.init_start(initial_tenant_shard_count=shard_count)
 

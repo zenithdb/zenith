@@ -44,6 +44,10 @@ def test_sharding_smoke(
     """
 
     shard_count = 4
+
+    # Single AZ so that a sharded tenant can spread across all pageservers
+    neon_env_builder.num_azs = 1
+
     neon_env_builder.num_pageservers = shard_count
 
     # 1MiB stripes: enable getting some meaningful data distribution without
@@ -523,16 +527,13 @@ def test_sharding_split_smoke(
     # In preferred AZ & other AZ we will end up with one shard per pageserver
     neon_env_builder.num_pageservers = split_shard_count * 2
 
-    # Two AZs
-    def assign_az(ps_cfg):
-        az = f"az-{(ps_cfg['id'] - 1) % 2}"
-        ps_cfg["availability_zone"] = az
-
+    def ps_conf_hook(ps_cfg):
         # We will run more pageservers than tests usually do, so give them tiny page caches
         # in case we're on a test node under memory pressure.
         ps_cfg["page_cache_size"] = 128
 
-    neon_env_builder.pageserver_config_override = assign_az
+    neon_env_builder.num_azs = 2
+    neon_env_builder.pageserver_config_override = ps_conf_hook
 
     # 1MiB stripes: enable getting some meaningful data distribution without
     # writing large quantities of data in this test.  The stripe size is given
