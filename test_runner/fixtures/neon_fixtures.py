@@ -370,7 +370,7 @@ class NeonEnvBuilder:
         pageserver_config_override: str | Callable[[dict[str, Any]], None] | None = None,
         num_safekeepers: int = 1,
         num_pageservers: int = 1,
-        num_azs: int = 1,
+        num_azs: int = 3,
         # Use non-standard SK ids to check for various parsing bugs
         safekeepers_id_start: int = 0,
         # fsync is disabled by default to make the tests go faster
