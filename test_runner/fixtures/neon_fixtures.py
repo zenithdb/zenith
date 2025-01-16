@@ -2068,7 +2068,7 @@ class NeonStorageController(MetricsGetter, LogUtils):
         log.info(f"reconcile_all waited for {n} shards")
         return n
 
-    def reconcile_until_idle(self, timeout_secs=30, max_interval=5):
+    def reconcile_until_idle(self, timeout_secs=30, max_interval=1):
         start_at = time.time()
         n = 1
         delay_sec = 0.1
