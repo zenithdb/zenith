@@ -133,7 +133,7 @@
 //! - Initiate upload queue with that [`IndexPart`].
 //! - Reschedule all lost operations by comparing the local filesystem state
 //!   and remote state as per [`IndexPart`]. This is done in
-//!   [`Tenant::timeline_init_and_sync`].
+//!   [`TenantShard::timeline_init_and_sync`].
 //!
 //! Note that if we crash during file deletion between the index update
 //! that removes the file from the list of files, and deleting the remote file,
@@ -171,7 +171,7 @@
 //! If no remote storage configuration is provided, the [`RemoteTimelineClient`] is
 //! not created and the uploads are skipped.
 //!
-//! [`Tenant::timeline_init_and_sync`]: super::Tenant::timeline_init_and_sync
+//! [`TenantShard::timeline_init_and_sync`]: super::TenantShard::timeline_init_and_sync
 //! [`Timeline::load_layer_map`]: super::Timeline::load_layer_map
 
 pub(crate) mod download;
@@ -2644,9 +2644,9 @@ mod tests {
         context::RequestContext,
         tenant::{
             config::AttachmentMode,
-            harness::{TenantHarness, TIMELINE_ID},
+            harness::{TenantShardHarness, TIMELINE_ID},
             storage_layer::layer::local_layer_path,
-            Tenant, Timeline,
+            TenantShard, Timeline,
         },
         DEFAULT_PG_VERSION,
     };
@@ -2703,8 +2703,8 @@ mod tests {
     }
 
     struct TestSetup {
-        harness: TenantHarness,
-        tenant: Arc<Tenant>,
+        harness: TenantShardHarness,
+        tenant: Arc<TenantShard>,
         timeline: Arc<Timeline>,
         tenant_ctx: RequestContext,
     }
@@ -2712,7 +2712,7 @@ mod tests {
     impl TestSetup {
         async fn new(test_name: &str) -> anyhow::Result<Self> {
             let test_name = Box::leak(Box::new(format!("remote_timeline_client__{test_name}")));
-            let harness = TenantHarness::create(test_name).await?;
+            let harness = TenantShardHarness::create(test_name).await?;
             let (tenant, ctx) = harness.load().await;
 
             let timeline = tenant

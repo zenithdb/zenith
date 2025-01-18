@@ -1138,10 +1138,10 @@ mod test {
         context::RequestContext,
         tenant::{
             config::TenantConf,
-            harness::{TenantHarness, TIMELINE_ID},
+            harness::{TenantShardHarness, TIMELINE_ID},
             storage_layer::{Layer, ResidentLayer},
             vectored_blob_io::StreamingVectoredReadPlanner,
-            Tenant, Timeline,
+            TenantShard, Timeline,
         },
         DEFAULT_PG_VERSION,
     };
@@ -1170,7 +1170,7 @@ mod test {
         // Create an unsharded parent with a layer.
         //
 
-        let harness = TenantHarness::create_custom(
+        let harness = TenantShardHarness::create_custom(
             "test_image_layer_rewrite--parent",
             tenant_conf.clone(),
             tenant_id,
@@ -1233,7 +1233,7 @@ mod test {
                 ShardStripeSize(0x8000),
             )
             .unwrap();
-            let harness = TenantHarness::create_custom(
+            let harness = TenantShardHarness::create_custom(
                 Box::leak(Box::new(format!(
                     "test_image_layer_rewrite--child{}",
                     shard_identity.shard_slug()
@@ -1324,7 +1324,7 @@ mod test {
     }
 
     async fn produce_image_layer(
-        tenant: &Tenant,
+        tenant: &TenantShard,
         tline: &Arc<Timeline>,
         mut images: Vec<(Key, Bytes)>,
         lsn: Lsn,
@@ -1380,7 +1380,9 @@ mod test {
 
     #[tokio::test]
     async fn image_layer_iterator() {
-        let harness = TenantHarness::create("image_layer_iterator").await.unwrap();
+        let harness = TenantShardHarness::create("image_layer_iterator")
+            .await
+            .unwrap();
         let (tenant, ctx) = harness.load().await;
 
         let tline = tenant

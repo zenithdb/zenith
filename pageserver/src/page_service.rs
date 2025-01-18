@@ -59,7 +59,7 @@ use crate::span::debug_assert_current_span_has_tenant_and_timeline_id_no_shard_i
 use crate::task_mgr::TaskKind;
 use crate::task_mgr::{self, COMPUTE_REQUEST_RUNTIME};
 use crate::tenant::mgr::ShardSelector;
-use crate::tenant::mgr::TenantManager;
+use crate::tenant::mgr::TenantShardManager;
 use crate::tenant::mgr::{GetActiveTenantError, GetTenantError, ShardResolveResult};
 use crate::tenant::timeline::{self, WaitLsnError};
 use crate::tenant::GetTimelineError;
@@ -94,7 +94,7 @@ pub struct Connections {
 
 pub fn spawn(
     conf: &'static PageServerConf,
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     pg_auth: Option<Arc<SwappableJwtAuth>>,
     tcp_listener: tokio::net::TcpListener,
 ) -> Listener {
@@ -159,7 +159,7 @@ impl Connections {
 /// open connections.
 ///
 pub async fn libpq_listener_main(
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     auth: Option<Arc<SwappableJwtAuth>>,
     listener: tokio::net::TcpListener,
     auth_type: AuthType,
@@ -218,7 +218,7 @@ type ConnectionHandlerResult = anyhow::Result<()>;
 
 #[instrument(skip_all, fields(peer_addr))]
 async fn page_service_conn_main(
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     auth: Option<Arc<SwappableJwtAuth>>,
     socket: tokio::net::TcpStream,
     auth_type: AuthType,
@@ -337,7 +337,7 @@ struct TimelineHandles {
 }
 
 impl TimelineHandles {
-    fn new(tenant_manager: Arc<TenantManager>) -> Self {
+    fn new(tenant_manager: Arc<TenantShardManager>) -> Self {
         Self {
             wrapper: TenantManagerWrapper {
                 tenant_manager,
@@ -379,7 +379,7 @@ impl TimelineHandles {
 }
 
 pub(crate) struct TenantManagerWrapper {
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     // We do not support switching tenant_id on a connection at this point.
     // We can can add support for this later if needed without changing
     // the protocol.
@@ -634,7 +634,7 @@ impl BatchedFeMessage {
 
 impl PageServerHandler {
     pub fn new(
-        tenant_manager: Arc<TenantManager>,
+        tenant_manager: Arc<TenantShardManager>,
         auth: Option<Arc<SwappableJwtAuth>>,
         pipelining_config: PageServicePipeliningConfig,
         connection_ctx: RequestContext,

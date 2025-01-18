@@ -9,12 +9,14 @@ use utils::serde_percent::Percent;
 
 use pageserver_api::models::PageserverUtilization;
 
-use crate::{config::PageServerConf, metrics::NODE_UTILIZATION_SCORE, tenant::mgr::TenantManager};
+use crate::{
+    config::PageServerConf, metrics::NODE_UTILIZATION_SCORE, tenant::mgr::TenantShardManager,
+};
 
 pub(crate) fn regenerate(
     conf: &PageServerConf,
     tenants_path: &Path,
-    tenant_manager: &TenantManager,
+    tenant_manager: &TenantShardManager,
 ) -> anyhow::Result<PageserverUtilization> {
     let statvfs = nix::sys::statvfs::statvfs(tenants_path)
         .map_err(std::io::Error::from)

@@ -1117,7 +1117,7 @@ impl ReconnectReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tenant::harness::{TenantHarness, TIMELINE_ID};
+    use crate::tenant::harness::{TenantShardHarness, TIMELINE_ID};
     use pageserver_api::config::defaults::DEFAULT_WAL_RECEIVER_PROTOCOL;
     use url::Host;
 
@@ -1141,7 +1141,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_connection_no_candidate() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("no_connection_no_candidate").await?;
+        let harness = TenantShardHarness::create("no_connection_no_candidate").await?;
         let mut state = dummy_state(&harness).await;
         let now = Utc::now().naive_utc();
 
@@ -1174,7 +1174,7 @@ mod tests {
 
     #[tokio::test]
     async fn connection_no_candidate() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("connection_no_candidate").await?;
+        let harness = TenantShardHarness::create("connection_no_candidate").await?;
         let mut state = dummy_state(&harness).await;
         let now = Utc::now().naive_utc();
 
@@ -1239,7 +1239,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_connection_candidate() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("no_connection_candidate").await?;
+        let harness = TenantShardHarness::create("no_connection_candidate").await?;
         let mut state = dummy_state(&harness).await;
         let now = Utc::now().naive_utc();
 
@@ -1302,7 +1302,7 @@ mod tests {
 
     #[tokio::test]
     async fn candidate_with_many_connection_failures() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("candidate_with_many_connection_failures").await?;
+        let harness = TenantShardHarness::create("candidate_with_many_connection_failures").await?;
         let mut state = dummy_state(&harness).await;
         let now = Utc::now().naive_utc();
 
@@ -1342,7 +1342,7 @@ mod tests {
 
     #[tokio::test]
     async fn lsn_wal_over_threshold_current_candidate() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("lsn_wal_over_threshcurrent_candidate").await?;
+        let harness = TenantShardHarness::create("lsn_wal_over_threshcurrent_candidate").await?;
         let mut state = dummy_state(&harness).await;
         let current_lsn = Lsn(100_000).align();
         let now = Utc::now().naive_utc();
@@ -1409,7 +1409,7 @@ mod tests {
     #[tokio::test]
     async fn timeout_connection_threshold_current_candidate() -> anyhow::Result<()> {
         let harness =
-            TenantHarness::create("timeout_connection_threshold_current_candidate").await?;
+            TenantShardHarness::create("timeout_connection_threshold_current_candidate").await?;
         let mut state = dummy_state(&harness).await;
         let current_lsn = Lsn(100_000).align();
         let now = Utc::now().naive_utc();
@@ -1472,7 +1472,8 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_wal_over_threshold_current_candidate() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("timeout_wal_over_threshold_current_candidate").await?;
+        let harness =
+            TenantShardHarness::create("timeout_wal_over_threshold_current_candidate").await?;
         let mut state = dummy_state(&harness).await;
         let current_lsn = Lsn(100_000).align();
         let new_lsn = Lsn(100_100).align();
@@ -1540,7 +1541,7 @@ mod tests {
 
     const DUMMY_SAFEKEEPER_HOST: &str = "safekeeper_connstr";
 
-    async fn dummy_state(harness: &TenantHarness) -> ConnectionManagerState {
+    async fn dummy_state(harness: &TenantShardHarness) -> ConnectionManagerState {
         let (tenant, ctx) = harness.load().await;
         let timeline = tenant
             .create_test_timeline(TIMELINE_ID, Lsn(0x8), crate::DEFAULT_PG_VERSION, &ctx)
@@ -1575,7 +1576,7 @@ mod tests {
         // and pageserver should prefer to connect to it.
         let test_az = Some("test_az".to_owned());
 
-        let harness = TenantHarness::create("switch_to_same_availability_zone").await?;
+        let harness = TenantShardHarness::create("switch_to_same_availability_zone").await?;
         let mut state = dummy_state(&harness).await;
         state.conf.availability_zone.clone_from(&test_az);
         let current_lsn = Lsn(100_000).align();

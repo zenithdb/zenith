@@ -6,7 +6,7 @@ use super::delete::{delete_local_timeline_directory, DeleteTimelineFlow, Deletio
 use super::Timeline;
 use crate::span::debug_assert_current_span_has_tenant_and_timeline_id;
 use crate::tenant::remote_timeline_client::ShutdownIfArchivedError;
-use crate::tenant::{OffloadedTimeline, Tenant, TenantManifestError, TimelineOrOffloaded};
+use crate::tenant::{OffloadedTimeline, TenantManifestError, TenantShard, TimelineOrOffloaded};
 
 #[derive(thiserror::Error, Debug)]
 pub(crate) enum OffloadError {
@@ -30,7 +30,7 @@ impl From<TenantManifestError> for OffloadError {
 }
 
 pub(crate) async fn offload_timeline(
-    tenant: &Tenant,
+    tenant: &TenantShard,
     timeline: &Arc<Timeline>,
 ) -> Result<(), OffloadError> {
     debug_assert_current_span_has_tenant_and_timeline_id();
@@ -110,7 +110,7 @@ pub(crate) async fn offload_timeline(
 ///
 /// Returns the strong count of the timeline `Arc`
 fn remove_timeline_from_tenant(
-    tenant: &Tenant,
+    tenant: &TenantShard,
     timeline: &Timeline,
     _: &DeletionGuard, // using it as a witness
 ) -> usize {

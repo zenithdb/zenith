@@ -19,7 +19,7 @@ use self::{
 
 use super::{
     config::{SecondaryLocationConfig, TenantConfOpt},
-    mgr::TenantManager,
+    mgr::TenantShardManager,
     span::debug_assert_current_span_has_tenant_id,
     storage_layer::LayerName,
     GetTenantError,
@@ -374,7 +374,7 @@ impl GlobalTasks {
 }
 
 pub fn spawn_tasks(
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     remote_storage: GenericRemoteStorage,
     background_jobs_can_start: Barrier,
     cancel: CancellationToken,

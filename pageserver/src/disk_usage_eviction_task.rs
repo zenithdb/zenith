@@ -57,7 +57,7 @@ use crate::{
     metrics::disk_usage_based_eviction::METRICS,
     task_mgr::{self, BACKGROUND_RUNTIME},
     tenant::{
-        mgr::TenantManager,
+        mgr::TenantShardManager,
         remote_timeline_client::LayerFileMetadata,
         secondary::SecondaryTenant,
         storage_layer::{AsLayerDesc, EvictionError, Layer, LayerName, LayerVisibilityHint},
@@ -166,7 +166,7 @@ pub fn launch_disk_usage_global_eviction_task(
     conf: &'static PageServerConf,
     storage: GenericRemoteStorage,
     state: Arc<State>,
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     background_jobs_barrier: completion::Barrier,
 ) -> Option<DiskUsageEvictionTask> {
     let Some(task_config) = &conf.disk_usage_based_eviction else {
@@ -203,7 +203,7 @@ async fn disk_usage_eviction_task(
     state: &State,
     task_config: &DiskUsageEvictionTaskConfig,
     storage: &GenericRemoteStorage,
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     cancel: CancellationToken,
 ) {
     scopeguard::defer! {
@@ -265,7 +265,7 @@ async fn disk_usage_eviction_task_iteration(
     state: &State,
     task_config: &DiskUsageEvictionTaskConfig,
     storage: &GenericRemoteStorage,
-    tenant_manager: &Arc<TenantManager>,
+    tenant_manager: &Arc<TenantShardManager>,
     cancel: &CancellationToken,
 ) -> anyhow::Result<()> {
     let tenants_dir = tenant_manager.get_conf().tenants_path();
@@ -361,7 +361,7 @@ pub(crate) async fn disk_usage_eviction_task_iteration_impl<U: Usage>(
     state: &State,
     _storage: &GenericRemoteStorage,
     usage_pre: U,
-    tenant_manager: &Arc<TenantManager>,
+    tenant_manager: &Arc<TenantShardManager>,
     eviction_order: EvictionOrder,
     cancel: &CancellationToken,
 ) -> anyhow::Result<IterationOutcome<U>> {
@@ -788,7 +788,7 @@ enum EvictionCandidates {
 /// - tenant B 1 layer
 /// - tenant C 8 layers
 async fn collect_eviction_candidates(
-    tenant_manager: &Arc<TenantManager>,
+    tenant_manager: &Arc<TenantShardManager>,
     eviction_order: EvictionOrder,
     cancel: &CancellationToken,
 ) -> anyhow::Result<EvictionCandidates> {

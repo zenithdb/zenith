@@ -946,7 +946,7 @@ pub(crate) static TIMELINE_EPHEMERAL_BYTES: Lazy<UIntGauge> = Lazy::new(|| {
     .expect("Failed to register metric")
 });
 
-/// Metrics related to the lifecycle of a [`crate::tenant::Tenant`] object: things
+/// Metrics related to the lifecycle of a [`crate::tenant::TenantShard`] object: things
 /// like how long it took to load.
 ///
 /// Note that these are process-global metrics, _not_ per-tenant metrics.  Per-tenant

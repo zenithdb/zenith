@@ -361,7 +361,7 @@ where
 
     /// Periodic execution phase: inspect all attached tenants and schedule any work they require.
     ///
-    /// The type in `tenants` should be a tenant-like structure, e.g. [`crate::tenant::Tenant`] or [`crate::tenant::secondary::SecondaryTenant`]
+    /// The type in `tenants` should be a tenant-like structure, e.g. [`crate::tenant::TenantShard`] or [`crate::tenant::secondary::SecondaryTenant`]
     ///
     /// This function resets the pending list: it is assumed that the caller may change their mind about
     /// which tenants need work between calls to schedule_iteration.

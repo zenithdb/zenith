@@ -563,7 +563,7 @@ impl UploadOp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tenant::harness::{TenantHarness, TIMELINE_ID};
+    use crate::tenant::harness::{TenantShardHarness, TIMELINE_ID};
     use crate::tenant::storage_layer::layer::local_layer_path;
     use crate::tenant::storage_layer::Layer;
     use crate::tenant::Timeline;
@@ -621,7 +621,7 @@ mod tests {
 
         runtime
             .block_on(async {
-                let harness = TenantHarness::create(test_name).await?;
+                let harness = TenantShardHarness::create(test_name).await?;
                 let (tenant, ctx) = harness.load().await;
                 tenant
                     .create_test_timeline(TIMELINE_ID, Lsn(8), DEFAULT_PG_VERSION, &ctx)

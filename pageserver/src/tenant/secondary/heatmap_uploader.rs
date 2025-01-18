@@ -10,11 +10,11 @@ use crate::{
     tenant::{
         config::AttachmentMode,
         mgr::GetTenantError,
-        mgr::TenantManager,
+        mgr::TenantShardManager,
         remote_timeline_client::remote_heatmap_path,
         span::debug_assert_current_span_has_tenant_id,
         tasks::{warn_when_period_overrun, BackgroundLoopKind},
-        Tenant,
+        TenantShard,
     },
 };
 
@@ -35,7 +35,7 @@ use tracing::{info_span, instrument, Instrument};
 use utils::{backoff, completion::Barrier, yielding_loop::yielding_loop};
 
 pub(super) async fn heatmap_uploader_task(
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     remote_storage: GenericRemoteStorage,
     command_queue: tokio::sync::mpsc::Receiver<CommandRequest<UploadCommand>>,
     background_jobs_can_start: Barrier,
@@ -61,7 +61,7 @@ pub(super) async fn heatmap_uploader_task(
 /// handling loop and mutates it as needed: there are no locks here, because that event loop
 /// can hold &mut references to this type throughout.
 struct HeatmapUploader {
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     remote_storage: GenericRemoteStorage,
     cancel: CancellationToken,
 
@@ -79,7 +79,7 @@ impl RunningJob for WriteInProgress {
 }
 
 struct UploadPending {
-    tenant: Arc<Tenant>,
+    tenant: Arc<TenantShard>,
     last_upload: Option<LastUploadState>,
     target_time: Option<Instant>,
     period: Option<Duration>,
@@ -111,7 +111,7 @@ impl scheduler::Completion for WriteComplete {
 struct UploaderTenantState {
     // This Weak only exists to enable culling idle instances of this type
     // when the Tenant has been deallocated.
-    tenant: Weak<Tenant>,
+    tenant: Weak<TenantShard>,
 
     /// Digest of the serialized heatmap that we last successfully uploaded
     last_upload_state: Option<LastUploadState>,
@@ -362,7 +362,7 @@ struct LastUploadState {
 /// of the object we would have uploaded.
 async fn upload_tenant_heatmap(
     remote_storage: GenericRemoteStorage,
-    tenant: &Arc<Tenant>,
+    tenant: &Arc<TenantShard>,
     last_upload: Option<LastUploadState>,
 ) -> Result<UploadHeatmapOutcome, UploadHeatmapError> {
     debug_assert_current_span_has_tenant_id();

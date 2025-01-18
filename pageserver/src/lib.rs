@@ -36,7 +36,7 @@ pub mod walredo;
 use camino::Utf8Path;
 use deletion_queue::DeletionQueue;
 use tenant::{
-    mgr::{BackgroundPurges, TenantManager},
+    mgr::{BackgroundPurges, TenantShardManager},
     secondary,
 };
 use tracing::{info, info_span};
@@ -81,7 +81,7 @@ pub async fn shutdown_pageserver(
     page_service: page_service::Listener,
     consumption_metrics_worker: ConsumptionMetricsTasks,
     disk_usage_eviction_task: Option<DiskUsageEvictionTask>,
-    tenant_manager: &TenantManager,
+    tenant_manager: &TenantShardManager,
     background_purges: BackgroundPurges,
     mut deletion_queue: DeletionQueue,
     secondary_controller_tasks: secondary::GlobalTasks,

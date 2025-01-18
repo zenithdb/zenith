@@ -12,7 +12,7 @@ use crate::task_mgr;
 use crate::task_mgr::{TaskKind, BACKGROUND_RUNTIME};
 use crate::tenant::throttle::Stats;
 use crate::tenant::timeline::CompactionError;
-use crate::tenant::{Tenant, TenantState};
+use crate::tenant::{TenantShard, TenantState};
 use rand::Rng;
 use tokio_util::sync::CancellationToken;
 use tracing::*;
@@ -81,7 +81,7 @@ pub(crate) async fn concurrent_background_tasks_rate_limit_permit(
 
 /// Start per tenant background loops: compaction and gc.
 pub fn start_background_loops(
-    tenant: &Arc<Tenant>,
+    tenant: &Arc<TenantShard>,
     background_jobs_can_start: Option<&completion::Barrier>,
 ) {
     let tenant_shard_id = tenant.tenant_shard_id;
@@ -158,7 +158,7 @@ pub fn start_background_loops(
 ///
 /// Compaction task's main loop
 ///
-async fn compaction_loop(tenant: Arc<Tenant>, cancel: CancellationToken) {
+async fn compaction_loop(tenant: Arc<TenantShard>, cancel: CancellationToken) {
     const MAX_BACKOFF_SECS: f64 = 300.0;
     // How many errors we have seen consequtively
     let mut error_run_count = 0;
@@ -318,7 +318,7 @@ fn log_compaction_error(
 ///
 /// GC task's main loop
 ///
-async fn gc_loop(tenant: Arc<Tenant>, cancel: CancellationToken) {
+async fn gc_loop(tenant: Arc<TenantShard>, cancel: CancellationToken) {
     const MAX_BACKOFF_SECS: f64 = 300.0;
     // How many errors we have seen consequtively
     let mut error_run_count = 0;
@@ -418,7 +418,7 @@ async fn gc_loop(tenant: Arc<Tenant>, cancel: CancellationToken) {
     TENANT_TASK_EVENTS.with_label_values(&["stop"]).inc();
 }
 
-async fn ingest_housekeeping_loop(tenant: Arc<Tenant>, cancel: CancellationToken) {
+async fn ingest_housekeeping_loop(tenant: Arc<TenantShard>, cancel: CancellationToken) {
     TENANT_TASK_EVENTS.with_label_values(&["start"]).inc();
     async {
     let mut last_throttle_flag_reset_at = Instant::now();
@@ -496,7 +496,7 @@ async fn ingest_housekeeping_loop(tenant: Arc<Tenant>, cancel: CancellationToken
     TENANT_TASK_EVENTS.with_label_values(&["stop"]).inc();
 }
 
-async fn wait_for_active_tenant(tenant: &Arc<Tenant>) -> ControlFlow<()> {
+async fn wait_for_active_tenant(tenant: &Arc<TenantShard>) -> ControlFlow<()> {
     // if the tenant has a proper status already, no need to wait for anything
     if tenant.current_state() == TenantState::Active {
         ControlFlow::Continue(())

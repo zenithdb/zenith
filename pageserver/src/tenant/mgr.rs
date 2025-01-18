@@ -44,7 +44,9 @@ use crate::tenant::config::{
 use crate::tenant::span::debug_assert_current_span_has_tenant_id;
 use crate::tenant::storage_layer::inmemory_layer;
 use crate::tenant::timeline::ShutdownMode;
-use crate::tenant::{AttachedTenantConf, GcError, LoadConfigError, SpawnMode, Tenant, TenantState};
+use crate::tenant::{
+    AttachedTenantConf, GcError, LoadConfigError, SpawnMode, TenantShard, TenantState,
+};
 use crate::virtual_file::MaybeFatalIo;
 use crate::{InitializationOrder, TEMP_FILE_SUFFIX};
 
@@ -69,7 +71,7 @@ use super::{GlobalShutDown, TenantSharedResources};
 /// having a properly acquired generation (Secondary doesn't need a generation)
 #[derive(Clone)]
 pub(crate) enum TenantSlot {
-    Attached(Arc<Tenant>),
+    Attached(Arc<TenantShard>),
     Secondary(Arc<SecondaryTenant>),
     /// In this state, other administrative operations acting on the TenantId should
     /// block, or return a retry indicator equivalent to HTTP 503.
@@ -88,7 +90,7 @@ impl std::fmt::Debug for TenantSlot {
 
 impl TenantSlot {
     /// Return the `Tenant` in this slot if attached, else None
-    fn get_attached(&self) -> Option<&Arc<Tenant>> {
+    fn get_attached(&self) -> Option<&Arc<TenantShard>> {
         match self {
             Self::Attached(t) => Some(t),
             Self::Secondary(_) => None,
@@ -99,13 +101,13 @@ impl TenantSlot {
 
 /// The tenants known to the pageserver.
 /// The enum variants are used to distinguish the different states that the pageserver can be in.
-pub(crate) enum TenantsMap {
+pub(crate) enum TenantShardMap {
     /// [`init_tenant_mgr`] is not done yet.
     Initializing,
     /// [`init_tenant_mgr`] is done, all on-disk tenants have been loaded.
     /// New tenants can be added using [`tenant_map_acquire_slot`].
     Open(BTreeMap<TenantShardId, TenantSlot>),
-    /// The pageserver has entered shutdown mode via [`TenantManager::shutdown`].
+    /// The pageserver has entered shutdown mode via [`TenantShardManager::shutdown`].
     /// Existing tenants are still accessible, but no new tenants can be created.
     ShuttingDown(BTreeMap<TenantShardId, TenantSlot>),
 }
@@ -166,19 +168,19 @@ impl TenantStartupMode {
 /// Result type for looking up a TenantId to a specific shard
 pub(crate) enum ShardResolveResult {
     NotFound,
-    Found(Arc<Tenant>),
+    Found(Arc<TenantShard>),
     // Wait for this barrrier, then query again
     InProgress(utils::completion::Barrier),
 }
 
-impl TenantsMap {
+impl TenantShardMap {
     /// Convenience function for typical usage, where we want to get a `Tenant` object, for
     /// working with attached tenants.  If the TenantId is in the map but in Secondary state,
     /// None is returned.
-    pub(crate) fn get(&self, tenant_shard_id: &TenantShardId) -> Option<&Arc<Tenant>> {
+    pub(crate) fn get(&self, tenant_shard_id: &TenantShardId) -> Option<&Arc<TenantShard>> {
         match self {
-            TenantsMap::Initializing => None,
-            TenantsMap::Open(m) | TenantsMap::ShuttingDown(m) => {
+            TenantShardMap::Initializing => None,
+            TenantShardMap::Open(m) | TenantShardMap::ShuttingDown(m) => {
                 m.get(tenant_shard_id).and_then(|slot| slot.get_attached())
             }
         }
@@ -187,8 +189,8 @@ impl TenantsMap {
     #[cfg(all(debug_assertions, not(test)))]
     pub(crate) fn len(&self) -> usize {
         match self {
-            TenantsMap::Initializing => 0,
-            TenantsMap::Open(m) | TenantsMap::ShuttingDown(m) => m.len(),
+            TenantShardMap::Initializing => 0,
+            TenantShardMap::Open(m) | TenantShardMap::ShuttingDown(m) => m.len(),
         }
     }
 }
@@ -284,23 +286,23 @@ impl BackgroundPurges {
     }
 }
 
-static TENANTS: Lazy<std::sync::RwLock<TenantsMap>> =
-    Lazy::new(|| std::sync::RwLock::new(TenantsMap::Initializing));
+static TENANTS: Lazy<std::sync::RwLock<TenantShardMap>> =
+    Lazy::new(|| std::sync::RwLock::new(TenantShardMap::Initializing));
 
 /// Responsible for storing and mutating the collection of all tenants
 /// that this pageserver has state for.
 ///
-/// Every Tenant and SecondaryTenant instance lives inside the TenantManager.
+/// Every TenantShard and SecondaryTenant instance lives inside the TenantShardManager.
 ///
-/// The most important role of the TenantManager is to prevent conflicts: e.g. trying to attach
+/// The most important role of the TenantShardManager is to prevent conflicts: e.g. trying to attach
 /// the same tenant twice concurrently, or trying to configure the same tenant into secondary
 /// and attached modes concurrently.
-pub struct TenantManager {
+pub struct TenantShardManager {
     conf: &'static PageServerConf,
     // TODO: currently this is a &'static pointing to TENANTs.  When we finish refactoring
     // out of that static variable, the TenantManager can own this.
     // See https://github.com/neondatabase/neon/issues/5796
-    tenants: &'static std::sync::RwLock<TenantsMap>,
+    tenants: &'static std::sync::RwLock<TenantShardMap>,
     resources: TenantSharedResources,
 
     // Long-running operations that happen outside of a [`Tenant`] lifetime should respect this token.
@@ -412,7 +414,7 @@ fn load_tenant_config(
         return None;
     }
 
-    Some(Tenant::load_tenant_config(conf, &tenant_shard_id))
+    Some(TenantShard::load_tenant_config(conf, &tenant_shard_id))
 }
 
 /// Initial stage of load: walk the local tenants directory, clean up any temp files,
@@ -491,7 +493,7 @@ pub async fn init_tenant_mgr(
     resources: TenantSharedResources,
     init_order: InitializationOrder,
     cancel: CancellationToken,
-) -> anyhow::Result<TenantManager> {
+) -> anyhow::Result<TenantShardManager> {
     let mut tenants = BTreeMap::new();
 
     let ctx = RequestContext::todo_child(TaskKind::Startup, DownloadBehavior::Warn);
@@ -606,7 +608,8 @@ pub async fn init_tenant_mgr(
         // Presence of a generation number implies attachment: attach the tenant
         // if it wasn't already, and apply the generation number.
         config_write_futs.push(async move {
-            let r = Tenant::persist_tenant_config(conf, &tenant_shard_id, &location_conf).await;
+            let r =
+                TenantShard::persist_tenant_config(conf, &tenant_shard_id, &location_conf).await;
             (tenant_shard_id, location_conf, r)
         });
     }
@@ -669,11 +672,11 @@ pub async fn init_tenant_mgr(
     info!("Processed {} local tenants at startup", tenants.len());
 
     let mut tenants_map = TENANTS.write().unwrap();
-    assert!(matches!(&*tenants_map, &TenantsMap::Initializing));
+    assert!(matches!(&*tenants_map, &TenantShardMap::Initializing));
 
-    *tenants_map = TenantsMap::Open(tenants);
+    *tenants_map = TenantShardMap::Open(tenants);
 
-    Ok(TenantManager {
+    Ok(TenantShardManager {
         conf,
         tenants: &TENANTS,
         resources,
@@ -682,7 +685,7 @@ pub async fn init_tenant_mgr(
     })
 }
 
-/// Wrapper for Tenant::spawn that checks invariants before running
+/// Wrapper for TenantShard::spawn that checks invariants before running
 #[allow(clippy::too_many_arguments)]
 fn tenant_spawn(
     conf: &'static PageServerConf,
@@ -694,7 +697,7 @@ fn tenant_spawn(
     init_order: Option<InitializationOrder>,
     mode: SpawnMode,
     ctx: &RequestContext,
-) -> Result<Arc<Tenant>, GlobalShutDown> {
+) -> Result<Arc<TenantShard>, GlobalShutDown> {
     // All these conditions should have been satisfied by our caller: the tenant dir exists, is a well formed
     // path, and contains a configuration file.  Assertions that do synchronous I/O are limited to debug mode
     // to avoid impacting prod runtime performance.
@@ -705,7 +708,7 @@ fn tenant_spawn(
         .try_exists()
         .unwrap());
 
-    Tenant::spawn(
+    TenantShard::spawn(
         conf,
         tenant_shard_id,
         resources,
@@ -717,7 +720,7 @@ fn tenant_spawn(
     )
 }
 
-async fn shutdown_all_tenants0(tenants: &std::sync::RwLock<TenantsMap>) {
+async fn shutdown_all_tenants0(tenants: &std::sync::RwLock<TenantShardMap>) {
     let mut join_set = JoinSet::new();
 
     #[cfg(all(debug_assertions, not(test)))]
@@ -732,12 +735,12 @@ async fn shutdown_all_tenants0(tenants: &std::sync::RwLock<TenantsMap>) {
     let (total_in_progress, total_attached) = {
         let mut m = tenants.write().unwrap();
         match &mut *m {
-            TenantsMap::Initializing => {
-                *m = TenantsMap::ShuttingDown(BTreeMap::default());
+            TenantShardMap::Initializing => {
+                *m = TenantShardMap::ShuttingDown(BTreeMap::default());
                 info!("tenants map is empty");
                 return;
             }
-            TenantsMap::Open(tenants) => {
+            TenantShardMap::Open(tenants) => {
                 let mut shutdown_state = BTreeMap::new();
                 let mut total_in_progress = 0;
                 let mut total_attached = 0;
@@ -787,10 +790,10 @@ async fn shutdown_all_tenants0(tenants: &std::sync::RwLock<TenantsMap>) {
                         }
                     }
                 }
-                *m = TenantsMap::ShuttingDown(shutdown_state);
+                *m = TenantShardMap::ShuttingDown(shutdown_state);
                 (total_in_progress, total_attached)
             }
-            TenantsMap::ShuttingDown(_) => {
+            TenantShardMap::ShuttingDown(_) => {
                 error!("already shutting down, this function isn't supposed to be called more than once");
                 return;
             }
@@ -870,7 +873,7 @@ pub(crate) enum UpsertLocationError {
     InternalError(anyhow::Error),
 }
 
-impl TenantManager {
+impl TenantShardManager {
     /// Convenience function so that anyone with a TenantManager can get at the global configuration, without
     /// having to pass it around everywhere as a separate object.
     pub(crate) fn get_conf(&self) -> &'static PageServerConf {
@@ -881,11 +884,11 @@ impl TenantManager {
     /// undergoing a state change (i.e. slot is InProgress).
     ///
     /// The return Tenant is not guaranteed to be active: check its status after obtaing it, or
-    /// use [`Tenant::wait_to_become_active`] before using it if you will do I/O on it.
+    /// use [`TenantShard::wait_to_become_active`] before using it if you will do I/O on it.
     pub(crate) fn get_attached_tenant_shard(
         &self,
         tenant_shard_id: TenantShardId,
-    ) -> Result<Arc<Tenant>, GetTenantError> {
+    ) -> Result<Arc<TenantShard>, GetTenantError> {
         let locked = self.tenants.read().unwrap();
 
         let peek_slot = tenant_map_peek_slot(&locked, &tenant_shard_id, TenantSlotPeekMode::Read)?;
@@ -934,12 +937,12 @@ impl TenantManager {
         flush: Option<Duration>,
         mut spawn_mode: SpawnMode,
         ctx: &RequestContext,
-    ) -> Result<Option<Arc<Tenant>>, UpsertLocationError> {
+    ) -> Result<Option<Arc<TenantShard>>, UpsertLocationError> {
         debug_assert_current_span_has_tenant_id();
         info!("configuring tenant location to state {new_location_config:?}");
 
         enum FastPathModified {
-            Attached(Arc<Tenant>),
+            Attached(Arc<TenantShard>),
             Secondary(Arc<SecondaryTenant>),
         }
 
@@ -996,9 +999,13 @@ impl TenantManager {
         // phase of writing config and/or waiting for flush, before returning.
         match fast_path_taken {
             Some(FastPathModified::Attached(tenant)) => {
-                Tenant::persist_tenant_config(self.conf, &tenant_shard_id, &new_location_config)
-                    .await
-                    .fatal_err("write tenant shard config");
+                TenantShard::persist_tenant_config(
+                    self.conf,
+                    &tenant_shard_id,
+                    &new_location_config,
+                )
+                .await
+                .fatal_err("write tenant shard config");
 
                 // Transition to AttachedStale means we may well hold a valid generation
                 // still, and have been requested to go stale as part of a migration.  If
@@ -1027,9 +1034,13 @@ impl TenantManager {
                 return Ok(Some(tenant));
             }
             Some(FastPathModified::Secondary(_secondary_tenant)) => {
-                Tenant::persist_tenant_config(self.conf, &tenant_shard_id, &new_location_config)
-                    .await
-                    .fatal_err("write tenant shard config");
+                TenantShard::persist_tenant_config(
+                    self.conf,
+                    &tenant_shard_id,
+                    &new_location_config,
+                )
+                .await
+                .fatal_err("write tenant shard config");
 
                 return Ok(None);
             }
@@ -1119,7 +1130,7 @@ impl TenantManager {
         // Before activating either secondary or attached mode, persist the
         // configuration, so that on restart we will re-attach (or re-start
         // secondary) on the tenant.
-        Tenant::persist_tenant_config(self.conf, &tenant_shard_id, &new_location_config)
+        TenantShard::persist_tenant_config(self.conf, &tenant_shard_id, &new_location_config)
             .await
             .fatal_err("write tenant shard config");
 
@@ -1257,7 +1268,7 @@ impl TenantManager {
 
         let tenant_path = self.conf.tenant_path(&tenant_shard_id);
         let timelines_path = self.conf.timelines_path(&tenant_shard_id);
-        let config = Tenant::load_tenant_config(self.conf, &tenant_shard_id)?;
+        let config = TenantShard::load_tenant_config(self.conf, &tenant_shard_id)?;
 
         if drop_cache {
             tracing::info!("Dropping local file cache");
@@ -1292,11 +1303,11 @@ impl TenantManager {
         Ok(())
     }
 
-    pub(crate) fn get_attached_active_tenant_shards(&self) -> Vec<Arc<Tenant>> {
+    pub(crate) fn get_attached_active_tenant_shards(&self) -> Vec<Arc<TenantShard>> {
         let locked = self.tenants.read().unwrap();
         match &*locked {
-            TenantsMap::Initializing => Vec::new(),
-            TenantsMap::Open(map) | TenantsMap::ShuttingDown(map) => map
+            TenantShardMap::Initializing => Vec::new(),
+            TenantShardMap::Open(map) | TenantShardMap::ShuttingDown(map) => map
                 .values()
                 .filter_map(|slot| {
                     slot.get_attached()
@@ -1316,8 +1327,8 @@ impl TenantManager {
         let locked = self.tenants.read().unwrap();
 
         let map = match &*locked {
-            TenantsMap::Initializing | TenantsMap::ShuttingDown(_) => return,
-            TenantsMap::Open(m) => m,
+            TenantShardMap::Initializing | TenantShardMap::ShuttingDown(_) => return,
+            TenantShardMap::Open(m) => m,
         };
 
         for (tenant_id, slot) in map {
@@ -1334,8 +1345,8 @@ impl TenantManager {
     pub(crate) fn list(&self) -> Vec<(TenantShardId, TenantSlot)> {
         let locked = self.tenants.read().unwrap();
         match &*locked {
-            TenantsMap::Initializing => Vec::new(),
-            TenantsMap::Open(map) | TenantsMap::ShuttingDown(map) => {
+            TenantShardMap::Initializing => Vec::new(),
+            TenantShardMap::Open(map) | TenantShardMap::ShuttingDown(map) => {
                 map.iter().map(|(k, v)| (*k, v.clone())).collect()
             }
         }
@@ -1344,8 +1355,8 @@ impl TenantManager {
     pub(crate) fn get(&self, tenant_shard_id: TenantShardId) -> Option<TenantSlot> {
         let locked = self.tenants.read().unwrap();
         match &*locked {
-            TenantsMap::Initializing => None,
-            TenantsMap::Open(map) | TenantsMap::ShuttingDown(map) => {
+            TenantShardMap::Initializing => None,
+            TenantShardMap::Open(map) | TenantShardMap::ShuttingDown(map) => {
                 map.get(&tenant_shard_id).cloned()
             }
         }
@@ -1441,7 +1452,7 @@ impl TenantManager {
     #[instrument(skip_all, fields(tenant_id=%tenant.get_tenant_shard_id().tenant_id, shard_id=%tenant.get_tenant_shard_id().shard_slug(), new_shard_count=%new_shard_count.literal()))]
     pub(crate) async fn shard_split(
         &self,
-        tenant: Arc<Tenant>,
+        tenant: Arc<TenantShard>,
         new_shard_count: ShardCount,
         new_stripe_size: Option<ShardStripeSize>,
         ctx: &RequestContext,
@@ -1471,7 +1482,7 @@ impl TenantManager {
 
     pub(crate) async fn do_shard_split(
         &self,
-        tenant: Arc<Tenant>,
+        tenant: Arc<TenantShard>,
         new_shard_count: ShardCount,
         new_stripe_size: Option<ShardStripeSize>,
         ctx: &RequestContext,
@@ -1519,7 +1530,7 @@ impl TenantManager {
 
         // Phase 1: Write out child shards' remote index files, in the parent tenant's current generation
         if let Err(e) = tenant.split_prepare(&child_shards).await {
-            // If [`Tenant::split_prepare`] fails, we must reload the tenant, because it might
+            // If [`TenantShard::split_prepare`] fails, we must reload the tenant, because it might
             // have been left in a partially-shut-down state.
             tracing::warn!("Failed to prepare for split: {e}, reloading Tenant before returning");
             return Err(e);
@@ -1697,7 +1708,7 @@ impl TenantManager {
     /// For each resident layer in the parent shard, we will hard link it into all of the child shards.
     async fn shard_split_hardlink(
         &self,
-        parent_shard: &Tenant,
+        parent_shard: &TenantShard,
         child_shards: Vec<TenantShardId>,
     ) -> anyhow::Result<()> {
         debug_assert_current_span_has_tenant_id();
@@ -1888,8 +1899,8 @@ impl TenantManager {
     ) -> Result<Vec<(TenantShardId, TenantState, Generation)>, TenantMapListError> {
         let tenants = self.tenants.read().unwrap();
         let m = match &*tenants {
-            TenantsMap::Initializing => return Err(TenantMapListError::Initializing),
-            TenantsMap::Open(m) | TenantsMap::ShuttingDown(m) => m,
+            TenantShardMap::Initializing => return Err(TenantMapListError::Initializing),
+            TenantShardMap::Open(m) | TenantShardMap::ShuttingDown(m) => m,
         };
         Ok(m.iter()
             .filter_map(|(id, tenant)| match tenant {
@@ -1974,7 +1985,7 @@ impl TenantManager {
             }
 
             let tenant_path = self.conf.tenant_path(&tenant_shard_id);
-            let config = Tenant::load_tenant_config(self.conf, &tenant_shard_id)
+            let config = TenantShard::load_tenant_config(self.conf, &tenant_shard_id)
                 .map_err(|e| Error::DetachReparent(e.into()))?;
 
             let shard_identity = config.shard;
@@ -2070,8 +2081,8 @@ impl TenantManager {
         let mut any_in_progress = None;
 
         match &*tenants {
-            TenantsMap::Initializing => ShardResolveResult::NotFound,
-            TenantsMap::Open(m) | TenantsMap::ShuttingDown(m) => {
+            TenantShardMap::Initializing => ShardResolveResult::NotFound,
+            TenantShardMap::Open(m) | TenantShardMap::ShuttingDown(m) => {
                 for slot in m.range(TenantShardId::tenant_range(*tenant_id)) {
                     // Ignore all slots that don't contain an attached tenant
                     let tenant = match &slot.1 {
@@ -2135,8 +2146,8 @@ impl TenantManager {
     pub(crate) fn calculate_utilization(&self) -> Result<(u64, u32), TenantMapListError> {
         let tenants = self.tenants.read().unwrap();
         let m = match &*tenants {
-            TenantsMap::Initializing => return Err(TenantMapListError::Initializing),
-            TenantsMap::Open(m) | TenantsMap::ShuttingDown(m) => m,
+            TenantShardMap::Initializing => return Err(TenantMapListError::Initializing),
+            TenantShardMap::Open(m) | TenantShardMap::ShuttingDown(m) => m,
         };
         let shard_count = m.len();
         let mut wanted_bytes = 0;
@@ -2482,18 +2493,18 @@ impl SlotGuard {
             }
 
             let m = match &mut *locked {
-                TenantsMap::Initializing => {
+                TenantShardMap::Initializing => {
                     return Err(TenantSlotUpsertError::MapState(
                         TenantMapError::StillInitializing,
                     ))
                 }
-                TenantsMap::ShuttingDown(_) => {
+                TenantShardMap::ShuttingDown(_) => {
                     return Err(TenantSlotUpsertError::ShuttingDown((
                         new_value,
                         self.completion.clone(),
                     )));
                 }
-                TenantsMap::Open(m) => m,
+                TenantShardMap::Open(m) => m,
             };
 
             METRICS.slot_inserted(&new_value);
@@ -2590,17 +2601,17 @@ impl Drop for SlotGuard {
         let mut locked = TENANTS.write().unwrap();
 
         let m = match &mut *locked {
-            TenantsMap::Initializing => {
+            TenantShardMap::Initializing => {
                 // There is no map, this should never happen.
                 return;
             }
-            TenantsMap::ShuttingDown(_) => {
+            TenantShardMap::ShuttingDown(_) => {
                 // When we transition to shutdown, InProgress elements are removed
                 // from the map, so we do not need to clean up our Inprogress marker.
                 // See [`shutdown_all_tenants0`]
                 return;
             }
-            TenantsMap::Open(m) => m,
+            TenantShardMap::Open(m) => m,
         };
 
         use std::collections::btree_map::Entry;
@@ -2640,13 +2651,13 @@ enum TenantSlotPeekMode {
 }
 
 fn tenant_map_peek_slot<'a>(
-    tenants: &'a std::sync::RwLockReadGuard<'a, TenantsMap>,
+    tenants: &'a std::sync::RwLockReadGuard<'a, TenantShardMap>,
     tenant_shard_id: &TenantShardId,
     mode: TenantSlotPeekMode,
 ) -> Result<Option<&'a TenantSlot>, TenantMapError> {
     match tenants.deref() {
-        TenantsMap::Initializing => Err(TenantMapError::StillInitializing),
-        TenantsMap::ShuttingDown(m) => match mode {
+        TenantShardMap::Initializing => Err(TenantMapError::StillInitializing),
+        TenantShardMap::ShuttingDown(m) => match mode {
             TenantSlotPeekMode::Read => Ok(Some(
                 // When reading in ShuttingDown state, we must translate None results
                 // into a ShuttingDown error, because absence of a tenant shard ID in the map
@@ -2658,7 +2669,7 @@ fn tenant_map_peek_slot<'a>(
             )),
             TenantSlotPeekMode::Write => Err(TenantMapError::ShuttingDown),
         },
-        TenantsMap::Open(m) => Ok(m.get(tenant_shard_id)),
+        TenantShardMap::Open(m) => Ok(m.get(tenant_shard_id)),
     }
 }
 
@@ -2678,7 +2689,7 @@ fn tenant_map_acquire_slot(
 
 fn tenant_map_acquire_slot_impl(
     tenant_shard_id: &TenantShardId,
-    tenants: &std::sync::RwLock<TenantsMap>,
+    tenants: &std::sync::RwLock<TenantShardMap>,
     mode: TenantSlotAcquireMode,
 ) -> Result<SlotGuard, TenantSlotError> {
     use TenantSlotAcquireMode::*;
@@ -2689,9 +2700,9 @@ fn tenant_map_acquire_slot_impl(
     let _guard = span.enter();
 
     let m = match &mut *locked {
-        TenantsMap::Initializing => return Err(TenantMapError::StillInitializing.into()),
-        TenantsMap::ShuttingDown(_) => return Err(TenantMapError::ShuttingDown.into()),
-        TenantsMap::Open(m) => m,
+        TenantShardMap::Initializing => return Err(TenantMapError::StillInitializing.into()),
+        TenantShardMap::ShuttingDown(_) => return Err(TenantMapError::ShuttingDown.into()),
+        TenantShardMap::Open(m) => m,
     };
 
     use std::collections::btree_map::Entry;
@@ -2744,7 +2755,7 @@ fn tenant_map_acquire_slot_impl(
 /// If the cleanup fails, tenant will stay in memory in [`TenantState::Broken`] state, and another removal
 /// operation would be needed to remove it.
 async fn remove_tenant_from_memory<V, F>(
-    tenants: &std::sync::RwLock<TenantsMap>,
+    tenants: &std::sync::RwLock<TenantShardMap>,
     tenant_shard_id: TenantShardId,
     tenant_cleanup: F,
 ) -> Result<V, TenantStateError>
@@ -2827,14 +2838,14 @@ mod tests {
 
     use crate::tenant::mgr::TenantSlot;
 
-    use super::{super::harness::TenantHarness, TenantsMap};
+    use super::{super::harness::TenantShardHarness, TenantShardMap};
 
     #[tokio::test(start_paused = true)]
     async fn shutdown_awaits_in_progress_tenant() {
         // Test that if an InProgress tenant is in the map during shutdown, the shutdown will gracefully
         // wait for it to complete before proceeding.
 
-        let h = TenantHarness::create("shutdown_awaits_in_progress_tenant")
+        let h = TenantShardHarness::create("shutdown_awaits_in_progress_tenant")
             .await
             .unwrap();
         let (t, _ctx) = h.load().await;
@@ -2848,7 +2859,7 @@ mod tests {
         let _e = span.enter();
 
         let tenants = BTreeMap::from([(id, TenantSlot::Attached(t.clone()))]);
-        let tenants = Arc::new(std::sync::RwLock::new(TenantsMap::Open(tenants)));
+        let tenants = Arc::new(std::sync::RwLock::new(TenantShardMap::Open(tenants)));
 
         // Invoke remove_tenant_from_memory with a cleanup hook that blocks until we manually
         // permit it to proceed: that will stick the tenant in InProgress

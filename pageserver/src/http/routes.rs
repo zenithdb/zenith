@@ -74,7 +74,7 @@ use crate::task_mgr::TaskKind;
 use crate::tenant::config::{LocationConf, TenantConfOpt};
 use crate::tenant::mgr::GetActiveTenantError;
 use crate::tenant::mgr::{
-    GetTenantError, TenantManager, TenantMapError, TenantMapInsertError, TenantSlotError,
+    GetTenantError, TenantMapError, TenantMapInsertError, TenantShardManager, TenantSlotError,
     TenantSlotUpsertError, TenantStateError,
 };
 use crate::tenant::mgr::{TenantSlot, UpsertLocationError};
@@ -130,7 +130,7 @@ pub(crate) const ACTIVE_TENANT_TIMEOUT: Duration = Duration::from_millis(30000);
 
 pub struct State {
     conf: &'static PageServerConf,
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     auth: Option<Arc<SwappableJwtAuth>>,
     allowlist_routes: &'static [&'static str],
     remote_storage: GenericRemoteStorage,
@@ -145,7 +145,7 @@ impl State {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         conf: &'static PageServerConf,
-        tenant_manager: Arc<TenantManager>,
+        tenant_manager: Arc<TenantShardManager>,
         auth: Option<Arc<SwappableJwtAuth>>,
         remote_storage: GenericRemoteStorage,
         broker_client: storage_broker::BrokerClientChannel,
@@ -1761,7 +1761,7 @@ async fn update_tenant_config_handler(
         &ShardParameters::default(),
     );
 
-    crate::tenant::Tenant::persist_tenant_config(state.conf, &tenant_shard_id, &location_conf)
+    crate::tenant::TenantShard::persist_tenant_config(state.conf, &tenant_shard_id, &location_conf)
         .await
         .map_err(|e| ApiError::InternalServerError(anyhow::anyhow!(e)))?;
 
@@ -1802,7 +1802,7 @@ async fn patch_tenant_config_handler(
         &ShardParameters::default(),
     );
 
-    crate::tenant::Tenant::persist_tenant_config(state.conf, &tenant_shard_id, &location_conf)
+    crate::tenant::TenantShard::persist_tenant_config(state.conf, &tenant_shard_id, &location_conf)
         .await
         .map_err(|e| ApiError::InternalServerError(anyhow::anyhow!(e)))?;
 
@@ -2571,7 +2571,7 @@ async fn timeline_collect_keyspace(
 }
 
 async fn active_timeline_of_active_tenant(
-    tenant_manager: &TenantManager,
+    tenant_manager: &TenantShardManager,
     tenant_shard_id: TenantShardId,
     timeline_id: TimelineId,
 ) -> Result<Arc<Timeline>, ApiError> {

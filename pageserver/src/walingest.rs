@@ -1531,7 +1531,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_relsize() -> Result<()> {
-        let (tenant, ctx) = TenantHarness::create("test_relsize").await?.load().await;
+        let (tenant, ctx) = TenantShardHarness::create("test_relsize")
+            .await?
+            .load()
+            .await;
         let tline = tenant
             .create_test_timeline(TIMELINE_ID, Lsn(8), DEFAULT_PG_VERSION, &ctx)
             .await?;
@@ -1771,7 +1774,7 @@ mod tests {
     // and then created it again within the same layer.
     #[tokio::test]
     async fn test_drop_extend() -> Result<()> {
-        let (tenant, ctx) = TenantHarness::create("test_drop_extend")
+        let (tenant, ctx) = TenantShardHarness::create("test_drop_extend")
             .await?
             .load()
             .await;
@@ -1847,7 +1850,7 @@ mod tests {
     // and then extended it again within the same layer.
     #[tokio::test]
     async fn test_truncate_extend() -> Result<()> {
-        let (tenant, ctx) = TenantHarness::create("test_truncate_extend")
+        let (tenant, ctx) = TenantShardHarness::create("test_truncate_extend")
             .await?
             .load()
             .await;
@@ -2001,7 +2004,10 @@ mod tests {
     /// split into multiple 1 GB segments in Postgres.
     #[tokio::test]
     async fn test_large_rel() -> Result<()> {
-        let (tenant, ctx) = TenantHarness::create("test_large_rel").await?.load().await;
+        let (tenant, ctx) = TenantShardHarness::create("test_large_rel")
+            .await?
+            .load()
+            .await;
         let tline = tenant
             .create_test_timeline(TIMELINE_ID, Lsn(8), DEFAULT_PG_VERSION, &ctx)
             .await?;
@@ -2109,7 +2115,9 @@ mod tests {
         let startpoint = Lsn::from_hex("14AEC08").unwrap();
         let _endpoint = Lsn::from_hex("1FFFF98").unwrap();
 
-        let harness = TenantHarness::create("test_ingest_real_wal").await.unwrap();
+        let harness = TenantShardHarness::create("test_ingest_real_wal")
+            .await
+            .unwrap();
         let span = harness
             .span()
             .in_scope(|| info_span!("timeline_span", timeline_id=%TIMELINE_ID));

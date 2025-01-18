@@ -7,7 +7,7 @@ use crate::context::{DownloadBehavior, RequestContext};
 use crate::task_mgr::{self, TaskKind, BACKGROUND_RUNTIME};
 use crate::tenant::size::CalculateSyntheticSizeError;
 use crate::tenant::tasks::BackgroundLoopKind;
-use crate::tenant::{mgr::TenantManager, LogicalSizeCalculationCause, Tenant};
+use crate::tenant::{mgr::TenantShardManager, LogicalSizeCalculationCause, TenantShard};
 use camino::Utf8PathBuf;
 use consumption_metrics::EventType;
 use itertools::Itertools as _;
@@ -95,7 +95,7 @@ type Cache = HashMap<MetricsKey, NewRawMetric>;
 
 pub async fn run(
     conf: &'static PageServerConf,
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     cancel: CancellationToken,
 ) {
     let Some(metric_collection_endpoint) = conf.metric_collection_endpoint.as_ref() else {
@@ -150,7 +150,7 @@ pub async fn run(
 /// Main thread that serves metrics collection
 #[allow(clippy::too_many_arguments)]
 async fn collect_metrics(
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     metric_collection_endpoint: &Url,
     metric_collection_bucket: &Option<RemoteStorageConfig>,
     metric_collection_interval: Duration,
@@ -362,7 +362,7 @@ async fn reschedule(
 
 /// Caclculate synthetic size for each active tenant
 async fn calculate_synthetic_size_worker(
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     synthetic_size_calculation_interval: Duration,
     cancel: CancellationToken,
     ctx: RequestContext,
@@ -425,7 +425,7 @@ async fn calculate_synthetic_size_worker(
     }
 }
 
-async fn calculate_and_log(tenant: &Tenant, cancel: &CancellationToken, ctx: &RequestContext) {
+async fn calculate_and_log(tenant: &TenantShard, cancel: &CancellationToken, ctx: &RequestContext) {
     const CAUSE: LogicalSizeCalculationCause =
         LogicalSizeCalculationCause::ConsumptionMetricsSyntheticSize;
 

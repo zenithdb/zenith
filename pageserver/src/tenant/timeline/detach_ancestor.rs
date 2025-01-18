@@ -7,7 +7,7 @@ use crate::{
     tenant::{
         remote_timeline_client::index::GcBlockingReason::DetachAncestor,
         storage_layer::{AsLayerDesc as _, DeltaLayerWriter, Layer, ResidentLayer},
-        Tenant,
+        TenantShard,
     },
     virtual_file::{MaybeFatalIo, VirtualFile},
 };
@@ -159,7 +159,7 @@ impl Attempt {
 /// See [`Timeline::prepare_to_detach_from_ancestor`]
 pub(super) async fn prepare(
     detached: &Arc<Timeline>,
-    tenant: &Tenant,
+    tenant: &TenantShard,
     options: Options,
     ctx: &RequestContext,
 ) -> Result<Progress, Error> {
@@ -410,7 +410,7 @@ pub(super) async fn prepare(
     Ok(Progress::Prepared(attempt, prepared))
 }
 
-async fn start_new_attempt(detached: &Timeline, tenant: &Tenant) -> Result<Attempt, Error> {
+async fn start_new_attempt(detached: &Timeline, tenant: &TenantShard) -> Result<Attempt, Error> {
     let attempt = obtain_exclusive_attempt(detached, tenant)?;
 
     // insert the block in the index_part.json, if not already there.
@@ -426,13 +426,16 @@ async fn start_new_attempt(detached: &Timeline, tenant: &Tenant) -> Result<Attem
     Ok(attempt)
 }
 
-async fn continue_with_blocked_gc(detached: &Timeline, tenant: &Tenant) -> Result<Attempt, Error> {
+async fn continue_with_blocked_gc(
+    detached: &Timeline,
+    tenant: &TenantShard,
+) -> Result<Attempt, Error> {
     // FIXME: it would be nice to confirm that there is an in-memory version, since we've just
     // verified there is a persistent one?
     obtain_exclusive_attempt(detached, tenant)
 }
 
-fn obtain_exclusive_attempt(detached: &Timeline, tenant: &Tenant) -> Result<Attempt, Error> {
+fn obtain_exclusive_attempt(detached: &Timeline, tenant: &TenantShard) -> Result<Attempt, Error> {
     use Error::{OtherTimelineDetachOngoing, ShuttingDown};
 
     // ensure we are the only active attempt for this tenant
@@ -460,7 +463,7 @@ fn obtain_exclusive_attempt(detached: &Timeline, tenant: &Tenant) -> Result<Atte
 
 fn reparented_direct_children(
     detached: &Arc<Timeline>,
-    tenant: &Tenant,
+    tenant: &TenantShard,
 ) -> Result<HashSet<TimelineId>, Error> {
     let mut all_direct_children = tenant
         .timelines
@@ -698,7 +701,7 @@ impl DetachingAndReparenting {
 /// See [`Timeline::detach_from_ancestor_and_reparent`].
 pub(super) async fn detach_and_reparent(
     detached: &Arc<Timeline>,
-    tenant: &Tenant,
+    tenant: &TenantShard,
     prepared: PreparedTimelineDetach,
     _ctx: &RequestContext,
 ) -> Result<DetachingAndReparenting, Error> {
@@ -901,7 +904,7 @@ pub(super) async fn detach_and_reparent(
 
 pub(super) async fn complete(
     detached: &Arc<Timeline>,
-    tenant: &Tenant,
+    tenant: &TenantShard,
     mut attempt: Attempt,
     _ctx: &RequestContext,
 ) -> Result<(), Error> {
@@ -970,7 +973,7 @@ where
 }
 
 fn check_no_archived_children_of_ancestor(
-    tenant: &Tenant,
+    tenant: &TenantShard,
     detached: &Arc<Timeline>,
     ancestor: &Arc<Timeline>,
     ancestor_lsn: Lsn,

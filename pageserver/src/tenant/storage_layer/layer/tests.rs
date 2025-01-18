@@ -10,7 +10,7 @@ use utils::{
 use super::failpoints::{Failpoint, FailpointKind};
 use super::*;
 use crate::{context::DownloadBehavior, tenant::storage_layer::LayerVisibilityHint};
-use crate::{task_mgr::TaskKind, tenant::harness::TenantHarness};
+use crate::{task_mgr::TaskKind, tenant::harness::TenantShardHarness};
 
 /// Used in tests to advance a future to wanted await point, and not futher.
 const ADVANCE: std::time::Duration = std::time::Duration::from_secs(3600);
@@ -24,7 +24,7 @@ const FOREVER: std::time::Duration = std::time::Duration::from_secs(ADVANCE.as_s
 async fn smoke_test() {
     let handle = tokio::runtime::Handle::current();
 
-    let h = TenantHarness::create("smoke_test").await.unwrap();
+    let h = TenantShardHarness::create("smoke_test").await.unwrap();
     let span = h.span();
     let download_span = span.in_scope(|| tracing::info_span!("downloading", timeline_id = 1));
     let (tenant, _) = h.load().await;
@@ -202,7 +202,7 @@ async fn evict_and_wait_on_wanted_deleted() {
     // this is the runtime on which Layer spawns the blocking tasks on
     let handle = tokio::runtime::Handle::current();
 
-    let h = TenantHarness::create("evict_and_wait_on_wanted_deleted")
+    let h = TenantShardHarness::create("evict_and_wait_on_wanted_deleted")
         .await
         .unwrap();
     utils::logging::replace_panic_hook_with_tracing_panic_hook().forget();
@@ -286,7 +286,7 @@ fn read_wins_pending_eviction() {
     rt.block_on(async move {
         // this is the runtime on which Layer spawns the blocking tasks on
         let handle = tokio::runtime::Handle::current();
-        let h = TenantHarness::create("read_wins_pending_eviction")
+        let h = TenantShardHarness::create("read_wins_pending_eviction")
             .await
             .unwrap();
         let (tenant, ctx) = h.load().await;
@@ -420,7 +420,7 @@ fn multiple_pending_evictions_scenario(name: &'static str, in_order: bool) {
     rt.block_on(async move {
         // this is the runtime on which Layer spawns the blocking tasks on
         let handle = tokio::runtime::Handle::current();
-        let h = TenantHarness::create(name).await.unwrap();
+        let h = TenantShardHarness::create(name).await.unwrap();
         let (tenant, ctx) = h.load().await;
         let span = h.span();
         let download_span = span.in_scope(|| tracing::info_span!("downloading", timeline_id = 1));
@@ -589,7 +589,7 @@ fn multiple_pending_evictions_scenario(name: &'static str, in_order: bool) {
 #[tokio::test(start_paused = true)]
 async fn cancelled_get_or_maybe_download_does_not_cancel_eviction() {
     let handle = tokio::runtime::Handle::current();
-    let h = TenantHarness::create("cancelled_get_or_maybe_download_does_not_cancel_eviction")
+    let h = TenantShardHarness::create("cancelled_get_or_maybe_download_does_not_cancel_eviction")
         .await
         .unwrap();
     let (tenant, ctx) = h.load().await;
@@ -667,7 +667,7 @@ async fn cancelled_get_or_maybe_download_does_not_cancel_eviction() {
 #[tokio::test(start_paused = true)]
 async fn evict_and_wait_does_not_wait_for_download() {
     // let handle = tokio::runtime::Handle::current();
-    let h = TenantHarness::create("evict_and_wait_does_not_wait_for_download")
+    let h = TenantShardHarness::create("evict_and_wait_does_not_wait_for_download")
         .await
         .unwrap();
     let (tenant, ctx) = h.load().await;
@@ -766,7 +766,7 @@ async fn eviction_cancellation_on_drop() {
     // this is the runtime on which Layer spawns the blocking tasks on
     let handle = tokio::runtime::Handle::current();
 
-    let h = TenantHarness::create("eviction_cancellation_on_drop")
+    let h = TenantShardHarness::create("eviction_cancellation_on_drop")
         .await
         .unwrap();
     utils::logging::replace_panic_hook_with_tracing_panic_hook().forget();

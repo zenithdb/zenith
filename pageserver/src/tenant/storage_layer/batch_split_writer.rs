@@ -404,7 +404,7 @@ mod tests {
 
     use crate::{
         tenant::{
-            harness::{TenantHarness, TIMELINE_ID},
+            harness::{TenantShardHarness, TIMELINE_ID},
             storage_layer::AsLayerDesc,
         },
         DEFAULT_PG_VERSION,
@@ -431,7 +431,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_one_image() {
-        let harness = TenantHarness::create("split_writer_write_one_image")
+        let harness = TenantShardHarness::create("split_writer_write_one_image")
             .await
             .unwrap();
         let (tenant, ctx) = harness.load().await;
@@ -510,7 +510,7 @@ mod tests {
     /// Test the image+delta writer by writing a large number of images and deltas. If discard is
     /// set to true, all layers will be discarded.
     async fn write_split_helper(harness_name: &'static str, discard: bool) {
-        let harness = TenantHarness::create(harness_name).await.unwrap();
+        let harness = TenantShardHarness::create(harness_name).await.unwrap();
         let (tenant, ctx) = harness.load().await;
 
         let tline = tenant
@@ -605,7 +605,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_large_img() {
-        let harness = TenantHarness::create("split_writer_write_large_img")
+        let harness = TenantShardHarness::create("split_writer_write_large_img")
             .await
             .unwrap();
         let (tenant, ctx) = harness.load().await;
@@ -692,7 +692,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_split_single_key() {
-        let harness = TenantHarness::create("split_writer_write_split_single_key")
+        let harness = TenantShardHarness::create("split_writer_write_split_single_key")
             .await
             .unwrap();
         let (tenant, ctx) = harness.load().await;

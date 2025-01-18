@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::context::RequestContext;
 use crate::pgdatadir_mapping::CalculateLogicalSizeError;
 
-use super::{GcError, LogicalSizeCalculationCause, Tenant};
+use super::{GcError, LogicalSizeCalculationCause, TenantShard};
 use crate::tenant::{MaybeOffloaded, Timeline};
 use utils::id::TimelineId;
 use utils::lsn::Lsn;
@@ -159,7 +159,7 @@ pub struct TimelineInputs {
 ///   initdb_lsn  branchpoints*  next_pitr_cutoff  latest
 /// ```
 pub(super) async fn gather_inputs(
-    tenant: &Tenant,
+    tenant: &TenantShard,
     limit: &Arc<Semaphore>,
     max_retention_period: Option<u64>,
     logical_size_cache: &mut HashMap<(TimelineId, Lsn), u64>,

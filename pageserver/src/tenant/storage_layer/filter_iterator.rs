@@ -106,7 +106,7 @@ mod tests {
 
     use crate::{
         tenant::{
-            harness::{TenantHarness, TIMELINE_ID},
+            harness::{TenantShardHarness, TIMELINE_ID},
             storage_layer::delta_layer::test::produce_delta_layer,
         },
         DEFAULT_PG_VERSION,
@@ -137,7 +137,7 @@ mod tests {
         use bytes::Bytes;
         use pageserver_api::value::Value;
 
-        let harness = TenantHarness::create("filter_iterator_filter_keyspace_iterator")
+        let harness = TenantShardHarness::create("filter_iterator_filter_keyspace_iterator")
             .await
             .unwrap();
         let (tenant, ctx) = harness.load().await;

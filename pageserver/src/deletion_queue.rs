@@ -703,7 +703,7 @@ mod test {
 
     use crate::{
         controller_upcall_client::RetryForeverError,
-        tenant::{harness::TenantHarness, storage_layer::DeltaLayerName},
+        tenant::{harness::TenantShardHarness, storage_layer::DeltaLayerName},
     };
 
     use super::*;
@@ -722,7 +722,7 @@ mod test {
     });
 
     struct TestSetup {
-        harness: TenantHarness,
+        harness: TenantShardHarness,
         remote_fs_dir: Utf8PathBuf,
         storage: GenericRemoteStorage,
         mock_control_plane: MockControlPlane,
@@ -825,7 +825,7 @@ mod test {
 
     async fn setup(test_name: &str) -> anyhow::Result<TestSetup> {
         let test_name = Box::leak(Box::new(format!("deletion_queue__{test_name}")));
-        let harness = TenantHarness::create(test_name).await?;
+        let harness = TenantShardHarness::create(test_name).await?;
 
         // We do not load() the harness: we only need its config and remote_storage
 

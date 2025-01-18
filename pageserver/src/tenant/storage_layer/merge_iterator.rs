@@ -357,7 +357,7 @@ mod tests {
 
     use crate::{
         tenant::{
-            harness::{TenantHarness, TIMELINE_ID},
+            harness::{TenantShardHarness, TIMELINE_ID},
             storage_layer::delta_layer::test::{produce_delta_layer, sort_delta},
         },
         DEFAULT_PG_VERSION,
@@ -393,7 +393,7 @@ mod tests {
         use bytes::Bytes;
         use pageserver_api::value::Value;
 
-        let harness = TenantHarness::create("merge_iterator_merge_in_between")
+        let harness = TenantShardHarness::create("merge_iterator_merge_in_between")
             .await
             .unwrap();
         let (tenant, ctx) = harness.load().await;
@@ -458,7 +458,7 @@ mod tests {
         use bytes::Bytes;
         use pageserver_api::value::Value;
 
-        let harness = TenantHarness::create("merge_iterator_delta_merge")
+        let harness = TenantShardHarness::create("merge_iterator_delta_merge")
             .await
             .unwrap();
         let (tenant, ctx) = harness.load().await;
@@ -535,7 +535,7 @@ mod tests {
         use bytes::Bytes;
         use pageserver_api::value::Value;
 
-        let harness = TenantHarness::create("merge_iterator_delta_image_mixed_merge")
+        let harness = TenantShardHarness::create("merge_iterator_delta_image_mixed_merge")
             .await
             .unwrap();
         let (tenant, ctx) = harness.load().await;

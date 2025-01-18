@@ -39,7 +39,7 @@ use super::{
 };
 
 use crate::tenant::{
-    mgr::TenantManager,
+    mgr::TenantShardManager,
     remote_timeline_client::{download::download_layer_file, remote_heatmap_path},
 };
 
@@ -69,7 +69,7 @@ use super::{
 const DEFAULT_DOWNLOAD_INTERVAL: Duration = Duration::from_millis(60000);
 
 pub(super) async fn downloader_task(
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     remote_storage: GenericRemoteStorage,
     command_queue: tokio::sync::mpsc::Receiver<CommandRequest<DownloadCommand>>,
     background_jobs_can_start: Barrier,
@@ -92,7 +92,7 @@ pub(super) async fn downloader_task(
 }
 
 struct SecondaryDownloader {
-    tenant_manager: Arc<TenantManager>,
+    tenant_manager: Arc<TenantShardManager>,
     remote_storage: GenericRemoteStorage,
     root_ctx: RequestContext,
 }

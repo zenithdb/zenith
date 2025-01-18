@@ -196,7 +196,7 @@ pub struct TenantSharedResources {
     pub l0_flush_global_state: L0FlushGlobalState,
 }
 
-/// A [`Tenant`] is really an _attached_ tenant.  The configuration
+/// A [`TenantShard`] is really an _attached_ tenant.  The configuration
 /// for an attached tenant is a subset of the [`LocationConf`], represented
 /// in this struct.
 #[derive(Clone)]
@@ -276,7 +276,7 @@ pub(crate) enum SpawnMode {
 ///
 /// Tenant consists of multiple timelines. Keep them in a hash table.
 ///
-pub struct Tenant {
+pub struct TenantShard {
     // Global pageserver config parameters
     pub conf: &'static PageServerConf,
 
@@ -298,7 +298,7 @@ pub struct Tenant {
     shard_identity: ShardIdentity,
 
     /// The remote storage generation, used to protect S3 objects from split-brain.
-    /// Does not change over the lifetime of the [`Tenant`] object.
+    /// Does not change over the lifetime of the [`TenantShard`] object.
     ///
     /// This duplicates the generation stored in LocationConf, but that structure is mutable:
     /// this copy enforces the invariant that generatio doesn't change during a Tenant's lifetime.
@@ -337,7 +337,7 @@ pub struct Tenant {
     // Access to global deletion queue for when this tenant wants to schedule a deletion
     deletion_queue_client: DeletionQueueClient,
 
-    /// Cached logical sizes updated updated on each [`Tenant::gather_size_inputs`].
+    /// Cached logical sizes updated updated on each [`TenantShard::gather_size_inputs`].
     cached_logical_sizes: tokio::sync::Mutex<HashMap<(TimelineId, Lsn), u64>>,
     cached_synthetic_tenant_size: Arc<AtomicU64>,
 
@@ -367,7 +367,7 @@ pub struct Tenant {
     pub(crate) gate: Gate,
 
     /// Throttle applied at the top of [`Timeline::get`].
-    /// All [`Tenant::timelines`] of a given [`Tenant`] instance share the same [`throttle::Throttle`] instance.
+    /// All [`TenantShard::timelines`] of a given [`TenantShard`] instance share the same [`throttle::Throttle`] instance.
     pub(crate) pagestream_throttle: Arc<throttle::Throttle>,
 
     pub(crate) pagestream_throttle_metrics: Arc<crate::metrics::tenant_throttling::Pagestream>,
@@ -387,7 +387,7 @@ pub struct Tenant {
 
     l0_flush_global_state: L0FlushGlobalState,
 }
-impl std::fmt::Debug for Tenant {
+impl std::fmt::Debug for TenantShard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} ({})", self.tenant_shard_id, self.current_state())
     }
@@ -863,7 +863,7 @@ impl Debug for SetStoppingError {
     }
 }
 
-/// Arguments to [`Tenant::create_timeline`].
+/// Arguments to [`TenantShard::create_timeline`].
 ///
 /// Not usable as an idempotency key for timeline creation because if [`CreateTimelineParamsBranch::ancestor_start_lsn`]
 /// is `None`, the result of the timeline create call is not deterministic.
@@ -898,7 +898,7 @@ pub(crate) struct CreateTimelineParamsImportPgdata {
     pub(crate) idempotency_key: import_pgdata::index_part_format::IdempotencyKey,
 }
 
-/// What is used to determine idempotency of a [`Tenant::create_timeline`] call in  [`Tenant::start_creating_timeline`] in  [`Tenant::start_creating_timeline`].
+/// What is used to determine idempotency of a [`TenantShard::create_timeline`] call in  [`TenantShard::start_creating_timeline`] in  [`TenantShard::start_creating_timeline`].
 ///
 /// Each [`Timeline`] object holds [`Self`] as an immutable property in [`Timeline::create_idempotency`].
 ///
@@ -936,7 +936,7 @@ pub(crate) struct CreatingTimelineIdempotencyImportPgdata {
     idempotency_key: import_pgdata::index_part_format::IdempotencyKey,
 }
 
-/// What is returned by [`Tenant::start_creating_timeline`].
+/// What is returned by [`TenantShard::start_creating_timeline`].
 #[must_use]
 enum StartCreatingTimelineResult {
     CreateGuard(TimelineCreateGuard),
@@ -964,13 +964,13 @@ struct TimelineInitAndSyncNeedsSpawnImportPgdata {
     guard: TimelineCreateGuard,
 }
 
-/// What is returned by [`Tenant::create_timeline`].
+/// What is returned by [`TenantShard::create_timeline`].
 enum CreateTimelineResult {
     Created(Arc<Timeline>),
     Idempotent(Arc<Timeline>),
-    /// IMPORTANT: This [`Arc<Timeline>`] object is not in [`Tenant::timelines`] when
+    /// IMPORTANT: This [`Arc<Timeline>`] object is not in [`TenantShard::timelines`] when
     /// we return this result, nor will this concrete object ever be added there.
-    /// Cf method comment on [`Tenant::create_timeline_import_pgdata`].
+    /// Cf method comment on [`TenantShard::create_timeline_import_pgdata`].
     ImportSpawned(Arc<Timeline>),
 }
 
@@ -1102,7 +1102,7 @@ pub(crate) enum LoadConfigError {
     NotFound(Utf8PathBuf),
 }
 
-impl Tenant {
+impl TenantShard {
     /// Yet another helper for timeline initialization.
     ///
     /// - Initializes the Timeline struct and inserts it into the tenant's hash map
@@ -1280,7 +1280,7 @@ impl Tenant {
         init_order: Option<InitializationOrder>,
         mode: SpawnMode,
         ctx: &RequestContext,
-    ) -> Result<Arc<Tenant>, GlobalShutDown> {
+    ) -> Result<Arc<TenantShard>, GlobalShutDown> {
         let wal_redo_manager =
             WalRedoManager::new(PostgresRedoManager::new(conf, tenant_shard_id))?;
 
@@ -1294,7 +1294,7 @@ impl Tenant {
         let attach_mode = attached_conf.location.attach_mode;
         let generation = attached_conf.location.generation;
 
-        let tenant = Arc::new(Tenant::new(
+        let tenant = Arc::new(TenantShard::new(
             TenantState::Attaching,
             conf,
             attached_conf,
@@ -1339,13 +1339,13 @@ impl Tenant {
                     }
                 }
 
-                // Ideally we should use Tenant::set_broken_no_wait, but it is not supposed to be used when tenant is in loading state.
+                // Ideally we should use TenantShard::set_broken_no_wait, but it is not supposed to be used when tenant is in loading state.
                 enum BrokenVerbosity {
                     Error,
                     Info
                 }
                 let make_broken =
-                    |t: &Tenant, err: anyhow::Error, verbosity: BrokenVerbosity| {
+                    |t: &TenantShard, err: anyhow::Error, verbosity: BrokenVerbosity| {
                         match verbosity {
                             BrokenVerbosity::Info => {
                                 info!("attach cancelled, setting tenant state to Broken: {err}");
@@ -1568,7 +1568,7 @@ impl Tenant {
     /// No background tasks are started as part of this routine.
     ///
     async fn attach(
-        self: &Arc<Tenant>,
+        self: &Arc<TenantShard>,
         preload: Option<TenantPreload>,
         ctx: &RequestContext,
     ) -> anyhow::Result<()> {
@@ -1707,7 +1707,7 @@ impl Tenant {
 
             match effect {
                 TimelineInitAndSyncResult::ReadyToActivate(_) => {
-                    // activation happens later, on Tenant::activate
+                    // activation happens later, on TenantShard::activate
                 }
                 TimelineInitAndSyncResult::NeedsSpawnImportPgdata(
                     TimelineInitAndSyncNeedsSpawnImportPgdata {
@@ -1888,7 +1888,7 @@ impl Tenant {
     }
 
     async fn load_timelines_metadata(
-        self: &Arc<Tenant>,
+        self: &Arc<TenantShard>,
         timeline_ids: HashSet<TimelineId>,
         remote_storage: &GenericRemoteStorage,
         cancel: CancellationToken,
@@ -1943,7 +1943,7 @@ impl Tenant {
     }
 
     fn load_timeline_metadata(
-        self: &Arc<Tenant>,
+        self: &Arc<TenantShard>,
         timeline_id: TimelineId,
         remote_storage: GenericRemoteStorage,
         cancel: CancellationToken,
@@ -2336,14 +2336,14 @@ impl Tenant {
     /// This is used by tests & import-from-basebackup.
     ///
     /// The returned [`UninitializedTimeline`] contains no data nor metadata and it is in
-    /// a state that will fail [`Tenant::load_remote_timeline`] because `disk_consistent_lsn=Lsn(0)`.
+    /// a state that will fail [`TenantShard::load_remote_timeline`] because `disk_consistent_lsn=Lsn(0)`.
     ///
     /// The caller is responsible for getting the timeline into a state that will be accepted
-    /// by [`Tenant::load_remote_timeline`] / [`Tenant::attach`].
+    /// by [`TenantShard::load_remote_timeline`] / [`TenantShard::attach`].
     /// Then they may call [`UninitializedTimeline::finish_creation`] to add the timeline
-    /// to the [`Tenant::timelines`].
+    /// to the [`TenantShard::timelines`].
     ///
-    /// Tests should use `Tenant::create_test_timeline` to set up the minimum required metadata keys.
+    /// Tests should use `TenantShard::create_test_timeline` to set up the minimum required metadata keys.
     pub(crate) async fn create_empty_timeline(
         self: &Arc<Self>,
         new_timeline_id: TimelineId,
@@ -2483,7 +2483,7 @@ impl Tenant {
     /// the same timeline ID already exists, returns CreateTimelineError::AlreadyExists.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_timeline(
-        self: &Arc<Tenant>,
+        self: &Arc<TenantShard>,
         params: CreateTimelineParams,
         broker_client: storage_broker::BrokerClientChannel,
         ctx: &RequestContext,
@@ -2638,13 +2638,13 @@ impl Tenant {
         Ok(activated_timeline)
     }
 
-    /// The returned [`Arc<Timeline>`] is NOT in the [`Tenant::timelines`] map until the import
+    /// The returned [`Arc<Timeline>`] is NOT in the [`TenantShard::timelines`] map until the import
     /// completes in the background. A DIFFERENT [`Arc<Timeline>`] will be inserted into the
-    /// [`Tenant::timelines`] map when the import completes.
+    /// [`TenantShard::timelines`] map when the import completes.
     /// We only return an [`Arc<Timeline>`] here so the API handler can create a [`pageserver_api::models::TimelineInfo`]
     /// for the response.
     async fn create_timeline_import_pgdata(
-        self: &Arc<Tenant>,
+        self: &Arc<TenantShard>,
         params: CreateTimelineParamsImportPgdata,
         activate: ActivateTimelineArgs,
         ctx: &RequestContext,
@@ -2739,7 +2739,7 @@ impl Tenant {
 
     #[instrument(skip_all, fields(tenant_id=%self.tenant_shard_id.tenant_id, shard_id=%self.tenant_shard_id.shard_slug(), timeline_id=%timeline.timeline_id))]
     async fn create_timeline_import_pgdata_task(
-        self: Arc<Tenant>,
+        self: Arc<TenantShard>,
         timeline: Arc<Timeline>,
         index_part: import_pgdata::index_part_format::Root,
         activate: ActivateTimelineArgs,
@@ -2765,7 +2765,7 @@ impl Tenant {
     }
 
     async fn create_timeline_import_pgdata_task_impl(
-        self: Arc<Tenant>,
+        self: Arc<TenantShard>,
         timeline: Arc<Timeline>,
         index_part: import_pgdata::index_part_format::Root,
         activate: ActivateTimelineArgs,
@@ -2783,10 +2783,10 @@ impl Tenant {
         // Reload timeline from remote.
         // This proves that the remote state is attachable, and it reuses the code.
         //
-        // TODO: think about whether this is safe to do with concurrent Tenant::shutdown.
+        // TODO: think about whether this is safe to do with concurrent TenantShard::shutdown.
         // timeline_create_guard hols the tenant gate open, so, shutdown cannot _complete_ until we exit.
-        // But our activate() call might launch new background tasks after Tenant::shutdown
-        // already went past shutting down the Tenant::timelines, which this timeline here is no part of.
+        // But our activate() call might launch new background tasks after TenantShard::shutdown
+        // already went past shutting down the TenantShard::timelines, which this timeline here is no part of.
         // I think the same problem exists with the bootstrap & branch mgmt API tasks (tenant shutting
         // down while bootstrapping/branching + activating), but, the race condition is much more likely
         // to manifest because of the long runtime of this import task.
@@ -2801,7 +2801,7 @@ impl Tenant {
         // };
         let timeline_id = timeline.timeline_id;
 
-        // load from object storage like Tenant::attach does
+        // load from object storage like TenantShard::attach does
         let resources = self.build_timeline_resources(timeline_id);
         let index_part = resources
             .remote_client
@@ -3271,7 +3271,7 @@ impl Tenant {
             }
             Err(SetStoppingError::AlreadyStopping(other)) => {
                 // give caller the option to wait for this this shutdown
-                info!("Tenant::shutdown: AlreadyStopping");
+                info!("TenantShard::shutdown: AlreadyStopping");
                 return Err(other);
             }
         };
@@ -3764,7 +3764,7 @@ enum ActivateTimelineArgs {
     No,
 }
 
-impl Tenant {
+impl TenantShard {
     pub fn tenant_specific_overrides(&self) -> TenantConfOpt {
         self.tenant_conf.load().tenant_conf.clone()
     }
@@ -3885,7 +3885,7 @@ impl Tenant {
         update: F,
     ) -> anyhow::Result<TenantConfOpt> {
         // Use read-copy-update in order to avoid overwriting the location config
-        // state if this races with [`Tenant::set_new_location_config`]. Note that
+        // state if this races with [`TenantShard::set_new_location_config`]. Note that
         // this race is not possible if both request types come from the storage
         // controller (as they should!) because an exclusive op lock is required
         // on the storage controller side.
@@ -3997,7 +3997,7 @@ impl Tenant {
         Ok(timeline)
     }
 
-    /// [`Tenant::shutdown`] must be called before dropping the returned [`Tenant`] object
+    /// [`TenantShard::shutdown`] must be called before dropping the returned [`TenantShard`] object
     /// to ensure proper cleanup of background tasks and metrics.
     //
     // Allow too_many_arguments because a constructor's argument list naturally grows with the
@@ -4013,7 +4013,7 @@ impl Tenant {
         remote_storage: GenericRemoteStorage,
         deletion_queue_client: DeletionQueueClient,
         l0_flush_global_state: L0FlushGlobalState,
-    ) -> Tenant {
+    ) -> TenantShard {
         debug_assert!(
             !attached_conf.location.generation.is_none() || conf.control_plane_api.is_none()
         );
@@ -4073,7 +4073,7 @@ impl Tenant {
             }
         });
 
-        Tenant {
+        TenantShard {
             tenant_shard_id,
             shard_identity,
             generation: attached_conf.location.generation,
@@ -4107,7 +4107,7 @@ impl Tenant {
             cancel: CancellationToken::default(),
             gate: Gate::default(),
             pagestream_throttle: Arc::new(throttle::Throttle::new(
-                Tenant::get_pagestream_throttle_config(conf, &attached_conf.tenant_conf),
+                TenantShard::get_pagestream_throttle_config(conf, &attached_conf.tenant_conf),
             )),
             pagestream_throttle_metrics: Arc::new(
                 crate::metrics::tenant_throttling::Pagestream::new(&tenant_shard_id),
@@ -4246,11 +4246,11 @@ impl Tenant {
 
         // Perform GC for each timeline.
         //
-        // Note that we don't hold the `Tenant::gc_cs` lock here because we don't want to delay the
+        // Note that we don't hold the `TenantShard::gc_cs` lock here because we don't want to delay the
         // branch creation task, which requires the GC lock. A GC iteration can run concurrently
         // with branch creation.
         //
-        // See comments in [`Tenant::branch_timeline`] for more information about why branch
+        // See comments in [`TenantShard::branch_timeline`] for more information about why branch
         // creation task can run concurrently with timeline's GC iteration.
         for timeline in gc_timelines {
             if cancel.is_cancelled() {
@@ -4280,7 +4280,7 @@ impl Tenant {
 
     /// Refreshes the Timeline::gc_info for all timelines, returning the
     /// vector of timelines which have [`Timeline::get_last_record_lsn`] past
-    /// [`Tenant::get_gc_horizon`].
+    /// [`TenantShard::get_gc_horizon`].
     ///
     /// This is usually executed as part of periodic gc, but can now be triggered more often.
     pub(crate) async fn refresh_gc_info(
@@ -5479,7 +5479,7 @@ pub(crate) mod harness {
         }
     }
 
-    pub struct TenantHarness {
+    pub struct TenantShardHarness {
         pub conf: &'static PageServerConf,
         pub tenant_conf: TenantConf,
         pub tenant_shard_id: TenantShardId,
@@ -5505,7 +5505,7 @@ pub(crate) mod harness {
         });
     }
 
-    impl TenantHarness {
+    impl TenantShardHarness {
         pub async fn create_custom(
             test_name: &'static str,
             tenant_conf: TenantConf,
@@ -5582,7 +5582,7 @@ pub(crate) mod harness {
             info_span!("TenantHarness", tenant_id=%self.tenant_shard_id.tenant_id, shard_id=%self.tenant_shard_id.shard_slug())
         }
 
-        pub(crate) async fn load(&self) -> (Arc<Tenant>, RequestContext) {
+        pub(crate) async fn load(&self) -> (Arc<TenantShard>, RequestContext) {
             let ctx = RequestContext::new(TaskKind::UnitTest, DownloadBehavior::Error);
             (
                 self.do_try_load(&ctx)
@@ -5596,10 +5596,10 @@ pub(crate) mod harness {
         pub(crate) async fn do_try_load(
             &self,
             ctx: &RequestContext,
-        ) -> anyhow::Result<Arc<Tenant>> {
+        ) -> anyhow::Result<Arc<TenantShard>> {
             let walredo_mgr = Arc::new(WalRedoManager::from(TestRedoManager));
 
-            let tenant = Arc::new(Tenant::new(
+            let tenant = Arc::new(TenantShard::new(
                 TenantState::Attaching,
                 self.conf,
                 AttachedTenantConf::try_from(LocationConf::attached_single(
@@ -5728,7 +5728,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_basic() -> anyhow::Result<()> {
-        let (tenant, ctx) = TenantHarness::create("test_basic").await?.load().await;
+        let (tenant, ctx) = TenantShardHarness::create("test_basic").await?.load().await;
         let tline = tenant
             .create_test_timeline(TIMELINE_ID, Lsn(0x08), DEFAULT_PG_VERSION, &ctx)
             .await?;
@@ -5775,7 +5775,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_duplicate_timelines() -> anyhow::Result<()> {
-        let (tenant, ctx) = TenantHarness::create("no_duplicate_timelines")
+        let (tenant, ctx) = TenantShardHarness::create("no_duplicate_timelines")
             .await?
             .load()
             .await;
@@ -5811,7 +5811,10 @@ mod tests {
     async fn test_branch() -> anyhow::Result<()> {
         use std::str::from_utf8;
 
-        let (tenant, ctx) = TenantHarness::create("test_branch").await?.load().await;
+        let (tenant, ctx) = TenantShardHarness::create("test_branch")
+            .await?
+            .load()
+            .await;
         let tline = tenant
             .create_test_timeline(TIMELINE_ID, Lsn(0x10), DEFAULT_PG_VERSION, &ctx)
             .await?;
@@ -5933,7 +5936,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_prohibit_branch_creation_on_garbage_collected_data() -> anyhow::Result<()> {
         let (tenant, ctx) =
-            TenantHarness::create("test_prohibit_branch_creation_on_garbage_collected_data")
+            TenantShardHarness::create("test_prohibit_branch_creation_on_garbage_collected_data")
                 .await?
                 .load()
                 .await;
@@ -5985,7 +5988,7 @@ mod tests {
     #[tokio::test]
     async fn test_prohibit_branch_creation_on_pre_initdb_lsn() -> anyhow::Result<()> {
         let (tenant, ctx) =
-            TenantHarness::create("test_prohibit_branch_creation_on_pre_initdb_lsn")
+            TenantShardHarness::create("test_prohibit_branch_creation_on_pre_initdb_lsn")
                 .await?
                 .load()
                 .await;
@@ -6041,7 +6044,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_branchpoints_from_an_inactive_timeline() -> anyhow::Result<()> {
         let (tenant, ctx) =
-            TenantHarness::create("test_get_branchpoints_from_an_inactive_timeline")
+            TenantShardHarness::create("test_get_branchpoints_from_an_inactive_timeline")
                 .await?
                 .load()
                 .await;
@@ -6105,7 +6108,7 @@ mod tests {
     #[tokio::test]
     async fn test_retain_data_in_parent_which_is_needed_for_child() -> anyhow::Result<()> {
         let (tenant, ctx) =
-            TenantHarness::create("test_retain_data_in_parent_which_is_needed_for_child")
+            TenantShardHarness::create("test_retain_data_in_parent_which_is_needed_for_child")
                 .await?
                 .load()
                 .await;
@@ -6136,10 +6139,11 @@ mod tests {
     }
     #[tokio::test]
     async fn test_parent_keeps_data_forever_after_branching() -> anyhow::Result<()> {
-        let (tenant, ctx) = TenantHarness::create("test_parent_keeps_data_forever_after_branching")
-            .await?
-            .load()
-            .await;
+        let (tenant, ctx) =
+            TenantShardHarness::create("test_parent_keeps_data_forever_after_branching")
+                .await?
+                .load()
+                .await;
         let tline = tenant
             .create_test_timeline(TIMELINE_ID, Lsn(0x10), DEFAULT_PG_VERSION, &ctx)
             .await?;
@@ -6177,7 +6181,7 @@ mod tests {
     #[tokio::test]
     async fn timeline_load() -> anyhow::Result<()> {
         const TEST_NAME: &str = "timeline_load";
-        let harness = TenantHarness::create(TEST_NAME).await?;
+        let harness = TenantShardHarness::create(TEST_NAME).await?;
         {
             let (tenant, ctx) = harness.load().await;
             let tline = tenant
@@ -6204,7 +6208,7 @@ mod tests {
     #[tokio::test]
     async fn timeline_load_with_ancestor() -> anyhow::Result<()> {
         const TEST_NAME: &str = "timeline_load_with_ancestor";
-        let harness = TenantHarness::create(TEST_NAME).await?;
+        let harness = TenantShardHarness::create(TEST_NAME).await?;
         // create two timelines
         {
             let (tenant, ctx) = harness.load().await;
@@ -6252,7 +6256,7 @@ mod tests {
     #[tokio::test]
     async fn delta_layer_dumping() -> anyhow::Result<()> {
         use storage_layer::AsLayerDesc;
-        let (tenant, ctx) = TenantHarness::create("test_layer_dumping")
+        let (tenant, ctx) = TenantShardHarness::create("test_layer_dumping")
             .await?
             .load()
             .await;
@@ -6282,7 +6286,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_images() -> anyhow::Result<()> {
-        let (tenant, ctx) = TenantHarness::create("test_images").await?.load().await;
+        let (tenant, ctx) = TenantShardHarness::create("test_images")
+            .await?
+            .load()
+            .await;
         let tline = tenant
             .create_test_timeline(TIMELINE_ID, Lsn(0x08), DEFAULT_PG_VERSION, &ctx)
             .await?;
@@ -6380,7 +6387,7 @@ mod tests {
     }
 
     async fn bulk_insert_compact_gc(
-        tenant: &Tenant,
+        tenant: &TenantShard,
         timeline: &Arc<Timeline>,
         ctx: &RequestContext,
         lsn: Lsn,
@@ -6392,7 +6399,7 @@ mod tests {
     }
 
     async fn bulk_insert_maybe_compact_gc(
-        tenant: &Tenant,
+        tenant: &TenantShard,
         timeline: &Arc<Timeline>,
         ctx: &RequestContext,
         mut lsn: Lsn,
@@ -6456,7 +6463,7 @@ mod tests {
     //
     #[tokio::test]
     async fn test_bulk_insert() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_bulk_insert").await?;
+        let harness = TenantShardHarness::create("test_bulk_insert").await?;
         let (tenant, ctx) = harness.load().await;
         let tline = tenant
             .create_test_timeline(TIMELINE_ID, Lsn(0x08), DEFAULT_PG_VERSION, &ctx)
@@ -6487,7 +6494,7 @@ mod tests {
     // so the search can stop at the first delta layer and doesn't traverse any deeper.
     #[tokio::test]
     async fn test_get_vectored() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_get_vectored").await?;
+        let harness = TenantShardHarness::create("test_get_vectored").await?;
         let (tenant, ctx) = harness.load().await;
         let tline = tenant
             .create_test_timeline(TIMELINE_ID, Lsn(0x08), DEFAULT_PG_VERSION, &ctx)
@@ -6597,7 +6604,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_vectored_aux_files() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_get_vectored_aux_files").await?;
+        let harness = TenantShardHarness::create("test_get_vectored_aux_files").await?;
 
         let (tenant, ctx) = harness.load().await;
         let tline = tenant
@@ -6673,7 +6680,7 @@ mod tests {
             ..TenantConf::default()
         };
 
-        let harness = TenantHarness::create_custom(
+        let harness = TenantShardHarness::create_custom(
             "test_get_vectored_key_gap",
             tenant_conf,
             TenantId::generate(),
@@ -6823,7 +6830,7 @@ mod tests {
     // ```
     #[tokio::test]
     async fn test_get_vectored_ancestor_descent() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_get_vectored_on_lsn_axis").await?;
+        let harness = TenantShardHarness::create("test_get_vectored_on_lsn_axis").await?;
         let (tenant, ctx) = harness.load().await;
 
         let start_key = Key::from_hex("010000000033333333444444445500000000").unwrap();
@@ -6972,7 +6979,7 @@ mod tests {
         name: &'static str,
         compaction_algorithm: CompactionAlgorithm,
     ) -> anyhow::Result<()> {
-        let mut harness = TenantHarness::create(name).await?;
+        let mut harness = TenantShardHarness::create(name).await?;
         harness.tenant_conf.compaction_algorithm = CompactionAlgorithmSettings {
             kind: compaction_algorithm,
         };
@@ -7056,7 +7063,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_traverse_branches() -> anyhow::Result<()> {
-        let (tenant, ctx) = TenantHarness::create("test_traverse_branches")
+        let (tenant, ctx) = TenantShardHarness::create("test_traverse_branches")
             .await?
             .load()
             .await;
@@ -7147,7 +7154,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_traverse_ancestors() -> anyhow::Result<()> {
-        let (tenant, ctx) = TenantHarness::create("test_traverse_ancestors")
+        let (tenant, ctx) = TenantShardHarness::create("test_traverse_ancestors")
             .await?
             .load()
             .await;
@@ -7214,7 +7221,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_at_initdb_lsn_takes_optimization_code_path() -> anyhow::Result<()> {
-        let (tenant, ctx) = TenantHarness::create("test_empty_test_timeline_is_usable")
+        let (tenant, ctx) = TenantShardHarness::create("test_empty_test_timeline_is_usable")
             .await?
             .load()
             .await;
@@ -7284,13 +7291,13 @@ mod tests {
     #[tokio::test]
     async fn test_create_guard_crash() -> anyhow::Result<()> {
         let name = "test_create_guard_crash";
-        let harness = TenantHarness::create(name).await?;
+        let harness = TenantShardHarness::create(name).await?;
         {
             let (tenant, ctx) = harness.load().await;
             let tline = tenant
                 .create_empty_timeline(TIMELINE_ID, Lsn(0), DEFAULT_PG_VERSION, &ctx)
                 .await?;
-            // Leave the timeline ID in [`Tenant::timelines_creating`] to exclude attempting to create it again
+            // Leave the timeline ID in [`TenantShard::timelines_creating`] to exclude attempting to create it again
             let raw_tline = tline.raw_timeline().unwrap();
             raw_tline
                 .shutdown(super::timeline::ShutdownMode::Hard)
@@ -7337,7 +7344,7 @@ mod tests {
         name: &'static str,
         compaction_algorithm: CompactionAlgorithm,
     ) -> anyhow::Result<()> {
-        let mut harness = TenantHarness::create(name).await?;
+        let mut harness = TenantShardHarness::create(name).await?;
         harness.tenant_conf.compaction_algorithm = CompactionAlgorithmSettings {
             kind: compaction_algorithm,
         };
@@ -7361,7 +7368,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_metadata_scan() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_metadata_scan").await?;
+        let harness = TenantShardHarness::create("test_metadata_scan").await?;
         let (tenant, ctx) = harness.load().await;
         let tline = tenant
             .create_test_timeline(TIMELINE_ID, Lsn(0x10), DEFAULT_PG_VERSION, &ctx)
@@ -7480,7 +7487,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_metadata_compaction_trigger() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_metadata_compaction_trigger").await?;
+        let harness = TenantShardHarness::create("test_metadata_compaction_trigger").await?;
         let (tenant, ctx) = harness.load().await;
         let tline = tenant
             .create_test_timeline(TIMELINE_ID, Lsn(0x10), DEFAULT_PG_VERSION, &ctx)
@@ -7528,7 +7535,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_aux_file_e2e() {
-        let harness = TenantHarness::create("test_aux_file_e2e").await.unwrap();
+        let harness = TenantShardHarness::create("test_aux_file_e2e")
+            .await
+            .unwrap();
 
         let (tenant, ctx) = harness.load().await;
 
@@ -7584,7 +7593,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_metadata_image_creation() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_metadata_image_creation").await?;
+        let harness = TenantShardHarness::create("test_metadata_image_creation").await?;
         let (tenant, ctx) = harness.load().await;
         let tline = tenant
             .create_test_timeline(TIMELINE_ID, Lsn(0x10), DEFAULT_PG_VERSION, &ctx)
@@ -7683,7 +7692,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_vectored_missing_data_key_reads() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_vectored_missing_data_key_reads").await?;
+        let harness = TenantShardHarness::create("test_vectored_missing_data_key_reads").await?;
         let (tenant, ctx) = harness.load().await;
 
         let base_key = Key::from_hex("000000000033333333444444445500000000").unwrap();
@@ -7755,7 +7764,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_vectored_missing_metadata_key_reads() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_vectored_missing_metadata_key_reads").await?;
+        let harness =
+            TenantShardHarness::create("test_vectored_missing_metadata_key_reads").await?;
         let (tenant, ctx) = harness.load().await;
 
         let base_key = Key::from_hex("620000000033333333444444445500000000").unwrap();
@@ -7976,7 +7986,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_metadata_tombstone_reads() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_metadata_tombstone_reads").await?;
+        let harness = TenantShardHarness::create("test_metadata_tombstone_reads").await?;
         let (tenant, ctx) = harness.load().await;
         let key0 = Key::from_hex("620000000033333333444444445500000000").unwrap();
         let key1 = Key::from_hex("620000000033333333444444445500000001").unwrap();
@@ -8056,7 +8066,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_metadata_tombstone_image_creation() {
-        let harness = TenantHarness::create("test_metadata_tombstone_image_creation")
+        let harness = TenantShardHarness::create("test_metadata_tombstone_image_creation")
             .await
             .unwrap();
         let (tenant, ctx) = harness.load().await;
@@ -8130,7 +8140,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_metadata_tombstone_empty_image_creation() {
-        let harness = TenantHarness::create("test_metadata_tombstone_empty_image_creation")
+        let harness = TenantShardHarness::create("test_metadata_tombstone_empty_image_creation")
             .await
             .unwrap();
         let (tenant, ctx) = harness.load().await;
@@ -8195,7 +8205,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_simple_bottom_most_compaction_images() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_simple_bottom_most_compaction_images").await?;
+        let harness =
+            TenantShardHarness::create("test_simple_bottom_most_compaction_images").await?;
         let (tenant, ctx) = harness.load().await;
 
         fn get_key(id: u32) -> Key {
@@ -8415,7 +8426,7 @@ mod tests {
     #[cfg(feature = "testing")]
     #[tokio::test]
     async fn test_neon_test_record() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_neon_test_record").await?;
+        let harness = TenantShardHarness::create("test_neon_test_record").await?;
         let (tenant, ctx) = harness.load().await;
 
         fn get_key(id: u32) -> Key {
@@ -8496,7 +8507,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_lsn_lease() -> anyhow::Result<()> {
-        let (tenant, ctx) = TenantHarness::create("test_lsn_lease")
+        let (tenant, ctx) = TenantShardHarness::create("test_lsn_lease")
             .await
             .unwrap()
             .load()
@@ -8629,7 +8640,7 @@ mod tests {
         test_name: &'static str,
         use_delta_bottom_layer: bool,
     ) -> anyhow::Result<()> {
-        let harness = TenantHarness::create(test_name).await?;
+        let harness = TenantShardHarness::create(test_name).await?;
         let (tenant, ctx) = harness.load().await;
 
         fn get_key(id: u32) -> Key {
@@ -8888,7 +8899,7 @@ mod tests {
     #[cfg(feature = "testing")]
     #[tokio::test]
     async fn test_generate_key_retention() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_generate_key_retention").await?;
+        let harness = TenantShardHarness::create("test_generate_key_retention").await?;
         let (tenant, ctx) = harness.load().await;
         let tline = tenant
             .create_test_timeline(TIMELINE_ID, Lsn(0x10), DEFAULT_PG_VERSION, &ctx)
@@ -9237,7 +9248,8 @@ mod tests {
     #[tokio::test]
     async fn test_simple_bottom_most_compaction_with_retain_lsns() -> anyhow::Result<()> {
         let harness =
-            TenantHarness::create("test_simple_bottom_most_compaction_with_retain_lsns").await?;
+            TenantShardHarness::create("test_simple_bottom_most_compaction_with_retain_lsns")
+                .await?;
         let (tenant, ctx) = harness.load().await;
 
         fn get_key(id: u32) -> Key {
@@ -9497,9 +9509,10 @@ mod tests {
     #[tokio::test]
     async fn test_simple_bottom_most_compaction_with_retain_lsns_single_key() -> anyhow::Result<()>
     {
-        let harness =
-            TenantHarness::create("test_simple_bottom_most_compaction_with_retain_lsns_single_key")
-                .await?;
+        let harness = TenantShardHarness::create(
+            "test_simple_bottom_most_compaction_with_retain_lsns_single_key",
+        )
+        .await?;
         let (tenant, ctx) = harness.load().await;
 
         fn get_key(id: u32) -> Key {
@@ -9720,7 +9733,8 @@ mod tests {
     async fn test_simple_bottom_most_compaction_on_branch() -> anyhow::Result<()> {
         use models::CompactLsnRange;
 
-        let harness = TenantHarness::create("test_simple_bottom_most_compaction_on_branch").await?;
+        let harness =
+            TenantShardHarness::create("test_simple_bottom_most_compaction_on_branch").await?;
         let (tenant, ctx) = harness.load().await;
 
         fn get_key(id: u32) -> Key {
@@ -9950,7 +9964,8 @@ mod tests {
     #[cfg(feature = "testing")]
     #[tokio::test]
     async fn test_vectored_read_with_nested_image_layer() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_vectored_read_with_nested_image_layer").await?;
+        let harness =
+            TenantShardHarness::create("test_vectored_read_with_nested_image_layer").await?;
         let (tenant, ctx) = harness.load().await;
 
         let will_init_keys = [2, 6];
@@ -10115,7 +10130,8 @@ mod tests {
     #[cfg(feature = "testing")]
     #[tokio::test]
     async fn test_simple_partial_bottom_most_compaction() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_simple_partial_bottom_most_compaction").await?;
+        let harness =
+            TenantShardHarness::create("test_simple_partial_bottom_most_compaction").await?;
         let (tenant, ctx) = harness.load().await;
 
         fn get_key(id: u32) -> Key {
@@ -10457,7 +10473,7 @@ mod tests {
     #[cfg(feature = "testing")]
     #[tokio::test]
     async fn test_timeline_offload_retain_lsn() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_timeline_offload_retain_lsn")
+        let harness = TenantShardHarness::create("test_timeline_offload_retain_lsn")
             .await
             .unwrap();
         let (tenant, ctx) = harness.load().await;
@@ -10507,7 +10523,8 @@ mod tests {
     #[cfg(feature = "testing")]
     #[tokio::test]
     async fn test_simple_bottom_most_compaction_above_lsn() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_simple_bottom_most_compaction_above_lsn").await?;
+        let harness =
+            TenantShardHarness::create("test_simple_bottom_most_compaction_above_lsn").await?;
         let (tenant, ctx) = harness.load().await;
 
         fn get_key(id: u32) -> Key {
@@ -10758,7 +10775,8 @@ mod tests {
     #[cfg(feature = "testing")]
     #[tokio::test]
     async fn test_simple_bottom_most_compaction_rectangle() -> anyhow::Result<()> {
-        let harness = TenantHarness::create("test_simple_bottom_most_compaction_rectangle").await?;
+        let harness =
+            TenantShardHarness::create("test_simple_bottom_most_compaction_rectangle").await?;
         let (tenant, ctx) = harness.load().await;
 
         fn get_key(id: u32) -> Key {

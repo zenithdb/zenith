@@ -2404,13 +2404,13 @@ mod tests {
 
     use super::*;
 
-    use crate::{tenant::harness::TenantHarness, DEFAULT_PG_VERSION};
+    use crate::{tenant::harness::TenantShardHarness, DEFAULT_PG_VERSION};
 
     /// Test a round trip of aux file updates, from DatadirModification to reading back from the Timeline
     #[tokio::test]
     async fn aux_files_round_trip() -> anyhow::Result<()> {
         let name = "aux_files_round_trip";
-        let harness = TenantHarness::create(name).await?;
+        let harness = TenantShardHarness::create(name).await?;
 
         pub const TIMELINE_ID: TimelineId =
             TimelineId::from_array(hex!("11223344556677881122334455667788"));
