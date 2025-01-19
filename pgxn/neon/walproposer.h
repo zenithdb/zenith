@@ -12,9 +12,6 @@
 #include "neon_walreader.h"
 #include "pagestore_client.h"
 
-#define SK_MAGIC 0xCafeCeefu
-#define SK_PROTOCOL_VERSION 2
-
 #define MAX_SAFEKEEPERS 32
 #define MAX_SEND_SIZE (XLOG_BLCKSZ * 16)	/* max size of a single* WAL
 											 * message */
@@ -144,11 +141,70 @@ typedef uint64 term_t;
 typedef uint64 NNodeId;
 
 /*
+ * Number uniquely identifying safekeeper membership configuration.
+ * This and following structs pair ones in membership.rs.
+ */
+typedef uint32 Generation;
+
+typedef struct SafekeeperId
+{
+	NNodeId		node_id;
+	char		host[MAXCONNINFO];
+	uint16		port;
+} SafekeeperId;
+
+/* Set of safekeepers. */
+typedef struct MemberSet
+{
+	uint32		n_members;
+	SafekeeperId *members;
+} MemberSet;
+
+/* Timeline safekeeper membership configuration. */
+typedef struct MembershipConfiguration
+{
+	Generation	generation;
+	MemberSet	members;
+	/* Has 0 n_members in non joint conf. */
+	MemberSet	new_members;
+} MembershipConfiguration;
+
+/*
  * Proposer <-> Acceptor messaging.
  */
 
+typedef struct ProposerAcceptorMessage
+{
+	uint8		tag;
+} ProposerAcceptorMessage;
+
 /* Initial Proposer -> Acceptor message */
 typedef struct ProposerGreeting
+{
+	ProposerAcceptorMessage pam;	/* message tag */
+	uint32		proto_version;	/* proposer-safekeeper protocol version */
+
+	/*
+	 * tenant/timeline ids as C strings with standard hex notation for ease of
+	 * printing. In principle they are not strictly needed as ttid is also
+	 * passed as libpq options.
+	 */
+	char	   *tenant_id;
+	char	   *timeline_id;
+	MembershipConfiguration mconf;
+
+	/*
+	 * pg_version and wal_seg_size are used for timeline creation until we
+	 * fully migrate to doing externally. systemId is only used as a sanity
+	 * cross check.
+	 */
+	uint32		pg_version;		/* in PG_VERSION_NUM format */
+	uint64		system_id;		/* Postgres system identifier. */
+	uint32		wal_seg_size;
+} ProposerGreeting;
+
+/* protocol v2 variant, kept while wp supports it */
+typedef struct ProposerGreetingV2
 {
 	uint64		tag;			/* message tag */
 	uint32		protocolVersion;	/* proposer-safekeeper protocol version */
@@ -159,7 +215,7 @@ typedef struct ProposerGreeting
 	uint8		tenant_id[16];
 	TimeLineID	timeline;
 	uint32		walSegSize;
-} ProposerGreeting;
+} ProposerGreetingV2;
 
 typedef struct AcceptorProposerMessage
 {
@@ -256,6 +312,7 @@ typedef struct AppendRequestHeader
 	 */
 	XLogRecPtr	truncateLsn;
 	pg_uuid_t	proposerId;		/* for monitoring/debugging */
+	/* in the AppendRequest message, WAL data follows */
 } AppendRequestHeader;
 
 /*
@@ -644,6 +701,8 @@ typedef struct WalProposerConfig
 	/* Will be passed to safekeepers in greet request. */
 	TimeLineID	pgTimeline;
 
+	int			proto_version;
+
 #ifdef WALPROPOSER_LIB
 	void	   *callback_data;
 #endif
@@ -670,6 +729,7 @@ typedef struct WalProposer
 	XLogRecPtr	commitLsn;
 
 	ProposerGreeting greetRequest;
+	ProposerGreetingV2 greetRequestV2;
 
 	/* Vote request for safekeeper */
 	VoteRequest voteRequest;

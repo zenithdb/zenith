@@ -70,6 +70,7 @@ static bool SendAppendRequests(Safekeeper *sk);
 static bool RecvAppendResponses(Safekeeper *sk);
 static XLogRecPtr CalculateMinFlushLsn(WalProposer *wp);
 static XLogRecPtr GetAcknowledgedByQuorumWALPosition(WalProposer *wp);
+static void PAMessageSerialize(WalProposer *wp, ProposerAcceptorMessage *msg, StringInfo buf, int proto_version);
 static void HandleSafekeeperResponse(WalProposer *wp, Safekeeper *sk);
 static bool AsyncRead(Safekeeper *sk, char **buf, int *buf_size);
 static bool AsyncReadMessage(Safekeeper *sk, AcceptorProposerMessage *anymsg);
@@ -137,25 +138,45 @@ WalProposerCreate(WalProposerConfig *config, walproposer_api api)
 	}
 	wp->quorum = wp->n_safekeepers / 2 + 1;
 
+	if (wp->config->proto_version != 2 && wp->config->proto_version != 3)
+		wp_log(FATAL, "unsupported safekeeper protocol version %d", wp->config->proto_version);
+	wp_log(LOG, "using safekeeper protocol version %d", wp->config->proto_version);
+
 	/* Fill the greeting package */
-	wp->greetRequest.tag = 'g';
-	wp->greetRequest.protocolVersion = SK_PROTOCOL_VERSION;
-	wp->greetRequest.pgVersion = PG_VERSION_NUM;
-	wp->api.strong_random(wp, &wp->greetRequest.proposerId, sizeof(wp->greetRequest.proposerId));
-	wp->greetRequest.systemId = wp->config->systemId;
-	if (!wp->config->neon_timeline)
-		wp_log(FATAL, "neon.timeline_id is not provided");
-	if (*wp->config->neon_timeline != '\0' &&
-		!HexDecodeString(wp->greetRequest.timeline_id, wp->config->neon_timeline, 16))
-		wp_log(FATAL, "could not parse neon.timeline_id, %s", wp->config->neon_timeline);
+	wp->greetRequest.pam.tag = 'g';
+	wp->greetRequest.proto_version = wp->config->proto_version;
 	if (!wp->config->neon_tenant)
 		wp_log(FATAL, "neon.tenant_id is not provided");
+	wp->greetRequest.tenant_id = wp->config->neon_tenant;
+	if (!wp->config->neon_timeline)
+		wp_log(FATAL, "neon.timeline_id is not provided");
+	wp->greetRequest.timeline_id = wp->config->neon_tenant;
+	wp->greetRequest.pg_version = PG_VERSION_NUM;
+	wp->greetRequest.system_id = wp->config->systemId;
+	wp->greetRequest.wal_seg_size = wp->config->wal_segment_size;
+
+
+	/* Fill also v2 struct. */
+	wp->greetRequestV2.tag = 'g';
+	wp->greetRequestV2.protocolVersion = wp->config->proto_version;
+	wp->greetRequestV2.pgVersion = PG_VERSION_NUM;
+
+	/*
+	 * v3 removed this field because it's easier to pass as libq or
+	 * START_WAL_PUSH options
+	 */
+	memset(&wp->greetRequestV2.proposerId, 0, sizeof(wp->greetRequestV2.proposerId));
+	wp->api.strong_random(wp, &wp->greetRequestV2.proposerId, sizeof(wp->greetRequestV2.proposerId));
+	wp->greetRequestV2.systemId = wp->config->systemId;
+	if (*wp->config->neon_timeline != '\0' &&
+		!HexDecodeString(wp->greetRequestV2.timeline_id, wp->config->neon_timeline, 16))
+		wp_log(FATAL, "could not parse neon.timeline_id, %s", wp->config->neon_timeline);
 	if (*wp->config->neon_tenant != '\0' &&
-		!HexDecodeString(wp->greetRequest.tenant_id, wp->config->neon_tenant, 16))
+		!HexDecodeString(wp->greetRequestV2.tenant_id, wp->config->neon_tenant, 16))
 		wp_log(FATAL, "could not parse neon.tenant_id, %s", wp->config->neon_tenant);
 
-	wp->greetRequest.timeline = wp->config->pgTimeline;
-	wp->greetRequest.walSegSize = wp->config->wal_segment_size;
+	wp->greetRequestV2.timeline = wp->config->pgTimeline;
+	wp->greetRequestV2.walSegSize = wp->config->wal_segment_size;
 
 	wp->api.init_event_set(wp);
 
@@ -658,17 +679,22 @@ RecvStartWALPushResult(Safekeeper *sk)
 
 /*
  * Start handshake: first of all send information about the
- * safekeeper. After sending, we wait on SS_HANDSHAKE_RECV for
+ * walproposer. After sending, we wait on SS_HANDSHAKE_RECV for
  * a response to finish the handshake.
  */
 static void
 SendProposerGreeting(Safekeeper *sk)
 {
+	WalProposer *wp = sk->wp;
+
+	PAMessageSerialize(wp, (ProposerAcceptorMessage *) &wp->greetRequest,
+					   &sk->outbuf, wp->config->proto_version);
+
 	/*
 	 * On failure, logging & resetting the connection is handled. We just need
 	 * to handle the control flow.
 	 */
-	BlockingWrite(sk, &sk->wp->greetRequest, sizeof(sk->wp->greetRequest), SS_HANDSHAKE_RECV);
+	BlockingWrite(sk, sk->outbuf.data, sk->outbuf.len, SS_HANDSHAKE_RECV);
 }
 
 static void
@@ -712,7 +738,6 @@ RecvAcceptorGreeting(Safekeeper *sk)
 				.tag = 'v',
 					.term = wp->propTerm
 			};
-			memcpy(wp->voteRequest.proposerId.data, wp->greetRequest.proposerId.data, UUID_LEN);
 		}
 	}
 	else if (sk->greetResponse.term > wp->propTerm)
@@ -759,12 +784,13 @@ SendVoteRequest(Safekeeper *sk)
 {
 	WalProposer *wp = sk->wp;
 
+	PAMessageSerialize(wp, (ProposerAcceptorMessage *) &wp->voteRequest,
+					   &sk->outbuf, wp->config->proto_version);
+
 	/* We have quorum for voting, send our vote request */
 	wp_log(LOG, "requesting vote from %s:%s for term " UINT64_FORMAT, sk->host, sk->port, wp->voteRequest.term);
 	/* On failure, logging & resetting is handled */
-	if (!BlockingWrite(sk, &wp->voteRequest, sizeof(wp->voteRequest), SS_WAIT_VERDICT))
-		return;
-
+	BlockingWrite(sk, sk->outbuf.data, sk->outbuf.len, SS_WAIT_VERDICT);
 	/* If successful, wait for read-ready with SS_WAIT_VERDICT */
 }
 
@@ -847,9 +873,9 @@ HandleElectedProposer(WalProposer *wp)
 	 * otherwise we must be sync-safekeepers and we have nothing to do then.
 	 *
 	 * Proceeding is not only pointless but harmful, because we'd give
-	 * safekeepers term history starting with 0/0. These hacks will go away once
-	 * we disable implicit timeline creation on safekeepers and create it with
-	 * non zero LSN from the start.
+	 * safekeepers term history starting with 0/0. These hacks will go away
+	 * once we disable implicit timeline creation on safekeepers and create it
+	 * with non zero LSN from the start.
 	 */
 	if (wp->propEpochStartLsn == InvalidXLogRecPtr)
 	{
@@ -1052,10 +1078,11 @@ DetermineEpochStartLsn(WalProposer *wp)
 		if (SkipXLogPageHeader(wp, wp->propEpochStartLsn) != wp->api.get_redo_start_lsn(wp))
 		{
 			/*
-			 * However, allow to proceed if last_log_term on the node which gave
-			 * the highest vote (i.e. point where we are going to start writing)
-			 * actually had been won by me; plain restart of walproposer not
-			 * intervened by concurrent compute which wrote WAL is ok.
+			 * However, allow to proceed if last_log_term on the node which
+			 * gave the highest vote (i.e. point where we are going to start
+			 * writing) actually had been won by me; plain restart of
+			 * walproposer not intervened by concurrent compute which wrote
+			 * WAL is ok.
 			 *
 			 * This avoids compute crash after manual term_bump.
 			 */
@@ -1168,18 +1195,7 @@ SendProposerElected(Safekeeper *sk)
 		   "sending elected msg to node " UINT64_FORMAT " term=" UINT64_FORMAT ", startStreamingAt=%X/%X (lastCommonTerm=" UINT64_FORMAT "), termHistory.n_entries=%u to %s:%s, timelineStartLsn=%X/%X",
 		   sk->greetResponse.nodeId, msg.term, LSN_FORMAT_ARGS(msg.startStreamingAt), lastCommonTerm, msg.termHistory->n_entries, sk->host, sk->port, LSN_FORMAT_ARGS(msg.timelineStartLsn));
 
-	resetStringInfo(&sk->outbuf);
-	pq_sendint64_le(&sk->outbuf, msg.tag);
-	pq_sendint64_le(&sk->outbuf, msg.term);
-	pq_sendint64_le(&sk->outbuf, msg.startStreamingAt);
-	pq_sendint32_le(&sk->outbuf, msg.termHistory->n_entries);
-	for (int i = 0; i < msg.termHistory->n_entries; i++)
-	{
-		pq_sendint64_le(&sk->outbuf, msg.termHistory->entries[i].term);
-		pq_sendint64_le(&sk->outbuf, msg.termHistory->entries[i].lsn);
-	}
-	pq_sendint64_le(&sk->outbuf, msg.timelineStartLsn);
-
+	PAMessageSerialize(wp, (ProposerAcceptorMessage *) &msg, &sk->outbuf, wp->config->proto_version);
 	if (!AsyncWrite(sk, sk->outbuf.data, sk->outbuf.len, SS_SEND_ELECTED_FLUSH))
 		return;
 
@@ -1252,7 +1268,6 @@ PrepareAppendRequest(WalProposer *wp, AppendRequestHeader *req, XLogRecPtr begin
 	req->endLsn = endLsn;
 	req->commitLsn = wp->commitLsn;
 	req->truncateLsn = wp->truncateLsn;
-	req->proposerId = wp->greetRequest.proposerId;
 }
 
 /*
@@ -1353,7 +1368,8 @@ SendAppendRequests(Safekeeper *sk)
 			resetStringInfo(&sk->outbuf);
 
 			/* write AppendRequest header */
-			appendBinaryStringInfo(&sk->outbuf, (char *) req, sizeof(AppendRequestHeader));
+			PAMessageSerialize(wp, (ProposerAcceptorMessage *) req, &sk->outbuf, wp->config->proto_version);
+			/* prepare for reading WAL into the outbuf */
 			enlargeStringInfo(&sk->outbuf, req->endLsn - req->beginLsn);
 			sk->active_state = SS_ACTIVE_READ_WAL;
 		}
@@ -1366,14 +1382,17 @@ SendAppendRequests(Safekeeper *sk)
 			req = &sk->appendRequest;
 			req_len = req->endLsn - req->beginLsn;
 
-			/* We send zero sized AppenRequests as heartbeats; don't wal_read for these. */
+			/*
+			 * We send zero sized AppenRequests as heartbeats; don't wal_read
+			 * for these.
+			 */
 			if (req_len > 0)
 			{
 				switch (wp->api.wal_read(sk,
-										&sk->outbuf.data[sk->outbuf.len],
-										req->beginLsn,
-										req_len,
-										&errmsg))
+										 &sk->outbuf.data[sk->outbuf.len],
+										 req->beginLsn,
+										 req_len,
+										 &errmsg))
 				{
 					case NEON_WALREAD_SUCCESS:
 						break;
@@ -1381,7 +1400,7 @@ SendAppendRequests(Safekeeper *sk)
 						return true;
 					case NEON_WALREAD_ERROR:
 						wp_log(WARNING, "WAL reading for node %s:%s failed: %s",
-							sk->host, sk->port, errmsg);
+							   sk->host, sk->port, errmsg);
 						ShutdownConnection(sk);
 						return false;
 					default:
@@ -1469,11 +1488,11 @@ RecvAppendResponses(Safekeeper *sk)
 			 * Term has changed to higher one, probably another compute is
 			 * running. If this is the case we could PANIC as well because
 			 * likely it inserted some data and our basebackup is unsuitable
-			 * anymore. However, we also bump term manually (term_bump endpoint)
-			 * on safekeepers for migration purposes, in this case we do want
-			 * compute to stay alive. So restart walproposer with FATAL instead
-			 * of panicking; if basebackup is spoiled next election will notice
-			 * this.
+			 * anymore. However, we also bump term manually (term_bump
+			 * endpoint) on safekeepers for migration purposes, in this case
+			 * we do want compute to stay alive. So restart walproposer with
+			 * FATAL instead of panicking; if basebackup is spoiled next
+			 * election will notice this.
 			 */
 			wp_log(FATAL, "WAL acceptor %s:%s with term " INT64_FORMAT " rejected our request, our term " INT64_FORMAT ", meaning another compute is running at the same time, and it conflicts with us",
 				   sk->host, sk->port,
@@ -1746,6 +1765,111 @@ HandleSafekeeperResponse(WalProposer *wp, Safekeeper *fromsk)
 			wp->api.finish_sync_safekeepers(wp, wp->propEpochStartLsn);
 			/* unreachable */
 		}
+	}
+}
+
+/* Serialize proposer -> acceptor message into buf using specified version */
+static void
+PAMessageSerialize(WalProposer *wp, ProposerAcceptorMessage *msg, StringInfo buf, int proto_version)
+{
+	/* both version are supported currently until we fully migrate to 3 */
+	Assert(proto_version == 3 || proto_version == 2);
+
+	resetStringInfo(buf);
+
+	/*
+	 * v2 sends structs for some messages as is, so commonly send tag only for
+	 * v3
+	 */
+	if (proto_version == 3)
+		pq_sendint8(buf, msg->tag);
+
+	switch (msg->tag)
+	{
+		case 'g':
+			{
+				if (proto_version == 3)
+				{
+					ProposerGreeting *m = (ProposerGreeting *) msg;
+
+					break;
+				}
+				else if (proto_version == 2)
+				{
+					/* v2 sent struct as is */
+					pq_sendbytes(buf, (char *) &wp->greetRequestV2, sizeof(wp->greetRequestV2));
+					break;
+				}
+				wp_log(FATAL, "unexpected proto_version %d", proto_version);
+				break;			/* keep the compiler quiet */
+			}
+		case 'v':
+			{
+				if (proto_version == 3)
+				{
+					VoteRequest *m = (VoteRequest *) msg;
+
+					Assert(false);
+					break;
+				}
+				else if (proto_version == 2)
+				{
+					/* v2 sent struct as is */
+					pq_sendbytes(buf, (char *) &wp->voteRequest, sizeof(wp->voteRequest));
+					break;
+				}
+				wp_log(FATAL, "unexpected proto_version %d", proto_version);
+				break;			/* keep the compiler quiet */
+			}
+		case 'e':
+			{
+				if (proto_version == 3)
+				{
+					Assert(false);
+					break;
+				}
+				else if (proto_version == 2)
+				{
+					ProposerElected *m = (ProposerElected *) msg;
+
+					pq_sendint64_le(buf, m->tag);
+					pq_sendint64_le(buf, m->term);
+					pq_sendint64_le(buf, m->startStreamingAt);
+					pq_sendint32_le(buf, m->termHistory->n_entries);
+					for (int i = 0; i < m->termHistory->n_entries; i++)
+					{
+						pq_sendint64_le(buf, m->termHistory->entries[i].term);
+						pq_sendint64_le(buf, m->termHistory->entries[i].lsn);
+					}
+					pq_sendint64_le(buf, m->timelineStartLsn);
+					break;
+				}
+				wp_log(FATAL, "unexpected proto_version %d", proto_version);
+				break;			/* keep the compiler quiet */
+			}
+		case 'a':
+			{
+				/*
+				 * Note: this serializes only AppendRequestHeader, caller is
+				 * expected to append WAL data later.
+				 */
+				if (proto_version == 3)
+				{
+					Assert(false);
+					break;
+				}
+				else if (proto_version == 2)
+				{
+					/* v2 sent struct as is */
+					pq_sendbytes(buf, (char *) msg, sizeof(AppendRequestHeader));
+					break;
+				}
+				wp_log(FATAL, "unexpected proto_version %d", proto_version);
+				break;			/* keep the compiler quiet */
+			}
+
+		default:
+			wp_log(FATAL, "unexpected message type %c to serialize", msg->tag);
 	}
 }
 

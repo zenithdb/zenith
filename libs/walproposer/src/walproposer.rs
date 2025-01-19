@@ -215,6 +215,7 @@ impl Wrapper {
             syncSafekeepers: config.sync_safekeepers,
             systemId: 0,
             pgTimeline: 1,
+            proto_version: 2,
             callback_data,
         };
         let c_config = Box::into_raw(Box::new(c_config));

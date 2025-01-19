@@ -155,6 +155,16 @@ pq_getmsgend(StringInfo msg)
 		ExceptionalCondition("invalid msg format", __FILE__, __LINE__);
 }
 
+/* --------------------------------
+ *		pq_sendbytes	- append raw data to a StringInfo buffer
+ * --------------------------------
+ */
+void
+pq_sendbytes(StringInfo buf, const void *data, int datalen)
+{
+	/* use variant that maintains a trailing null-byte, out of caution */
+	appendBinaryStringInfo(buf, data, datalen);
+}
 
 /*
  * Produce a C-string representation of a TimestampTz.
