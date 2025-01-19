@@ -714,6 +714,12 @@ prefetch_read(PrefetchRequest *slot)
 		/* update slot state */
 		slot->status = PRFS_RECEIVED;
 		slot->response = response;
+
+		if (response->tag == T_NeonGetPageResponse)
+		{
+			/* store prefetched result in LFC */
+			lfc_prefetch(BufTagGetNRelFileInfo(buftag), buftag.forkNum,  buftag.blockNum, ((NeonGetPageResponse*)response)->page, slot->request_lsns.not_modified_since);
+		}
 		return true;
 	}
 	else
@@ -3106,7 +3112,6 @@ Retry:
 					}
 				}
 				memcpy(buffer, getpage_resp->page, BLCKSZ);
-				lfc_write(rinfo, forkNum, blockno, buffer);
 				break;
 			}
 			case T_NeonErrorResponse:

@@ -303,6 +303,9 @@ extern int lfc_cache_containsv(NRelFileInfo rinfo, ForkNumber forkNum,
 							   BlockNumber blkno, int nblocks, bits8 *bitmap);
 extern void lfc_evict(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno);
 extern void lfc_init(void);
+extern void lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
+						 const void* buffer, XLogRecPtr lsn);
+
 
 static inline bool
 lfc_read(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
