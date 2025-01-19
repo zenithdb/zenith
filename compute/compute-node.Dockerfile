@@ -1257,6 +1257,7 @@ RUN set -e \
         autoconf \
         automake \
         libevent-dev \
+        libsystemd-dev \
         libtool \
         pkg-config \
     && apt clean && rm -rf /var/lib/apt/lists/*
@@ -1267,7 +1268,7 @@ RUN set -e \
     && git clone --recurse-submodules --depth 1 --branch ${PGBOUNCER_TAG} https://github.com/pgbouncer/pgbouncer.git pgbouncer \
     && cd pgbouncer \
     && ./autogen.sh \
-    && ./configure --prefix=/usr/local/pgbouncer --without-openssl \
+    && ./configure --prefix=/usr/local/pgbouncer --with-systemd --without-openssl \
     && make -j $(nproc) dist_man_MANS= \
     && make install dist_man_MANS=
 
