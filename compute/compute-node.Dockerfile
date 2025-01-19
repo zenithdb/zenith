@@ -1267,7 +1267,7 @@ RUN set -e \
     && git clone --recurse-submodules --depth 1 --branch ${PGBOUNCER_TAG} https://github.com/pgbouncer/pgbouncer.git pgbouncer \
     && cd pgbouncer \
     && ./autogen.sh \
-    && LDFLAGS=-static ./configure --prefix=/usr/local/pgbouncer --without-openssl \
+    && ./configure --prefix=/usr/local/pgbouncer --without-openssl \
     && make -j $(nproc) dist_man_MANS= \
     && make install dist_man_MANS=
 
@@ -1436,6 +1436,7 @@ RUN mkdir /usr/local/download_extensions && chown -R postgres:postgres /usr/loca
 # libzstd1 for zstd
 # libboost* for rdkit
 # ca-certificates for communicating with s3 by compute_ctl
+# libevent for pgbouncer
 
 
 RUN apt update && \
@@ -1472,6 +1473,7 @@ RUN apt update && \
         libxslt1.1 \
         libzstd1 \
         libcurl4 \
+        libevent-2.1-7 \
         locales \
         procps \
         ca-certificates \
