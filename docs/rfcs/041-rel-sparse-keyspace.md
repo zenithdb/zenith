@@ -109,7 +109,11 @@ With the coexistence assumption, the 3 reldir operations will be implemented as 
 This process ensures that the transition will not introduce any downtime and all new updates are written to the new keyspace. The total
 amount of data in the storage would be `O(relations_modifications)` and we can guarantee `O(current_relations)` after compaction.
 There could be some relations that exist in the old reldir key for a long time. Refer to the "Full Migration" section on how to deal
-with them.
+with them. Plus, for relation modifications, it will have `O(old_relations)` complexity until we do the full migration, which gives
+us `O(1)` complexity after fully opt-in the sparse keyspace.
+
+The process also implies that a relation will only exists either in the old reldir key or in the new sparse keyspace. It is not possible
+to have a table to be recorded in the old reldir key while later having a delete tombstone for it in the sparse keyspace at any LSN.
 
 We will introduce a config item and an index_part record to record the current status of the migration process.
 
@@ -145,12 +149,12 @@ sparse_reldir_db1_table8 -> deleted
 It will generate the following keys:
 
 ```
-db1/reldir_key -> ()
+db1/reldir_key -> () # we have to keep the key because it is part of `collect_keyspace`.
 ...db1 rel keys
 db2/reldir_key -> ()
 ...db2 rel keys
 
--- start image layer for the sparse keyspace at sparse_reldir_prefix
+-- start image layer for the sparse keyspace at sparse_reldir_prefix at LSN 0/180
 sparse_reldir_db1_table1 -> exists
 sparse_reldir_db1_table2 -> exists
 sparse_reldir_db1_table3 -> exists
@@ -165,10 +169,12 @@ sparse_reldir_db2_table7 -> exists
 # are no correctness issue.
 ```
 
-Once we verified that no pending modifications to the old reldir exists in the delta/image layers above the gc-horizon,
-we can mark `reldir_v2_status` in the `index_part.json` to `Status::Migrated`, and the read path won't need to read from
-the old reldir anymore. We can do a vectored read to get the full key history of the old reldir key and ensure there
-are no more images above the gc-horizon.
+We must verify that no pending modifications to the old reldir exists in the delta/image layers above the gc-horizon before
+we start this process (We can do a vectored read to get the full key history of the old reldir key and ensure there are no more images
+above the gc-horizon). Otherwise, it will violate the property that "a relation will only exists either in the old reldir key or
+in the new sparse keyspace". After we run this migration process, we can mark `reldir_v2_status` in the `index_part.json` to
+`Status::Migrated`, and the read path won't need to read from the old reldir anymore. Once the status is set to `Migrated`, we
+don't need to add the key into `collect_keyspace` and therefore all of them will be removed from all future image layers.
 
 The migration process can be proactively triggered across all attached/detached tenants to help us fully remove the old reldir code.
 
