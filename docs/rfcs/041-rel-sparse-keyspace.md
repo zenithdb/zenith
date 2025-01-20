@@ -67,8 +67,10 @@ implemented as follows.
 
 1. Check if a relation exists: check if the key maps to "exists".
 2. List all relations: scan the sprase keyspace over the `rel_dir_key_prefix`. Extract relnode and forknum from the key.
-3. Create/drop a relation: write "exists" or "deleted" to the corresponding key of the relation.
+3. Create/drop a relation: write "exists" or "deleted" to the corresponding key of the relation. The delete tombstone will
+   be removed during image layer generation upon compaction.
 
+Note that "exists" and "deleted" will be encoded as a single byte as two variants of an enum.
 The mapping is implemented as `rel_tag_sparse_key` in the PoC patch.
 
 ## Changes to Sparse Keyspace
@@ -92,14 +94,22 @@ migration can happen seamlessly and imposes no potential downtime for the user.
 With the coexistence assumption, the 3 reldir operations will be implemented as follows:
 
 1. Check if a relation exists
-  - Check the new keyspace if the key maps to any value. If it maps to "exists" or "deleted", directly
+   - Check the new keyspace if the key maps to any value. If it maps to "exists" or "deleted", directly
     return it to the user.
-  - Otherwise, deserialize the old reldir key and get the result.
+   - Otherwise, deserialize the old reldir key and get the result.
 2. List all relations: scan the sparse keyspace over the `rel_dir_key_prefix` and deserialize the old reldir key.
    Combine them to obtain the final result.
 3. Create/drop a relation: write "exists" or "deleted" to the corresponding key of the relation into the new keyspace.
-  - Alternatively, when a user removes a relation when the new keyspace is enabled but it is created in the
-    old reldir key, we can remove it from the old reldir key and write the delete tombstone in the new keyspace.
+   - We assume no overwrite of relations will happen (i.e., the user won't create a relation at the same Oid). This will be implemented as a runtime check.
+   - For relation creation, we add `sparse_reldir_tableX -> exists` to the keyspace.
+   - For relation drop, we first check if the relation is recorded in the old keyspace. If yes, we deserialize the old reldir key,
+    remove the relation, and then write it back. Otherwise, we put `sparse_reldir_tableX -> deleted` to the keyspace.
+   - The delete tombstone will be removed during image layer generation upon compaction.
+
+This process ensures that the transition will not introduce any downtime and all new updates are written to the new keyspace. The total
+amount of data in the storage would be `O(relations_modifications)` and we can guarantee `O(current_relations)` after compaction.
+There could be some relations that exist in the old reldir key for a long time. Refer to the "Full Migration" section on how to deal
+with them.
 
 We will introduce a config item and an index_part record to record the current status of the migration process.
 
@@ -128,31 +138,39 @@ db1/reldir_key -> (table 1, table 2, table 3)
 ...db1 rel keys
 db2/reldir_key -> (table 4, table 5, table 6)
 ...db2 rel keys
-sparse_reldir_db1_table1 -> deleted
 sparse_reldir_db2_table7 -> exists
+sparse_reldir_db1_table8 -> deleted
 ```
 
-It will generate the following keys in the new image layer:
+It will generate the following keys:
 
 ```
-db1/reldir_key -> (table 1, table 2, table 3) + migrated
+db1/reldir_key -> ()
 ...db1 rel keys
-db2/reldir_key -> (table 4, table 5, table 6) + migrated
+db2/reldir_key -> ()
 ...db2 rel keys
-sparse_reldir_db1_table1 -> deleted (keep it until the keyspace gets fully migrated)
+
+-- start image layer for the sparse keyspace at sparse_reldir_prefix
+sparse_reldir_db1_table1 -> exists
 sparse_reldir_db1_table2 -> exists
 sparse_reldir_db1_table3 -> exists
 sparse_reldir_db2_table4 -> exists
 sparse_reldir_db2_table5 -> exists
 sparse_reldir_db2_table6 -> exists
 sparse_reldir_db2_table7 -> exists
+-- end image layer for the sparse keyspace at sparse_reldir_prefix+1
+
+# The `sparse_reldir_db1_table8` key gets dropped as part of the image layer generation code for the sparse keyspace.
+# Note that the read path will stop reading if a key is not found in the image layer covering the key range so there
+# are no correctness issue.
 ```
 
 Once we verified that no pending modifications to the old reldir exists in the delta/image layers above the gc-horizon,
 we can mark `reldir_v2_status` in the `index_part.json` to `Status::Migrated`, and the read path won't need to read from
-the old reldir anymore. Furthermore, image layer generation can drop all keys marked as `deleted` (we need to keep these
-deleted keys before the migration is fully completed in case they get created in the old reldir key but deleted in the new
-sparse keyspace).
+the old reldir anymore. We can do a vectored read to get the full key history of the old reldir key and ensure there
+are no more images above the gc-horizon.
+
+The migration process can be proactively triggered across all attached/detached tenants to help us fully remove the old reldir code.
 
 ## Next Steps
 
