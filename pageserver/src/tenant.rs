@@ -1153,6 +1153,7 @@ impl Tenant {
             resources,
             CreateTimelineCause::Load,
             idempotency.clone(),
+            index_part.l2_lsn,
         )?;
         let disk_consistent_lsn = timeline.get_disk_consistent_lsn();
         anyhow::ensure!(
@@ -3961,6 +3962,7 @@ impl Tenant {
         resources: TimelineResources,
         cause: CreateTimelineCause,
         create_idempotency: CreateTimelineIdempotency,
+        l2_lsn: Option<Lsn>,
     ) -> anyhow::Result<Arc<Timeline>> {
         let state = match cause {
             CreateTimelineCause::Load => {
@@ -3991,6 +3993,7 @@ impl Tenant {
             state,
             self.attach_wal_lag_cooldown.clone(),
             create_idempotency,
+            l2_lsn,
             self.cancel.child_token(),
         );
 
@@ -5051,6 +5054,7 @@ impl Tenant {
                 resources,
                 CreateTimelineCause::Load,
                 create_guard.idempotency.clone(),
+                None,
             )
             .context("Failed to create timeline data structure")?;
 
@@ -5475,6 +5479,11 @@ pub(crate) mod harness {
                 lsn_lease_length_for_ts: Some(tenant_conf.lsn_lease_length_for_ts),
                 timeline_offloading: Some(tenant_conf.timeline_offloading),
                 wal_receiver_protocol_override: tenant_conf.wal_receiver_protocol_override,
+                gc_compaction_enabled: Some(tenant_conf.gc_compaction_enabled),
+                gc_compaction_initial_threshold_mb: Some(
+                    tenant_conf.gc_compaction_initial_threshold_mb,
+                ),
+                gc_compaction_ratio_percent: Some(tenant_conf.gc_compaction_ratio_percent),
             }
         }
     }

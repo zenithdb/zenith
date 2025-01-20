@@ -916,6 +916,18 @@ impl RemoteTimelineClient {
         Ok(())
     }
 
+    /// Launch an index-file upload operation in the background, setting `import_pgdata` field.
+    pub(crate) fn schedule_index_upload_for_l2_lsn_update(
+        self: &Arc<Self>,
+        l2_lsn: Lsn,
+    ) -> anyhow::Result<()> {
+        let mut guard = self.upload_queue.lock().unwrap();
+        let upload_queue = guard.initialized_mut()?;
+        upload_queue.dirty.l2_lsn = Some(l2_lsn);
+        self.schedule_index_upload(upload_queue);
+        Ok(())
+    }
+
     ///
     /// Launch an index-file upload operation in the background, if necessary.
     ///
