@@ -1,5 +1,6 @@
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
+use once_cell::sync::Lazy;
 use pageserver_api::keyspace::KeySpace;
 use pageserver_api::models::HistoricLayerInfo;
 use pageserver_api::shard::{ShardIdentity, ShardIndex, TenantShardId};
@@ -2096,6 +2097,36 @@ impl Default for LayerImplMetrics {
 }
 
 impl LayerImplMetrics {
+    /// Resets the layer metrics to 0, for use in tests. Since this is a global static, metrics will
+    /// be shared across tests, and must be reset in each test case.
+    #[cfg(test)]
+    fn reset(&self) {
+        // Destructure to error on new fields.
+        let LayerImplMetrics {
+            started_evictions,
+            completed_evictions,
+            cancelled_evictions,
+            started_deletes,
+            completed_deletes,
+            failed_deletes,
+            rare_counters,
+            inits_cancelled,
+            redownload_after,
+            time_to_evict,
+        } = self;
+
+        started_evictions.reset();
+        completed_evictions.reset();
+        cancelled_evictions.values().for_each(|c| c.reset());
+        started_deletes.reset();
+        completed_deletes.reset();
+        failed_deletes.values().for_each(|c| c.reset());
+        rare_counters.values().for_each(|c| c.reset());
+        inits_cancelled.reset();
+        redownload_after.local().clear();
+        time_to_evict.local().clear();
+    }
+
     fn inc_started_evictions(&self) {
         self.started_evictions.inc();
     }
@@ -2247,5 +2278,4 @@ impl RareEvent {
     }
 }
 
-pub(crate) static LAYER_IMPL_METRICS: once_cell::sync::Lazy<LayerImplMetrics> =
-    once_cell::sync::Lazy::new(LayerImplMetrics::default);
+pub(crate) static LAYER_IMPL_METRICS: Lazy<LayerImplMetrics> = Lazy::new(LayerImplMetrics::default);
