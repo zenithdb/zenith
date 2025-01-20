@@ -752,6 +752,7 @@ impl ChunkProcessingJob {
             self.timeline.tenant_shard_id,
             &self.range,
             self.pgdata_lsn,
+            &self.timeline.gate,
             ctx,
         )
         .await?;

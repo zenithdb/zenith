@@ -7,8 +7,7 @@ use crate::context::RequestContext;
 use crate::page_cache::{self, FileId, PageReadGuard, PageWriteGuard, ReadBufResult, PAGE_SZ};
 #[cfg(test)]
 use crate::virtual_file::IoBufferMut;
-use crate::virtual_file::VirtualFile;
-use bytes::Bytes;
+use crate::virtual_file::{IoBuffer, VirtualFile};
 use std::ops::Deref;
 
 /// This is implemented by anything that can read 8 kB (PAGE_SZ)
@@ -249,17 +248,17 @@ pub trait BlockWriter {
     /// 'buf' must be of size PAGE_SZ. Returns the block number the page was
     /// written to.
     ///
-    fn write_blk(&mut self, buf: Bytes) -> Result<u32, std::io::Error>;
+    fn write_blk(&mut self, buf: IoBuffer) -> Result<u32, std::io::Error>;
 }
 
 ///
 /// A simple in-memory buffer of blocks.
 ///
 pub struct BlockBuf {
-    pub blocks: Vec<Bytes>,
+    pub blocks: Vec<IoBuffer>,
 }
 impl BlockWriter for BlockBuf {
-    fn write_blk(&mut self, buf: Bytes) -> Result<u32, std::io::Error> {
+    fn write_blk(&mut self, buf: IoBuffer) -> Result<u32, std::io::Error> {
         assert!(buf.len() == PAGE_SZ);
         let blknum = self.blocks.len();
         self.blocks.push(buf);

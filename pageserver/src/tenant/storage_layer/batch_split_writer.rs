@@ -165,6 +165,7 @@ pub struct SplitImageLayerWriter {
 }
 
 impl SplitImageLayerWriter {
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         conf: &'static PageServerConf,
         timeline_id: TimelineId,
@@ -172,6 +173,7 @@ impl SplitImageLayerWriter {
         start_key: Key,
         lsn: Lsn,
         target_layer_size: u64,
+        gate: &utils::sync::gate::Gate,
         ctx: &RequestContext,
     ) -> anyhow::Result<Self> {
         Ok(Self {
@@ -182,6 +184,7 @@ impl SplitImageLayerWriter {
                 tenant_shard_id,
                 &(start_key..Key::MAX),
                 lsn,
+                gate,
                 ctx,
             )
             .await?,
@@ -198,6 +201,7 @@ impl SplitImageLayerWriter {
         &mut self,
         key: Key,
         img: Bytes,
+        gate: &utils::sync::gate::Gate,
         ctx: &RequestContext,
     ) -> anyhow::Result<()> {
         // The current estimation is an upper bound of the space that the key/image could take
@@ -213,6 +217,7 @@ impl SplitImageLayerWriter {
                 self.tenant_shard_id,
                 &(key..Key::MAX),
                 self.lsn,
+                gate,
                 ctx,
             )
             .await?;
@@ -301,6 +306,7 @@ impl SplitDeltaLayerWriter {
         key: Key,
         lsn: Lsn,
         val: Value,
+        gate: &utils::sync::gate::Gate,
         ctx: &RequestContext,
     ) -> anyhow::Result<()> {
         // The current estimation is key size plus LSN size plus value size estimation. This is not an accurate
@@ -318,6 +324,7 @@ impl SplitDeltaLayerWriter {
                     self.tenant_shard_id,
                     key,
                     self.lsn_range.clone(),
+                    gate,
                     ctx,
                 )
                 .await?,
@@ -336,6 +343,7 @@ impl SplitDeltaLayerWriter {
                     self.tenant_shard_id,
                     key,
                     self.lsn_range.clone(),
+                    gate,
                     ctx,
                 )
                 .await?;
@@ -448,6 +456,7 @@ mod tests {
             get_key(0),
             Lsn(0x18),
             4 * 1024 * 1024,
+            &tline.gate,
             &ctx,
         )
         .await
@@ -464,7 +473,7 @@ mod tests {
         .unwrap();
 
         image_writer
-            .put_image(get_key(0), get_img(0), &ctx)
+            .put_image(get_key(0), get_img(0), &tline.gate, &ctx)
             .await
             .unwrap();
         let layers = image_writer
@@ -474,7 +483,13 @@ mod tests {
         assert_eq!(layers.len(), 1);
 
         delta_writer
-            .put_value(get_key(0), Lsn(0x18), Value::Image(get_img(0)), &ctx)
+            .put_value(
+                get_key(0),
+                Lsn(0x18),
+                Value::Image(get_img(0)),
+                &tline.gate,
+                &ctx,
+            )
             .await
             .unwrap();
         let layers = delta_writer.finish(&tline, &ctx).await.unwrap();
@@ -525,6 +540,7 @@ mod tests {
             get_key(0),
             Lsn(0x18),
             4 * 1024 * 1024,
+            &tline.gate,
             &ctx,
         )
         .await
@@ -542,11 +558,17 @@ mod tests {
         for i in 0..N {
             let i = i as u32;
             image_writer
-                .put_image(get_key(i), get_large_img(), &ctx)
+                .put_image(get_key(i), get_large_img(), &tline.gate, &ctx)
                 .await
                 .unwrap();
             delta_writer
-                .put_value(get_key(i), Lsn(0x20), Value::Image(get_large_img()), &ctx)
+                .put_value(
+                    get_key(i),
+                    Lsn(0x20),
+                    Value::Image(get_large_img()),
+                    &tline.gate,
+                    &ctx,
+                )
                 .await
                 .unwrap();
         }
@@ -622,6 +644,7 @@ mod tests {
             get_key(0),
             Lsn(0x18),
             4 * 1024,
+            &tline.gate,
             &ctx,
         )
         .await
@@ -638,11 +661,11 @@ mod tests {
         .unwrap();
 
         image_writer
-            .put_image(get_key(0), get_img(0), &ctx)
+            .put_image(get_key(0), get_img(0), &tline.gate, &ctx)
             .await
             .unwrap();
         image_writer
-            .put_image(get_key(1), get_large_img(), &ctx)
+            .put_image(get_key(1), get_large_img(), &tline.gate, &ctx)
             .await
             .unwrap();
         let layers = image_writer
@@ -652,11 +675,23 @@ mod tests {
         assert_eq!(layers.len(), 2);
 
         delta_writer
-            .put_value(get_key(0), Lsn(0x18), Value::Image(get_img(0)), &ctx)
+            .put_value(
+                get_key(0),
+                Lsn(0x18),
+                Value::Image(get_img(0)),
+                &tline.gate,
+                &ctx,
+            )
             .await
             .unwrap();
         delta_writer
-            .put_value(get_key(1), Lsn(0x1A), Value::Image(get_large_img()), &ctx)
+            .put_value(
+                get_key(1),
+                Lsn(0x1A),
+                Value::Image(get_large_img()),
+                &tline.gate,
+                &ctx,
+            )
             .await
             .unwrap();
         let layers = delta_writer.finish(&tline, &ctx).await.unwrap();
@@ -720,6 +755,7 @@ mod tests {
                     get_key(0),
                     Lsn(i as u64 * 16 + 0x10),
                     Value::Image(get_large_img()),
+                    &tline.gate,
                     &ctx,
                 )
                 .await

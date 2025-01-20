@@ -3978,7 +3978,12 @@ impl Timeline {
         let ctx = ctx.attached_child();
         let work = async move {
             let Some((desc, path)) = frozen_layer
-                .write_to_disk(&ctx, key_range, self_clone.l0_flush_global_state.inner())
+                .write_to_disk(
+                    &ctx,
+                    key_range,
+                    self_clone.l0_flush_global_state.inner(),
+                    &self_clone.gate,
+                )
                 .await?
             else {
                 return Ok(None);
@@ -4452,6 +4457,7 @@ impl Timeline {
                 self.tenant_shard_id,
                 &img_range,
                 lsn,
+                &self.gate,
                 ctx,
             )
             .await?;
@@ -5667,6 +5673,7 @@ impl Timeline {
             self.tenant_shard_id,
             &(min_key..end_key),
             lsn,
+            &self.gate,
             ctx,
         )
         .await?;
@@ -5728,6 +5735,7 @@ impl Timeline {
             self.tenant_shard_id,
             deltas.key_range.start,
             deltas.lsn_range,
+            &self.gate,
             ctx,
         )
         .await?;

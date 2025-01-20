@@ -910,9 +910,9 @@ mod tests {
     async fn round_trip_test_compressed(blobs: &[Vec<u8>], compression: bool) -> Result<(), Error> {
         let ctx = RequestContext::new(TaskKind::UnitTest, DownloadBehavior::Error);
         let (_temp_dir, pathbuf, offsets) =
-            write_maybe_compressed::<true>(blobs, compression, &ctx).await?;
+            write_maybe_compressed(blobs, compression, &ctx).await?;
 
-        let file = VirtualFile::open(&pathbuf, &ctx).await?;
+        let file = VirtualFile::open_v2(&pathbuf, &ctx).await?;
         let file_len = std::fs::metadata(&pathbuf)?.len();
 
         // Multiply by two (compressed data might need more space), and add a few bytes for the header
