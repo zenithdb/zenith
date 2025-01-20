@@ -1,0 +1,45 @@
+# Example systemd service unit for PgBouncer
+#
+# - Adjust the paths in ExecStart for your installation.
+#
+# - For systemd 253 and later, PgBouncer supports Type=notify-reload
+#   (instead of Type=notify with ExecReload= command).
+#
+# - The User setting requires careful consideration.  PgBouncer needs
+#   to be able to place a Unix-domain socket file where PostgreSQL
+#   clients will look for it.  In the olden days, this was in /tmp,
+#   but systems using systemd now prefer something like
+#   /var/run/postgresql/.  But then some systems also lock down that
+#   directory so that only the postgres user can write to it.  That
+#   means you need to either
+#
+#   - run PgBouncer as the postgres user, or
+#
+#   - create a separate user and add it to the postgres group and
+#     make /var/run/postgresql/ group-writable, or
+#
+#   - use systemd to create the sockets; see pgbouncer.socket nearby.
+#
+#   For packagers and deployment systems, this requires some
+#   coordination between the PgBouncer and the PostgreSQL
+#   packages/components.
+#
+[Unit]
+Description=connection pooler for PostgreSQL
+Documentation=man:pgbouncer(1)
+Documentation=https://www.pgbouncer.org/
+After=network-online.target
+Wants=network-online.target
+#Requires=pgbouncer.socket
+
+[Service]
+Type=notify
+User=postgres
+ExecStart=/usr/local/bin/pgbouncer /etc/pgbouncer.ini
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGINT
+Restart=on-failure
+#LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

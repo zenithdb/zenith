@@ -1,0 +1,14 @@
+[Unit]
+Description=Postgres metrics exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=nobody
+Environment=DATA_SOURCE_NAME="user=cloud_admin sslmode=disable dbname=postgres application_name=postgres-exporter"
+ExecStart=/bin/postgres_exporter --config.file=/etc/postgres_exporter.yml
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

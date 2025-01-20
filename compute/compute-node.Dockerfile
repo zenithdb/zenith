@@ -1,3 +1,34 @@
+#
+# This Dockerfile can be used to build several kinds of target images:
+#
+# Target: compute-node
+# --------------------
+#
+# Contains compute_ctl, Postgres, extensions, pgbouncer, and metrics exporters.
+# Everything that's needed to provide the user-visible services of a compute
+# endpoint. The target produces a docker image that's suitable for running
+# compute_ctl in a docker container (compute_ctl is set as the entrypoint).  The
+# other services like pgbouncer are not launched when you execute this
+# container, although the binaries are included in the image.
+#
+# When building old-style VM images with vm-builder, this is the input to
+# vm-builder. For backwards-compatibility, this is the default target.
+
+# Target: compute-node-bootable
+# -----------------------------
+#
+# Produces an image with systemd, and systemd configuration to run all the
+# services. This is suitable for running in a VM. For testing, it can also be
+# launched in a docker container with:
+#
+#  docker run --name=compute-node  --privileged neondatabase/compute-node-bootable:local /sbin/init
+#
+# Target: compute-node-neonvm-payload
+# -----------------------------------
+#
+# Processes 'compute-node-bootable' into a QCOW2 image, suitable for loading with
+# neonvm-guest
+
 ARG PG_VERSION
 ARG REPOSITORY=neondatabase
 ARG IMAGE=build-tools
@@ -5,6 +36,10 @@ ARG TAG=pinned
 ARG BUILD_TAG
 ARG DEBIAN_VERSION=bookworm
 ARG DEBIAN_FLAVOR=${DEBIAN_VERSION}-slim
+
+# By default, build all PostgreSQL extensions. For quick local testing when you don't
+# care about the extensions, pass EXTENSIONS=none
+ARG EXTENSIONS=all
 
 #########################################################################################
 #
@@ -1151,11 +1186,38 @@ RUN wget https://github.com/reorg/pg_repack/archive/refs/tags/ver_1.5.2.tar.gz -
 
 #########################################################################################
 #
-# Layer "neon-pg-ext-build"
-# compile neon extensions
+# Layer "extensions-none"
+# compile neon extensions (but no other extensions)
 #
 #########################################################################################
-FROM build-deps AS neon-pg-ext-build
+FROM pg-build AS extensions-none
+ARG PG_VERSION
+COPY pgxn/ pgxn/
+
+RUN make -j $(getconf _NPROCESSORS_ONLN) \
+        PG_CONFIG=/usr/local/pgsql/bin/pg_config \
+        -C pgxn/neon \
+        -s install && \
+    make -j $(getconf _NPROCESSORS_ONLN) \
+        PG_CONFIG=/usr/local/pgsql/bin/pg_config \
+        -C pgxn/neon_utils \
+        -s install && \
+    make -j $(getconf _NPROCESSORS_ONLN) \
+        PG_CONFIG=/usr/local/pgsql/bin/pg_config \
+        -C pgxn/neon_test_utils \
+        -s install && \
+    make -j $(getconf _NPROCESSORS_ONLN) \
+        PG_CONFIG=/usr/local/pgsql/bin/pg_config \
+        -C pgxn/neon_rmgr \
+        -s install
+
+#########################################################################################
+#
+# Layer "extensions-all"
+# compile all extensions
+#
+#########################################################################################
+FROM extensions-none AS extensions-all
 ARG PG_VERSION
 
 # Public extensions
@@ -1196,24 +1258,15 @@ COPY --from=pg-ivm-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-partman-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-mooncake-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-repack-build /usr/local/pgsql/ /usr/local/pgsql/
-COPY pgxn/ pgxn/
 
-RUN make -j $(getconf _NPROCESSORS_ONLN) \
-        PG_CONFIG=/usr/local/pgsql/bin/pg_config \
-        -C pgxn/neon \
-        -s install && \
-    make -j $(getconf _NPROCESSORS_ONLN) \
-        PG_CONFIG=/usr/local/pgsql/bin/pg_config \
-        -C pgxn/neon_utils \
-        -s install && \
-    make -j $(getconf _NPROCESSORS_ONLN) \
-        PG_CONFIG=/usr/local/pgsql/bin/pg_config \
-        -C pgxn/neon_test_utils \
-        -s install && \
-    make -j $(getconf _NPROCESSORS_ONLN) \
-        PG_CONFIG=/usr/local/pgsql/bin/pg_config \
-        -C pgxn/neon_rmgr \
-        -s install
+#########################################################################################
+#
+# Layer "neon-pg-ext-build"
+# Includes Postgres and all the extensions chosen by EXTENSIONS arg.
+#
+#########################################################################################
+FROM extensions-${EXTENSIONS} AS neon-pg-ext-build
+ARG PG_VERSION
 
 #########################################################################################
 #
@@ -1382,13 +1435,17 @@ ENV PGHOST=compute
 ENV PGPORT=55433
 ENV PGUSER=cloud_admin
 ENV PGDATABASE=postgres
+
 #########################################################################################
 #
-# Final layer
-# Put it all together into the final image
+# Target: compute-node
+#
+# Put it all together into the final 'compute-node' image. It can be executed directly
+# with docker, to run the 'compute_ctl'. The other services will not be launched in
+# that case.
 #
 #########################################################################################
-FROM debian:$DEBIAN_FLAVOR
+FROM debian:$DEBIAN_FLAVOR as compute-node-build
 ARG DEBIAN_VERSION
 # Add user postgres
 RUN mkdir /var/db && useradd -m -d /var/db/postgres postgres && \
@@ -1481,7 +1538,6 @@ RUN apt update && \
         curl \
         unzip \
         $VERSION_INSTALLS && \
-    apt clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
     localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
 
 # aws cli is used by fast_import (curl and unzip above are at this time only used for this installation step)
@@ -1503,6 +1559,88 @@ RUN set -ex; \
     rm -rf /tmp/awscliv2.zip /tmp/awscliv2; \
     true
 
+FROM compute-node-build as compute-node
+ARG DEBIAN_VERSION
+
+RUN apt clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# If this image is executed as a stand-alone docker container, these are used.
 ENV LANG=en_US.utf8
 USER postgres
 ENTRYPOINT ["/usr/local/bin/compute_ctl"]
+
+#########################################################################################
+#
+# Target: compute-node-bootable
+#
+# A "bootable" image which includes systemd, configured to launch all the services.
+#
+# For testing purposes, this can be run directly with docker:
+#
+#  docker run --name=compute-node  --privileged neondatabase/compute-node-bootable:local /sbin/init
+#
+#########################################################################################
+
+FROM compute-node-build as compute-node-bootable
+
+# dbus is required so that you can "machinectl shell" into this when run in an systemd-nspawn
+# container
+RUN apt install --no-install-recommends -y \
+    systemd \
+    systemd-sysv \
+    dbus
+
+## copy systemd unit files for the services and enable them
+COPY compute/etc/systemd/ /etc/systemd
+RUN systemctl enable \
+    systemd-networkd.service \
+    pgbouncer \
+    postgres_exporter sql_exporter sql_exporter-autoscaling \
+    local_proxy \
+    compute_ctl
+
+ENTRYPOINT ["/sbin/init"]
+
+#########################################################################################
+#
+# Target: compute-node-neonvm-payload
+#
+# Contains 'compute-node-bootable', as a QCOW2 disk image, suitable for booting with
+# neonvm-guest
+#
+#########################################################################################
+
+# Wrap the same in a QCOW2 image
+FROM debian:bookworm-slim AS compute-node-neonvm-payload-build
+ARG DISK_SIZE=5G
+# tools for qemu disk creation. procps is for sysctl, needed because neonvm-controller
+# launches this in an init container that runs sysctl.
+RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
+    qemu-utils \
+    e2fsprogs \
+    procps
+
+COPY --from=compute-node-bootable / /rootdisk/
+
+RUN set -e \
+    && mkfs.ext4 -L neonvm-payload -d /rootdisk /disk.raw ${DISK_SIZE} \
+    && qemu-img convert -f raw -O qcow2 -o cluster_size=2M,lazy_refcounts=on /disk.raw /neonvm-payload.qcow2
+
+FROM debian:bookworm-slim AS compute-node-neonvm-payload
+ARG DISK_SIZE=5G
+ARG DISK_SIZE=5G
+# procps is for sysctl, needed because neonvm-controller launches this in an init
+# container that runs sysctl.
+RUN apt update && apt install --no-install-recommends --no-install-suggests -y \
+    procps
+
+COPY --from=compute-node-neonvm-payload-build /neonvm-payload.qcow2 /
+
+RUN apt clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+#########################################################################################
+#
+# make 'compute-node' the default target
+#
+#########################################################################################
+FROM compute-node

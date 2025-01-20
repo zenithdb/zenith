@@ -1,0 +1,13 @@
+[Unit]
+Description=SQL metrics exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=nobody
+ExecStart=/bin/sql_exporter -config.file=/etc/sql_exporter.yml -web.listen-address=:9399
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

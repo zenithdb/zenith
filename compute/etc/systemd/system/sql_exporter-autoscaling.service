@@ -1,0 +1,13 @@
+[Unit]
+Description=SQL metrics exporter (autoscaling)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=nobody
+ExecStart=/bin/sql_exporter -config.file=/etc/sql_exporter_autoscaling.yml -web.listen-address=:9499
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Neon local proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=postgres
+ExecStart=/usr/local/bin/local_proxy --config-path /etc/local_proxy/config.json --pid-path /etc/local_proxy/pid --http 0.0.0.0:10432
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
