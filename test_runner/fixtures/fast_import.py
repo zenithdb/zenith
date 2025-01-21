@@ -23,6 +23,7 @@ class FastImport(AbstractNeonCli):
         pg_distrib_dir: Path,
         pg_version: PgVersion,
         workdir: Path,
+        cleanup: bool = True,
     ):
         if extra_env is None:
             env_vars = {}
@@ -47,6 +48,7 @@ class FastImport(AbstractNeonCli):
         if not workdir.exists():
             raise Exception(f"Working directory '{workdir}' does not exist")
         self.workdir = workdir
+        self.cleanup = cleanup
 
     def run(
         self,
@@ -81,7 +83,7 @@ class FastImport(AbstractNeonCli):
         return self
 
     def __exit__(self, *args):
-        if self.workdir.exists():
+        if self.workdir.exists() and self.cleanup:
             shutil.rmtree(self.workdir)
 
 
@@ -92,8 +94,8 @@ def fast_import(
     neon_binpath: Path,
     pg_distrib_dir: Path,
 ) -> Iterator[FastImport]:
-    workdir = Path(tempfile.mkdtemp())
-    with FastImport(None, neon_binpath, pg_distrib_dir, pg_version, workdir) as fi:
+    workdir = Path(tempfile.mkdtemp(dir=test_output_dir, prefix="fast_import_"))
+    with FastImport(None, neon_binpath, pg_distrib_dir, pg_version, workdir, cleanup=False) as fi:
         yield fi
 
         if fi.cmd is None:
