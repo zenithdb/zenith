@@ -1259,8 +1259,6 @@ RUN cargo pgrx install --release && \
 FROM build-deps AS pgx_ulid-src
 ARG PG_VERSION
 
-# doesn't support v17 yet
-# https://github.com/pksunkara/pgx_ulid/pull/52
 WORKDIR /ext-src
 RUN case "${PG_VERSION}" in \
     "v14" | "v15" | "v16") \
