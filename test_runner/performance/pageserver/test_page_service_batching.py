@@ -11,7 +11,7 @@ from fixtures.log_helper import log
 from fixtures.neon_fixtures import NeonEnvBuilder, PgBin, wait_for_last_flush_lsn
 from fixtures.utils import humantime_to_ms
 
-TARGET_RUNTIME = 30
+TARGET_RUNTIME = 5
 
 
 @dataclass
@@ -31,7 +31,9 @@ class PageServicePipeliningConfigPipelined(PageServicePipeliningConfig):
     mode: str = "pipelined"
 
 
-EXECUTION = ["concurrent-futures", "tasks"]
+PS_DIRECT_IO = ["direct"]
+PS_IO_CONCURRENCY = ["sequential", "sidecar-task"]
+EXECUTION = ["concurrent-futures"]
 
 NON_BATCHABLE: list[PageServicePipeliningConfig] = [PageServicePipeliningConfigSerial()]
 for max_batch_size in [1, 32]:
@@ -39,38 +41,45 @@ for max_batch_size in [1, 32]:
         NON_BATCHABLE.append(PageServicePipeliningConfigPipelined(max_batch_size, execution))
 
 BATCHABLE: list[PageServicePipeliningConfig] = [PageServicePipeliningConfigSerial()]
-for max_batch_size in [1, 2, 4, 8, 16, 32]:
+for max_batch_size in [32]:
     for execution in EXECUTION:
         BATCHABLE.append(PageServicePipeliningConfigPipelined(max_batch_size, execution))
 
 
 @pytest.mark.parametrize(
-    "tablesize_mib, pipelining_config, target_runtime, effective_io_concurrency, readhead_buffer_size, name",
+    "tablesize_mib, pipelining_config, target_runtime, ps_io_concurrency, ps_direct_io_mode, effective_io_concurrency, readhead_buffer_size, name",
     [
         # non-batchable workloads
         # (A separate benchmark will consider latency).
-        *[
-            (
-                50,
-                config,
-                TARGET_RUNTIME,
-                1,
-                128,
-                f"not batchable {dataclasses.asdict(config)}",
-            )
-            for config in NON_BATCHABLE
-        ],
+        # *[
+        #     (
+        #         50,
+        #         config,
+        #         TARGET_RUNTIME,
+        #         ps_io_concurrency,
+        #         ps_direct_io_mode,
+        #         1,
+        #         128,
+        #         f"not batchable {dataclasses.asdict(config)}",
+        #     )
+        #     for config in NON_BATCHABLE
+        #     for ps_io_concurrency in PS_IO_CONCURRENCY
+        # ],
         # batchable workloads should show throughput and CPU efficiency improvements
         *[
             (
                 50,
                 config,
                 TARGET_RUNTIME,
+                ps_io_concurrency,
+                ps_direct_io_mode,
                 100,
                 128,
                 f"batchable {dataclasses.asdict(config)}",
             )
             for config in BATCHABLE
+            for ps_io_concurrency in PS_IO_CONCURRENCY
+            for ps_direct_io_mode in PS_DIRECT_IO
         ],
     ],
 )
@@ -80,6 +89,8 @@ def test_throughput(
     tablesize_mib: int,
     pipelining_config: PageServicePipeliningConfig,
     target_runtime: int,
+    ps_io_concurrency: str,
+    ps_direct_io_mode: str,
     effective_io_concurrency: int,
     readhead_buffer_size: int,
     name: str,
@@ -117,7 +128,20 @@ def test_throughput(
         }
     )
     # For storing configuration as a metric, insert a fake 0 with labels with actual data
-    params.update({"pipelining_config": (0, {"labels": dataclasses.asdict(pipelining_config)})})
+    params.update(
+        {
+            "config": (
+                0,
+                {
+                    "labels": {
+                        "pipelining_config": dataclasses.asdict(pipelining_config),
+                        "ps_io_concurrency": ps_io_concurrency,
+                        "direct_io": ps_direct_io_mode,
+                    }
+                },
+            )
+        }
+    )
 
     log.info("params: %s", params)
 
@@ -229,7 +253,11 @@ def test_throughput(
         return (after - before).normalize(iters - 1)
 
     env.pageserver.patch_config_toml_nonrecursive(
-        {"page_service_pipelining": dataclasses.asdict(pipelining_config)}
+        {
+            "page_service_pipelining": dataclasses.asdict(pipelining_config),
+            "virtual_file_io_mode": ps_direct_io_mode,
+            "get_vectored_concurrent_io": {"mode": ps_io_concurrency},
+        }
     )
     env.pageserver.restart()
     metrics = workload()
@@ -266,14 +294,19 @@ for max_batch_size in [1, 32]:
 
 
 @pytest.mark.parametrize(
-    "pipelining_config,name",
-    [(config, f"{dataclasses.asdict(config)}") for config in PRECISION_CONFIGS],
+    "pipelining_config,ps_io_concurrency,name",
+    [
+        (config, ps_io_concurrency, f"{dataclasses.asdict(config)}")
+        for config in PRECISION_CONFIGS
+        for ps_io_concurrency in PS_IO_CONCURRENCY
+    ],
 )
 def test_latency(
     neon_env_builder: NeonEnvBuilder,
     zenbenchmark: NeonBenchmarker,
     pg_bin: PgBin,
     pipelining_config: PageServicePipeliningConfig,
+    ps_io_concurrency: str,
     name: str,
 ):
     """
@@ -292,6 +325,8 @@ def test_latency(
     def patch_ps_config(ps_config):
         if pipelining_config is not None:
             ps_config["page_service_pipelining"] = dataclasses.asdict(pipelining_config)
+            ps_config["get_vectored_concurrent_io"] = {"mode": ps_io_concurrency}
+            # FIXME: parametrize over direct IO mode
 
     neon_env_builder.pageserver_config_override = patch_ps_config
 
