@@ -7,7 +7,6 @@ import dataclasses
 import json
 import logging
 import os
-import re
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -65,9 +64,6 @@ class Row:
     raw: str
 
 
-TEST_NAME_RE = re.compile(r"[\[-](?P<build_type>debug|release)-pg(?P<pg_version>\d+)[-\]]")
-
-
 def err(msg):
     print(f"error: {msg}")
     sys.exit(1)
@@ -92,22 +88,6 @@ def get_connection_cursor(connstr: str):
 
 def create_table(cur):
     cur.execute(CREATE_TABLE)
-
-
-def parse_test_name(test_name: str) -> tuple[str, int, str]:
-    build_type, pg_version = None, None
-    if match := TEST_NAME_RE.search(test_name):
-        found = match.groupdict()
-        build_type = found["build_type"]
-        pg_version = int(found["pg_version"])
-    else:
-        # It's ok, we embed BUILD_TYPE and Postgres Version into the test name only for regress suite and do not for other suites (like performance)
-        build_type = "release"
-        pg_version = 14
-
-    unparametrized_name = re.sub(rf"{build_type}-pg{pg_version}-?", "", test_name).replace("[]", "")
-
-    return build_type, pg_version, unparametrized_name
 
 
 def ingest_test_result(
@@ -135,13 +115,15 @@ def ingest_test_result(
         }
         arch = parameters.get("arch", "UNKNOWN").strip("'")
         lfc = parameters.get("lfc", "False") == "True"
+        pg_version = int(parameters.get("pg_version", 17))
+        build_type = parameters.get("build_type", "debug").strip("'")
 
-        build_type, pg_version, unparametrized_name = parse_test_name(test["name"])
+        name = test["name"]
         labels = {label["name"]: label["value"] for label in test["labels"]}
         row = Row(
             parent_suite=labels["parentSuite"],
             suite=labels["suite"],
-            name=unparametrized_name,
+            name=name,
             status=test["status"],
             started_at=datetime.fromtimestamp(test["time"]["start"] / 1000, tz=UTC),
             stopped_at=datetime.fromtimestamp(test["time"]["stop"] / 1000, tz=UTC),
