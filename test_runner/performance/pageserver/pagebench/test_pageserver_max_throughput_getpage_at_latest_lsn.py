@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import dataclasses
 import json
+import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -56,13 +60,15 @@ def test_pageserver_characterize_throughput_with_n_tenants(
 # For reference, the space usage of the snapshots:
 # sudo du -hs /instance_store/neon/test_output/shared-snapshots/*
 # 19G	/instance_store/neon/test_output/shared-snapshots/max_throughput_latest_lsn-1-136
-@pytest.mark.parametrize("duration", [20 * 60])
+@pytest.mark.parametrize("duration", [20])
 @pytest.mark.parametrize("pgbench_scale", [get_scale_for_db(2048)])
 # we use 1 client to characterize latencies, and 64 clients to characterize throughput/scalability
 # we use 64 clients because typically for a high number of connections we recommend the connection pooler
 # which by default uses 64 connections
-@pytest.mark.parametrize("n_clients", [1, 64])
+@pytest.mark.parametrize("n_clients", [1])
 @pytest.mark.parametrize("n_tenants", [1])
+@pytest.mark.parametrize("io_concurrency", ["serial", "futures-unordered"])
+@pytest.mark.parametrize("ps_direct_io_mode", ["direct"])
 @pytest.mark.timeout(2400)
 @skip_on_ci(
     "This test needs lot of resources and should run on dedicated HW, not in github action runners as part of CI"
@@ -75,9 +81,19 @@ def test_pageserver_characterize_latencies_with_1_client_and_throughput_with_man
     pgbench_scale: int,
     duration: int,
     n_clients: int,
+    io_concurrency: str,
+    ps_direct_io_mode: str,
 ):
     setup_and_run_pagebench_benchmark(
-        neon_env_builder, zenbenchmark, pg_bin, n_tenants, pgbench_scale, duration, n_clients
+        neon_env_builder,
+        zenbenchmark,
+        pg_bin,
+        n_tenants,
+        pgbench_scale,
+        duration,
+        n_clients,
+        io_concurrency,
+        ps_direct_io_mode,
     )
 
 
@@ -89,6 +105,8 @@ def setup_and_run_pagebench_benchmark(
     pgbench_scale: int,
     duration: int,
     n_clients: int,
+    io_concurrency: str = "sequential",
+    ps_direct_io_mode: str = "buffered",
 ):
     def record(metric, **kwargs):
         zenbenchmark.record(
@@ -104,6 +122,15 @@ def setup_and_run_pagebench_benchmark(
             "pgbench_scale": (pgbench_scale, {"unit": ""}),
             "duration": (duration, {"unit": "s"}),
             "n_clients": (n_clients, {"unit": ""}),
+            "config": (
+                0,
+                {
+                    "labels": {
+                        "io_concurrency": io_concurrency,
+                        "ps_direct_io_mode": ps_direct_io_mode,
+                    }
+                },
+            ),
         }
     )
 
@@ -113,6 +140,8 @@ def setup_and_run_pagebench_benchmark(
     neon_env_builder.pageserver_config_override = (
         f"page_cache_size={page_cache_size}; max_file_descriptors={max_file_descriptors}"
     )
+    neon_env_builder.pageserver_virtual_file_io_mode = ps_direct_io_mode
+    neon_env_builder.pageserver_get_vectored_concurrent_io = io_concurrency
     params.update(
         {
             "pageserver_config_override.page_cache_size": (
@@ -124,7 +153,14 @@ def setup_and_run_pagebench_benchmark(
     )
 
     for param, (value, kwargs) in params.items():
-        record(param, metric_value=value, report=MetricReport.TEST_PARAM, **kwargs)
+        record(
+            param,
+            metric_value=value,
+            report=MetricReport.TEST_PARAM,
+            labels=kwargs.pop("labels", None),
+            unit=kwargs.pop("unit", ""),
+            **kwargs,
+        )
 
     def setup_wrapper(env: NeonEnv):
         return setup_tenant_template(env, pg_bin, pgbench_scale)
@@ -210,6 +246,61 @@ def run_pagebench_benchmark(
     """
 
     ps_http = env.pageserver.http_client()
+
+    @dataclass
+    class Metrics:
+        time: float
+        pageserver_cpu_seconds_total: float
+        pageserver_layers_visited_per_vectored_read_global_buckets: dict[int, int]
+
+        def __sub__(self, other: Metrics) -> Metrics:
+            return Metrics(
+                time=self.time - other.time,
+                pageserver_cpu_seconds_total=self.pageserver_cpu_seconds_total
+                - other.pageserver_cpu_seconds_total,
+                pageserver_layers_visited_per_vectored_read_global_buckets={
+                    k: v - other.pageserver_layers_visited_per_vectored_read_global_buckets[k]
+                    for k, v in self.pageserver_layers_visited_per_vectored_read_global_buckets.items()
+                },
+            )
+
+        def normalize(self, by) -> Metrics:
+            return Metrics(
+                time=self.time / by,
+                pageserver_cpu_seconds_total=self.pageserver_cpu_seconds_total / by,
+                pageserver_layers_visited_per_vectored_read_global_buckets={
+                    k: v / by
+                    for k, v in self.pageserver_layers_visited_per_vectored_read_global_buckets.items()
+                },
+            )
+
+    def get_metrics() -> Metrics:
+        pageserver_metrics = ps_http.get_metrics()
+
+        def parse_le_label(s):
+            try:
+                return int(s)
+            except ValueError:
+                if s == "+Inf":
+                    return sys.maxsize
+                else:
+                    raise
+
+        return Metrics(
+            time=time.time(),
+            pageserver_cpu_seconds_total=pageserver_metrics.query_one(
+                "libmetrics_process_cpu_seconds_highres"
+            ).value,
+            pageserver_layers_visited_per_vectored_read_global_buckets={
+                parse_le_label(sample.labels["le"]): int(sample.value)
+                for sample in pageserver_metrics.query_all(
+                    "pageserver_layers_visited_per_vectored_read_global_bucket"
+                )
+            },
+        )
+
+    metrics_before = get_metrics()
+
     cmd = [
         str(env.neon_binpath / "pagebench"),
         "get-page-latest-lsn",
@@ -234,6 +325,14 @@ def run_pagebench_benchmark(
 
     total = results["total"]
 
+    metrics_after = get_metrics()
+
+    metrics = metrics_after - metrics_before
+
+    #
+    # Record the results
+    #
+
     metric = "request_count"
     record(
         metric,
@@ -251,10 +350,24 @@ def run_pagebench_benchmark(
     )
 
     metric = "latency_percentiles"
-    for k, v in total[metric].items():
+    for bucket, v in total[metric].items():
         record(
-            f"{metric}.{k}",
+            f"{metric}.{bucket}",
             metric_value=humantime_to_ms(v),
             unit="ms",
             report=MetricReport.LOWER_IS_BETTER,
         )
+
+    for metric, value in dataclasses.asdict(metrics).items():
+        if isinstance(value, dict):
+            for bucket, v in value.items():
+                record(
+                    f"counters.{metric}.{bucket}",
+                    metric_value=v,
+                    unit="",
+                    report=MetricReport.TEST_PARAM,
+                )
+        else:
+            record(
+                f"counters.{metric}", metric_value=value, unit="", report=MetricReport.TEST_PARAM
+            )
