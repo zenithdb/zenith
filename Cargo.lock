@@ -774,6 +774,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-extra"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "460fc6f625a1f7705c6cf62d0d070794e94668988b1c38111baeec177c715f7b"
+dependencies = [
+ "axum",
+ "axum-core",
+ "bytes",
+ "futures-util",
+ "headers",
+ "http 1.1.0",
+ "http-body 1.0.0",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "serde",
+ "tower 0.5.2",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
 name = "azure_core"
 version = "0.21.0"
 source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#66e77bdd87bf87e773acf3b0c84b532c1124367d"
@@ -915,9 +937,9 @@ checksum = "0ea22880d78093b0cbe17c89f64a7d457941e65759157ec6cb31a31d652b05e5"
 
 [[package]]
 name = "base64"
-version = "0.21.1"
+version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f1e31e207a6b8fb791a38ea3105e6cb541f55e4d029902d3039a4ad07cc4105"
+checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 
 [[package]]
 name = "base64"
@@ -1263,6 +1285,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "jsonwebtoken",
  "regex",
  "remote_storage",
  "serde",
@@ -1279,6 +1302,7 @@ dependencies = [
  "aws-sdk-kms",
  "aws-sdk-s3",
  "axum",
+ "axum-extra",
  "base64 0.13.1",
  "bytes",
  "camino",
@@ -1290,6 +1314,7 @@ dependencies = [
  "flate2",
  "futures",
  "http 1.1.0",
+ "jsonwebtoken",
  "metrics",
  "nix 0.27.1",
  "notify",
@@ -2252,7 +2277,7 @@ name = "framed-websockets"
 version = "0.1.0"
 source = "git+https://github.com/neondatabase/framed-websockets#34eff3d6f8cfccbc5f35e4f65314ff7328621127"
 dependencies = [
- "base64 0.21.1",
+ "base64 0.21.7",
  "bytemuck",
  "bytes",
  "futures-core",
@@ -2571,12 +2596,36 @@ version = "7.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "765c9198f173dd59ce26ff9f95ef0aafd0a0fe01fb9d72841bc5066a4c06511d"
 dependencies = [
- "base64 0.21.1",
+ "base64 0.21.7",
  "byteorder",
  "crossbeam-channel",
  "flate2",
  "nom",
  "num-traits",
+]
+
+[[package]]
+name = "headers"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "322106e6bd0cba2d5ead589ddb8150a13d7c4217cf80d7c4f682ca994ccc6aa9"
+dependencies = [
+ "base64 0.21.7",
+ "bytes",
+ "headers-core",
+ "http 1.1.0",
+ "httpdate",
+ "mime",
+ "sha1",
+]
+
+[[package]]
+name = "headers-core"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
+dependencies = [
+ "http 1.1.0",
 ]
 
 [[package]]
@@ -3254,7 +3303,7 @@ version = "9.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c7ea04a7c5c055c175f189b6dc6ba036fd62306b58c66c9f6389036c503a3f4"
 dependencies = [
- "base64 0.21.1",
+ "base64 0.21.7",
  "js-sys",
  "pem",
  "ring",
@@ -4302,7 +4351,7 @@ version = "3.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b8fcc794035347fb64beda2d3b462595dd2753e3f268d89c5aae77e8cf2c310"
 dependencies = [
- "base64 0.21.1",
+ "base64 0.21.7",
  "serde",
 ]
 
@@ -4462,7 +4511,7 @@ dependencies = [
 [[package]]
 name = "postgres-protocol"
 version = "0.6.4"
-source = "git+https://github.com/neondatabase/rust-postgres.git?branch=neon#511f998c00148ab7c847bd7e6cfd3a906d0e7473"
+source = "git+https://github.com/neondatabase/rust-postgres.git?branch=neon#547812b5e4972425fc3a9108cf9bae39e41ee000"
 dependencies = [
  "base64 0.20.0",
  "byteorder",
@@ -4514,9 +4563,10 @@ dependencies = [
 [[package]]
 name = "postgres-types"
 version = "0.2.4"
-source = "git+https://github.com/neondatabase/rust-postgres.git?branch=neon#511f998c00148ab7c847bd7e6cfd3a906d0e7473"
+source = "git+https://github.com/neondatabase/rust-postgres.git?branch=neon#547812b5e4972425fc3a9108cf9bae39e41ee000"
 dependencies = [
  "bytes",
+ "chrono",
  "fallible-iterator",
  "postgres-protocol 0.6.4",
 ]
@@ -5619,7 +5669,7 @@ version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d194b56d58803a43635bdc398cd17e383d6f71f9182b9a192c127ca42494a59b"
 dependencies = [
- "base64 0.21.1",
+ "base64 0.21.7",
 ]
 
 [[package]]
@@ -5628,7 +5678,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f48172685e6ff52a556baa527774f61fcaa884f59daf3375c62a3f1cd2549dab"
 dependencies = [
- "base64 0.21.1",
+ "base64 0.21.7",
  "rustls-pki-types",
 ]
 
@@ -6859,7 +6909,7 @@ dependencies = [
 [[package]]
 name = "tokio-postgres"
 version = "0.7.7"
-source = "git+https://github.com/neondatabase/rust-postgres.git?branch=neon#511f998c00148ab7c847bd7e6cfd3a906d0e7473"
+source = "git+https://github.com/neondatabase/rust-postgres.git?branch=neon#547812b5e4972425fc3a9108cf9bae39e41ee000"
 dependencies = [
  "async-trait",
  "byteorder",
@@ -6914,7 +6964,7 @@ dependencies = [
  "ring",
  "rustls 0.23.18",
  "tokio",
- "tokio-postgres 0.7.7",
+ "tokio-postgres 0.7.12",
  "tokio-rustls 0.26.0",
  "x509-certificate",
 ]
@@ -7157,10 +7207,12 @@ version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "403fa3b783d4b626a8ad51d766ab03cb6d2dbfc46b1c5d4448395e6628dc9697"
 dependencies = [
+ "base64 0.22.1",
  "bitflags 2.4.1",
  "bytes",
  "http 1.1.0",
  "http-body 1.0.0",
+ "mime",
  "pin-project-lite",
  "tower-layer",
  "tower-service",
@@ -8055,7 +8107,7 @@ dependencies = [
  "ahash",
  "anyhow",
  "base64 0.13.1",
- "base64 0.21.1",
+ "base64 0.21.7",
  "base64ct",
  "bytes",
  "camino",

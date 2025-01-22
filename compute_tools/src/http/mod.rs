@@ -7,6 +7,7 @@ use tracing::error;
 pub use server::launch_http_server;
 
 mod extract;
+mod middleware;
 mod routes;
 mod server;
 

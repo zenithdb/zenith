@@ -16,6 +16,7 @@ aws-sdk-s3.workspace = true
 aws-sdk-kms.workspace = true
 anyhow.workspace = true
 axum = { workspace = true, features = [] }
+axum-extra.workspace = true
 camino.workspace = true
 chrono.workspace = true
 cfg-if.workspace = true
@@ -24,6 +25,7 @@ fail.workspace = true
 flate2.workspace = true
 futures.workspace = true
 http.workspace = true
+jsonwebtoken.workspace = true
 metrics.workspace = true
 nix.workspace = true
 notify.workspace = true

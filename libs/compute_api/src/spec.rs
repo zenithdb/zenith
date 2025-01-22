@@ -5,6 +5,7 @@
 //! and connect it to the storage nodes.
 use std::collections::HashMap;
 
+use jsonwebtoken::jwk::JwkSet;
 use serde::{Deserialize, Serialize};
 use utils::id::{TenantId, TimelineId};
 use utils::lsn::Lsn;
@@ -145,6 +146,10 @@ pub struct ComputeSpec {
     /// over the same replication content from publisher.
     #[serde(default)] // Default false
     pub drop_subscriptions_before_start: bool,
+
+    /// Set of JSON web keys that the compute can use to authenticate
+    /// communication from the control plane.
+    pub jwks: Option<JwkSet>,
 }
 
 /// Feature flag to signal `compute_ctl` to enable certain experimental functionality.

@@ -65,7 +65,8 @@ aws-smithy-types = "1.2"
 aws-credential-types = "1.2.0"
 aws-sigv4 = { version = "1.2", features = ["sign-http"] }
 aws-types = "1.3"
-axum = { version = "0.7.9", features = ["ws"] }
+axum = { version = "0.8.1", features = ["ws"] }
+axum-extra = { version = "0.10.0", features = ["typed-header"] }
 base64 = "0.13.0"
 bincode = "1.3"
 bindgen = "0.70"
@@ -189,7 +190,7 @@ toml = "0.8"
 toml_edit = "0.22"
 tonic = {version = "0.12.3", default-features = false, features = ["channel", "tls", "tls-roots"]}
 tower = { version = "0.5.2", default-features = false }
-tower-http = { version = "0.6.2", features = ["request-id", "trace"] }
+tower-http = { version = "0.6.2", features = ["auth", "request-id", "trace"] }
 tower-service = "0.3.3"
 tracing = "0.1"
 tracing-error = "0.2"
