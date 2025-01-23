@@ -59,6 +59,8 @@ pub static PG_PID: AtomicU32 = AtomicU32::new(0);
 
 /// Compute node info shared across several `compute_ctl` threads.
 pub struct ComputeNode {
+    /// The ID of the compute
+    pub id: String,
     // Url type maintains proper escaping
     pub connstr: url::Url,
     // We connect to Postgres from many different places, so build configs once

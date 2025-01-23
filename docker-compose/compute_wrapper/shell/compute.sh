@@ -77,4 +77,5 @@ echo "Start compute node"
 /usr/local/bin/compute_ctl --pgdata /var/db/postgres/compute \
      -C "postgresql://cloud_admin@localhost:55433/postgres"  \
      -b /usr/local/bin/postgres                              \
+     --compute-id "compute-$RANDOM"                          \
      -S ${SPEC_FILE}
