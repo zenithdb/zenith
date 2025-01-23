@@ -130,10 +130,10 @@ struct Cli {
     #[arg(short = 'S', long, group = "spec-path")]
     pub spec_path: Option<OsString>,
 
-    #[arg(short = 'i', long, group = "compute-id", conflicts_with_all = ["spec", "spec-path"])]
-    pub compute_id: Option<String>,
+    #[arg(short = 'i', long, group = "compute-id")]
+    pub compute_id: String,
 
-    #[arg(short = 'p', long, conflicts_with_all = ["spec", "spec-path"], requires = "compute-id", value_name = "CONTROL_PLANE_API_BASE_URL")]
+    #[arg(short = 'p', long, conflicts_with_all = ["spec", "spec-path"], env = "CONTROL_PLANE_API_BASE_URL")]
     pub control_plane_uri: Option<String>,
 }
 
@@ -259,20 +259,11 @@ fn try_spec_from_cli(cli: &Cli) -> Result<CliSpecParams> {
         });
     }
 
-    if cli.compute_id.is_none() {
-        panic!(
-            "compute spec should be provided by one of the following ways: \
-                --spec OR --spec-path OR --control-plane-uri and --compute-id"
-        );
-    };
     if cli.control_plane_uri.is_none() {
-        panic!("must specify both --control-plane-uri and --compute-id or none");
+        panic!("must specify --control-plane-uri");
     };
 
-    match get_spec_from_control_plane(
-        cli.control_plane_uri.as_ref().unwrap(),
-        cli.compute_id.as_ref().unwrap(),
-    ) {
+    match get_spec_from_control_plane(cli.control_plane_uri.as_ref().unwrap(), &cli.compute_id) {
         Ok(spec) => Ok(CliSpecParams {
             spec,
             live_config_allowed: true,
@@ -319,6 +310,7 @@ fn wait_spec(
     let tokio_conn_conf = tokio_postgres::config::Config::from_str(connstr.as_str())
         .context("cannot build tokio postgres config from connstr")?;
     let compute_node = ComputeNode {
+        id: cli.compute_id.clone(),
         connstr,
         conn_conf,
         tokio_conn_conf,
