@@ -121,4 +121,4 @@ rcgen.workspace = true
 rstest.workspace = true
 walkdir.workspace = true
 rand_distr = "0.4"
-tokio-postgres.workspace = true
+tokio-postgres = { workspace = true, features = ["with-serde_json-1"] }

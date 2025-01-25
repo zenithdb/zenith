@@ -5,8 +5,9 @@ use std::sync::Arc;
 
 use futures::TryFutureExt;
 use thiserror::Error;
+use tokio_postgres::types::Json;
 use tokio_postgres::Client;
-use tracing::{error, info, info_span, warn, Instrument};
+use tracing::{error, info, warn};
 
 use crate::auth::backend::jwt::AuthRule;
 use crate::auth::backend::ComputeUserInfo;
@@ -17,7 +18,7 @@ use crate::control_plane::client::{CachedAllowedIps, CachedRoleSecret};
 use crate::control_plane::errors::{
     ControlPlaneError, GetAuthInfoError, GetEndpointJwksError, WakeComputeError,
 };
-use crate::control_plane::messages::MetricsAuxInfo;
+use crate::control_plane::messages::{JwksSettings, MetricsAuxInfo};
 use crate::control_plane::{AuthInfo, AuthSecret, CachedNodeInfo, NodeInfo};
 use crate::error::io_error;
 use crate::intern::RoleNameInt;
@@ -65,61 +66,70 @@ impl MockControlPlane {
         &self,
         user_info: &ComputeUserInfo,
     ) -> Result<AuthInfo, GetAuthInfoError> {
-        let (secret, allowed_ips) = async {
-            // Perhaps we could persist this connection, but then we'd have to
-            // write more code for reopening it if it got closed, which doesn't
-            // seem worth it.
-            let (client, connection) =
-                tokio_postgres::connect(self.endpoint.as_str(), tokio_postgres::NoTls).await?;
+        // Perhaps we could persist this connection, but then we'd have to
+        // write more code for reopening it if it got closed, which doesn't
+        // seem worth it.
+        let (client, connection) =
+            tokio_postgres::connect(self.endpoint.as_str(), tokio_postgres::NoTls).await?;
 
-            tokio::spawn(connection);
+        tokio::spawn(connection);
 
-            let secret = if let Some(entry) = get_execute_postgres_query(
-                &client,
-                "select rolpassword from pg_catalog.pg_authid where rolname = $1",
-                &[&&*user_info.user],
-                "rolpassword",
-            )
-            .await?
-            {
-                info!("got a secret: {entry}"); // safe since it's not a prod scenario
-                let secret = scram::ServerSecret::parse(&entry).map(AuthSecret::Scram);
-                secret.or_else(|| parse_md5(&entry).map(AuthSecret::Md5))
-            } else {
-                warn!("user '{}' does not exist", user_info.user);
-                None
-            };
+        let secret = if let Some(entry) = get_execute_postgres_query(
+            &client,
+            "select rolpassword from pg_catalog.pg_authid where rolname = $1",
+            &[&&*user_info.user],
+            "rolpassword",
+        )
+        .await?
+        {
+            info!("got a secret: {entry}"); // safe since it's not a prod scenario
+            let secret = scram::ServerSecret::parse(&entry).map(AuthSecret::Scram);
+            secret.or_else(|| parse_md5(&entry).map(AuthSecret::Md5))
+        } else {
+            warn!("user '{}' does not exist", user_info.user);
+            None
+        };
 
-            let allowed_ips = if self.ip_allowlist_check_enabled {
-                match get_execute_postgres_query(
-                    &client,
-                    "select allowed_ips from neon_control_plane.endpoints where endpoint_id = $1",
-                    &[&user_info.endpoint.as_str()],
-                    "allowed_ips",
-                )
-                .await?
-                {
-                    Some(s) => {
-                        info!("got allowed_ips: {s}");
-                        s.split(',')
-                            .map(|s| {
-                                IpPattern::from_str(s).expect("mocked ip pattern should be correct")
-                            })
-                            .collect()
-                    }
-                    None => vec![],
+        let (allowed_ips, auth_rules) = if self.ip_allowlist_check_enabled {
+            let row = client.query_opt("select allowed_ips, jwks from neon_control_plane.endpoints where endpoint_id = $1", &[&user_info.endpoint.as_str()]).await?;
+            match row {
+                Some(row) => {
+                    let allowed_ips: String = row
+                        .try_get("allowed_ips")
+                        .map_err(MockApiError::PasswordNotSet)?;
+                    let jwks: Json<Vec<JwksSettings>> =
+                        row.try_get("jwks").map_err(MockApiError::PasswordNotSet)?;
+
+                    info!("got allowed_ips: {allowed_ips}");
+                    let allowed_ips = allowed_ips
+                        .split(',')
+                        .map(|s| {
+                            IpPattern::from_str(s).expect("mocked ip pattern should be correct")
+                        })
+                        .collect();
+
+                    let auth_rules = jwks
+                        .0
+                        .into_iter()
+                        .map(|jwks| AuthRule {
+                            id: jwks.id,
+                            jwks_url: jwks.jwks_url,
+                            audience: jwks.jwt_audience,
+                            role_names: jwks.role_names,
+                        })
+                        .collect();
+
+                    (allowed_ips, auth_rules)
                 }
-            } else {
-                vec![]
-            };
+                None => (vec![], vec![]),
+            }
+        } else {
+            (vec![], vec![])
+        };
 
-            Ok((secret, allowed_ips))
-        }
-        .inspect_err(|e: &GetAuthInfoError| tracing::error!("{e}"))
-        .instrument(info_span!("postgres", url = self.endpoint.as_str()))
-        .await?;
         Ok(AuthInfo {
             secret,
+            auth_rules,
             allowed_ips,
             project_id: None,
         })
@@ -203,7 +213,7 @@ async fn get_execute_postgres_query(
 }
 
 impl super::ControlPlaneApi for MockControlPlane {
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(url = self.endpoint.as_str()))]
     async fn get_role_secret(
         &self,
         _ctx: &RequestContext,
@@ -214,19 +224,20 @@ impl super::ControlPlaneApi for MockControlPlane {
         ))
     }
 
+    #[tracing::instrument(skip_all, fields(url = self.endpoint.as_str()))]
     async fn get_allowed_ips_and_secret(
         &self,
         _ctx: &RequestContext,
         user_info: &ComputeUserInfo,
     ) -> Result<(CachedAllowedIps, Option<CachedRoleSecret>), GetAuthInfoError> {
+        let res = self.do_get_auth_info(user_info).await?;
         Ok((
-            Cached::new_uncached(Arc::new(
-                self.do_get_auth_info(user_info).await?.allowed_ips,
-            )),
+            Cached::new_uncached(Arc::new((res.allowed_ips, res.auth_rules))),
             None,
         ))
     }
 
+    #[tracing::instrument(skip_all, fields(url = self.endpoint.as_str()))]
     async fn get_endpoint_jwks(
         &self,
         _ctx: &RequestContext,
@@ -235,7 +246,7 @@ impl super::ControlPlaneApi for MockControlPlane {
         self.do_get_endpoint_jwks(endpoint).await
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(url = self.endpoint.as_str()))]
     async fn wake_compute(
         &self,
         _ctx: &RequestContext,

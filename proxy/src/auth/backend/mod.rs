@@ -10,6 +10,7 @@ use std::sync::Arc;
 pub use console_redirect::ConsoleRedirectBackend;
 pub(crate) use console_redirect::ConsoleRedirectError;
 use ipnet::{Ipv4Net, Ipv6Net};
+use jwt::{JwkCache, StaticAuthRules};
 use local::LocalBackend;
 use postgres_client::config::AuthKeys;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -259,6 +260,7 @@ pub(crate) trait BackendIpAllowlist {
 /// Here, we choose the appropriate auth flow based on circumstances.
 ///
 /// All authentication flows will emit an AuthenticationOk message if successful.
+#[allow(clippy::too_many_arguments)]
 async fn auth_quirks(
     ctx: &RequestContext,
     api: &impl control_plane::ControlPlaneApi,
@@ -267,6 +269,7 @@ async fn auth_quirks(
     allow_cleartext: bool,
     config: &'static AuthenticationConfig,
     endpoint_rate_limiter: Arc<EndpointRateLimiter>,
+    jwks_cache: Arc<JwkCache>,
 ) -> auth::Result<(ComputeCredentials, Option<Vec<IpPattern>>)> {
     // If there's no project so far, that entails that client doesn't
     // support SNI or other means of passing the endpoint (project) name.
@@ -282,11 +285,54 @@ async fn auth_quirks(
     };
 
     debug!("fetching user's authentication info");
-    let (allowed_ips, maybe_secret) = api.get_allowed_ips_and_secret(ctx, &info).await?;
+    let (x, maybe_secret) = api.get_allowed_ips_and_secret(ctx, &info).await?;
+    let (allowed_ips, auth_rules) = &**x;
+
+    // we expect a jwt in the options field
+    if !auth_rules.is_empty() {
+        match info.options.get("jwt") {
+            Some(jwt) => {
+                let creds = jwks_cache
+                    .check_jwt(
+                        ctx,
+                        info.endpoint.clone(),
+                        &info.user,
+                        &StaticAuthRules(auth_rules.clone()),
+                        &jwt,
+                    )
+                    .await?;
+                let token = match creds {
+                    ComputeCredentialKeys::JwtPayload(payload) => {
+                        serde_json::from_slice::<serde_json::Value>(&payload)
+                            .expect("jwt payload is valid json")
+                    }
+                    _ => unreachable!(),
+                };
+
+                // the token has a required IP claim.
+                if let Some(expected_ip) = token.get("ip") {
+                    // todo: don't panic here, obviously.
+                    let allowed_ips: Vec<IpPattern> = expected_ip
+                        .as_str()
+                        .expect("jwt should not have an invalid IP claim")
+                        .split(',')
+                        .map(|s| s.parse().expect("jwt should not have an invalid IP claim"))
+                        .collect();
+
+                    if !check_peer_addr_is_in_list(&ctx.peer_addr(), &allowed_ips) {
+                        return Err(auth::AuthError::ip_address_not_allowed(ctx.peer_addr()));
+                    }
+                }
+            }
+            None => {
+                return Err(AuthError::bad_auth_method("needs jwt"));
+            }
+        }
+    }
 
     // check allowed list
     if config.ip_allowlist_check_enabled
-        && !check_peer_addr_is_in_list(&ctx.peer_addr(), &allowed_ips)
+        && !check_peer_addr_is_in_list(&ctx.peer_addr(), allowed_ips)
     {
         return Err(auth::AuthError::ip_address_not_allowed(ctx.peer_addr()));
     }
@@ -326,7 +372,7 @@ async fn auth_quirks(
     )
     .await
     {
-        Ok(keys) => Ok((keys, Some(allowed_ips.as_ref().clone()))),
+        Ok(keys) => Ok((keys, Some(allowed_ips.clone()))),
         Err(e) => {
             if e.is_password_failed() {
                 // The password could have been changed, so we invalidate the cache.
@@ -396,6 +442,7 @@ impl<'a> Backend<'a, ComputeUserInfoMaybeEndpoint> {
         allow_cleartext: bool,
         config: &'static AuthenticationConfig,
         endpoint_rate_limiter: Arc<EndpointRateLimiter>,
+        jwks_cache: Arc<JwkCache>,
     ) -> auth::Result<(Backend<'a, ComputeCredentials>, Option<Vec<IpPattern>>)> {
         let res = match self {
             Self::ControlPlane(api, user_info) => {
@@ -413,6 +460,7 @@ impl<'a> Backend<'a, ComputeUserInfoMaybeEndpoint> {
                     allow_cleartext,
                     config,
                     endpoint_rate_limiter,
+                    jwks_cache,
                 )
                 .await?;
                 Ok((Backend::ControlPlane(api, credentials), ip_allowlist))
@@ -447,7 +495,7 @@ impl Backend<'_, ComputeUserInfo> {
             Self::ControlPlane(api, user_info) => {
                 api.get_allowed_ips_and_secret(ctx, user_info).await
             }
-            Self::Local(_) => Ok((Cached::new_uncached(Arc::new(vec![])), None)),
+            Self::Local(_) => Ok((Cached::new_uncached(Arc::new((vec![], vec![]))), None)),
         }
     }
 }
@@ -461,11 +509,11 @@ impl BackendIpAllowlist for Backend<'_, ()> {
     ) -> auth::Result<Vec<auth::IpPattern>> {
         let auth_data = match self {
             Self::ControlPlane(api, ()) => api.get_allowed_ips_and_secret(ctx, user_info).await,
-            Self::Local(_) => Ok((Cached::new_uncached(Arc::new(vec![])), None)),
+            Self::Local(_) => Ok((Cached::new_uncached(Arc::new((vec![], vec![]))), None)),
         };
 
         auth_data
-            .map(|(ips, _)| ips.as_ref().clone())
+            .map(|(ips, _)| ips.0.clone())
             .map_err(|e| e.into())
     }
 }
@@ -543,7 +591,7 @@ mod tests {
             control_plane::errors::GetAuthInfoError,
         > {
             Ok((
-                CachedAllowedIps::new_uncached(Arc::new(self.ips.clone())),
+                CachedAllowedIps::new_uncached(Arc::new((self.ips.clone(), vec![]))),
                 Some(CachedRoleSecret::new_uncached(Some(self.secret.clone()))),
             ))
         }
@@ -703,6 +751,7 @@ mod tests {
             false,
             &CONFIG,
             endpoint_rate_limiter,
+            Arc::new(JwkCache::default()),
         )
         .await
         .unwrap();
@@ -758,6 +807,7 @@ mod tests {
             true,
             &CONFIG,
             endpoint_rate_limiter,
+            Arc::new(JwkCache::default()),
         )
         .await
         .unwrap();
@@ -811,6 +861,7 @@ mod tests {
             true,
             &CONFIG,
             endpoint_rate_limiter,
+            Arc::new(JwkCache::default()),
         )
         .await
         .unwrap();

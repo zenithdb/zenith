@@ -23,6 +23,7 @@ use tracing::{debug, error, info, warn, Instrument};
 
 use self::connect_compute::{connect_to_compute, TcpMechanism};
 use self::passthrough::ProxyPassthrough;
+use crate::auth::backend::jwt::JwkCache;
 use crate::cancellation::{self, CancellationHandlerMain, CancellationHandlerMainInternal};
 use crate::config::{ProxyConfig, ProxyProtocolV2, TlsConfig};
 use crate::context::RequestContext;
@@ -71,6 +72,8 @@ pub async fn task_main(
     let connections = tokio_util::task::task_tracker::TaskTracker::new();
     let cancellations = tokio_util::task::task_tracker::TaskTracker::new();
 
+    let jwks_cache = Arc::new(JwkCache::default());
+
     while let Some(accept_result) =
         run_until_cancelled(listener.accept(), &cancellation_token).await
     {
@@ -84,6 +87,7 @@ pub async fn task_main(
         let session_id = uuid::Uuid::new_v4();
         let cancellation_handler = Arc::clone(&cancellation_handler);
         let cancellations = cancellations.clone();
+        let jwks_cache = jwks_cache.clone();
 
         debug!(protocol = "tcp", %session_id, "accepted new TCP connection");
         let endpoint_rate_limiter2 = endpoint_rate_limiter.clone();
@@ -136,6 +140,7 @@ pub async fn task_main(
                 endpoint_rate_limiter2,
                 conn_gauge,
                 cancellations,
+                jwks_cache,
             )
             .instrument(ctx.span())
             .boxed()
@@ -249,6 +254,7 @@ pub(crate) async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
     endpoint_rate_limiter: Arc<EndpointRateLimiter>,
     conn_gauge: NumClientConnectionsGuard<'static>,
     cancellations: tokio_util::task::task_tracker::TaskTracker,
+    jwks_cache: Arc<JwkCache>,
 ) -> Result<Option<ProxyPassthrough<CancellationHandlerMainInternal, S>>, ClientRequestError> {
     debug!(
         protocol = %ctx.protocol(),
@@ -319,6 +325,7 @@ pub(crate) async fn handle_client<S: AsyncRead + AsyncWrite + Unpin>(
             mode.allow_cleartext(),
             &config.authentication_config,
             endpoint_rate_limiter,
+            jwks_cache,
         )
         .await
     {

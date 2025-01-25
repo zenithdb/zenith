@@ -44,6 +44,18 @@ pub(crate) trait FetchAuthRules: Clone + Send + Sync + 'static {
     ) -> impl Future<Output = Result<Vec<AuthRule>, FetchAuthRulesError>> + Send;
 }
 
+#[derive(Clone)]
+pub(crate) struct StaticAuthRules(pub Vec<AuthRule>);
+impl FetchAuthRules for StaticAuthRules {
+    async fn fetch_auth_rules(
+        &self,
+        _ctx: &RequestContext,
+        _endpoint: EndpointId,
+    ) -> Result<Vec<AuthRule>, FetchAuthRulesError> {
+        Ok(self.0.clone())
+    }
+}
+
 #[derive(Error, Debug)]
 pub(crate) enum FetchAuthRulesError {
     #[error(transparent)]
@@ -53,7 +65,7 @@ pub(crate) enum FetchAuthRulesError {
     RoleJwksNotConfigured,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AuthRule {
     pub(crate) id: String,
     pub(crate) jwks_url: url::Url,

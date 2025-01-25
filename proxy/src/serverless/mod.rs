@@ -43,6 +43,7 @@ use tokio_util::task::TaskTracker;
 use tracing::{info, warn, Instrument};
 use utils::http::error::ApiError;
 
+use crate::auth::backend::jwt::JwkCache;
 use crate::cancellation::CancellationHandlerMain;
 use crate::config::{ProxyConfig, ProxyProtocolV2};
 use crate::context::RequestContext;
@@ -331,6 +332,8 @@ async fn connection_handler(
     let http_cancellation_token = CancellationToken::new();
     let _cancel_connection = http_cancellation_token.clone().drop_guard();
 
+    let jwks_cache = Arc::new(JwkCache::default());
+
     let conn_info2 = conn_info.clone();
     let server = Builder::new(TokioExecutor::new());
     let conn = server.serve_connection_with_upgrades(
@@ -371,6 +374,7 @@ async fn connection_handler(
                     http_request_token,
                     endpoint_rate_limiter.clone(),
                     cancellations,
+                    jwks_cache.clone(),
                 )
                 .in_current_span()
                 .map_ok_or_else(api_error_into_response, |r| r),
@@ -419,6 +423,7 @@ async fn request_handler(
     http_cancellation_token: CancellationToken,
     endpoint_rate_limiter: Arc<EndpointRateLimiter>,
     cancellations: TaskTracker,
+    jwks_cache: Arc<JwkCache>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, ApiError> {
     let host = request
         .headers()
@@ -456,6 +461,7 @@ async fn request_handler(
                     endpoint_rate_limiter,
                     host,
                     cancellations,
+                    jwks_cache,
                 )
                 .await
                 {

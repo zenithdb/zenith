@@ -54,6 +54,7 @@ pub(crate) struct AuthInfo {
     pub(crate) allowed_ips: Vec<IpPattern>,
     /// Project ID. This is used for cache invalidation.
     pub(crate) project_id: Option<ProjectIdInt>,
+    pub(crate) auth_rules: Vec<AuthRule>,
 }
 
 /// Info for establishing a connection to a compute node.
@@ -99,7 +100,8 @@ pub(crate) type NodeInfoCache =
     TimedLru<EndpointCacheKey, Result<NodeInfo, Box<ControlPlaneErrorMessage>>>;
 pub(crate) type CachedNodeInfo = Cached<&'static NodeInfoCache, NodeInfo>;
 pub(crate) type CachedRoleSecret = Cached<&'static ProjectInfoCacheImpl, Option<AuthSecret>>;
-pub(crate) type CachedAllowedIps = Cached<&'static ProjectInfoCacheImpl, Arc<Vec<IpPattern>>>;
+pub(crate) type CachedAllowedIps =
+    Cached<&'static ProjectInfoCacheImpl, Arc<(Vec<IpPattern>, Vec<AuthRule>)>>;
 
 /// This will allocate per each call, but the http requests alone
 /// already require a few allocations, so it should be fine.

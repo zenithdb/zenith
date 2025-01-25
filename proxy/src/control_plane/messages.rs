@@ -229,6 +229,8 @@ pub(crate) struct GetEndpointAccessControl {
     pub(crate) allowed_ips: Option<Vec<IpPattern>>,
     pub(crate) project_id: Option<ProjectIdInt>,
     pub(crate) allowed_vpc_endpoint_ids: Option<Vec<EndpointIdInt>>,
+    #[serde(default)]
+    pub(crate) jwks: Vec<JwksSettings>,
 }
 
 /// Response which holds compute node's `host:port` pair.

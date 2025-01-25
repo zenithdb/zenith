@@ -12,6 +12,7 @@ use pin_project_lite::pin_project;
 use tokio::io::{self, AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 use tracing::warn;
 
+use crate::auth::backend::jwt::JwkCache;
 use crate::cancellation::CancellationHandlerMain;
 use crate::config::ProxyConfig;
 use crate::context::RequestContext;
@@ -133,6 +134,7 @@ pub(crate) async fn serve_websocket(
     endpoint_rate_limiter: Arc<EndpointRateLimiter>,
     hostname: Option<String>,
     cancellations: tokio_util::task::task_tracker::TaskTracker,
+    jwks_cache: Arc<JwkCache>,
 ) -> anyhow::Result<()> {
     let websocket = websocket.await?;
     let websocket = WebSocketServer::after_handshake(TokioIo::new(websocket));
@@ -152,6 +154,7 @@ pub(crate) async fn serve_websocket(
         endpoint_rate_limiter,
         conn_gauge,
         cancellations,
+        jwks_cache,
     ))
     .await;
 

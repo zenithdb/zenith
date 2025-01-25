@@ -94,7 +94,7 @@ impl BackendIpAllowlist for ConsoleRedirectBackend {
         self.api
             .get_allowed_ips_and_secret(ctx, user_info)
             .await
-            .map(|(ips, _)| ips.as_ref().clone())
+            .map(|(ips, _)| ips.0.clone())
             .map_err(|e| e.into())
     }
 }

@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::sync::atomic::AtomicU64;
@@ -13,6 +15,7 @@ use tokio::time::Instant;
 use tracing::{debug, info};
 
 use super::{Cache, Cached};
+use crate::auth::backend::jwt::AuthRule;
 use crate::auth::IpPattern;
 use crate::config::ProjectInfoCacheOptions;
 use crate::control_plane::AuthSecret;
@@ -50,7 +53,7 @@ impl<T> From<T> for Entry<T> {
 #[derive(Default)]
 struct EndpointInfo {
     secret: std::collections::HashMap<RoleNameInt, Entry<Option<AuthSecret>>>,
-    allowed_ips: Option<Entry<Arc<Vec<IpPattern>>>>,
+    allowed_ips: Option<Entry<Arc<(Vec<IpPattern>, Vec<AuthRule>)>>>,
 }
 
 impl EndpointInfo {
@@ -81,7 +84,7 @@ impl EndpointInfo {
         &self,
         valid_since: Instant,
         ignore_cache_since: Option<Instant>,
-    ) -> Option<(Arc<Vec<IpPattern>>, bool)> {
+    ) -> Option<(Arc<(Vec<IpPattern>, Vec<AuthRule>)>, bool)> {
         if let Some(allowed_ips) = &self.allowed_ips {
             if valid_since < allowed_ips.created_at {
                 return Some((
@@ -211,7 +214,7 @@ impl ProjectInfoCacheImpl {
     pub(crate) fn get_allowed_ips(
         &self,
         endpoint_id: &EndpointId,
-    ) -> Option<Cached<&Self, Arc<Vec<IpPattern>>>> {
+    ) -> Option<Cached<&Self, Arc<(Vec<IpPattern>, Vec<AuthRule>)>>> {
         let endpoint_id = EndpointIdInt::get(endpoint_id)?;
         let (valid_since, ignore_cache_since) = self.get_cache_times();
         let endpoint_info = self.cache.get(&endpoint_id)?;
@@ -247,7 +250,7 @@ impl ProjectInfoCacheImpl {
         &self,
         project_id: ProjectIdInt,
         endpoint_id: EndpointIdInt,
-        allowed_ips: Arc<Vec<IpPattern>>,
+        allowed_ips: Arc<(Vec<IpPattern>, Vec<AuthRule>)>,
     ) {
         if self.cache.len() >= self.config.size {
             // If there are too many entries, wait until the next gc cycle.
@@ -386,10 +389,10 @@ mod tests {
         let user2: RoleName = "user2".into();
         let secret1 = Some(AuthSecret::Scram(ServerSecret::mock([1; 32])));
         let secret2 = None;
-        let allowed_ips = Arc::new(vec![
-            "127.0.0.1".parse().unwrap(),
-            "127.0.0.2".parse().unwrap(),
-        ]);
+        let allowed_ips = Arc::new((
+            vec!["127.0.0.1".parse().unwrap(), "127.0.0.2".parse().unwrap()],
+            vec![],
+        ));
         cache.insert_role_secret(
             (&project_id).into(),
             (&endpoint_id).into(),
@@ -457,10 +460,10 @@ mod tests {
         let user2: RoleName = "user2".into();
         let secret1 = Some(AuthSecret::Scram(ServerSecret::mock([1; 32])));
         let secret2 = Some(AuthSecret::Scram(ServerSecret::mock([2; 32])));
-        let allowed_ips = Arc::new(vec![
-            "127.0.0.1".parse().unwrap(),
-            "127.0.0.2".parse().unwrap(),
-        ]);
+        let allowed_ips = Arc::new((
+            vec!["127.0.0.1".parse().unwrap(), "127.0.0.2".parse().unwrap()],
+            vec![],
+        ));
         cache.insert_role_secret(
             (&project_id).into(),
             (&endpoint_id).into(),
@@ -520,10 +523,10 @@ mod tests {
         let user2: RoleName = "user2".into();
         let secret1 = Some(AuthSecret::Scram(ServerSecret::mock([1; 32])));
         let secret2 = Some(AuthSecret::Scram(ServerSecret::mock([2; 32])));
-        let allowed_ips = Arc::new(vec![
-            "127.0.0.1".parse().unwrap(),
-            "127.0.0.2".parse().unwrap(),
-        ]);
+        let allowed_ips = Arc::new((
+            vec!["127.0.0.1".parse().unwrap(), "127.0.0.2".parse().unwrap()],
+            vec![],
+        ));
         cache.insert_role_secret(
             (&project_id).into(),
             (&endpoint_id).into(),
