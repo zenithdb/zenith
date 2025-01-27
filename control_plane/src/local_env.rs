@@ -46,6 +46,8 @@ pub struct LocalEnv {
     // must be an absolute path. If the env var is not set, $PWD/.neon is used.
     pub base_data_dir: PathBuf,
 
+    pub pg_version: u32,
+
     // Path to postgres distribution. It's expected that "bin", "include",
     // "lib", "share" from postgres distribution are there. If at some point
     // in time we will be able to run against vanilla postgres we may split that
@@ -93,6 +95,7 @@ pub struct LocalEnv {
 #[derive(PartialEq, Eq, Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OnDiskConfig {
+    pub pg_version: u32,
     pub pg_distrib_dir: PathBuf,
     pub neon_distrib_dir: PathBuf,
     pub default_tenant_id: Option<TenantId>,
@@ -124,6 +127,7 @@ where
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NeonLocalInitConf {
+    pub pg_version: u32,
     // TODO: do we need this? Seems unused
     pub pg_distrib_dir: Option<PathBuf>,
     // TODO: do we need this? Seems unused
@@ -512,6 +516,7 @@ impl LocalEnv {
         let on_disk_config: OnDiskConfig = toml::from_str(config_file_contents.as_str())?;
         let mut env = {
             let OnDiskConfig {
+                pg_version,
                 pg_distrib_dir,
                 neon_distrib_dir,
                 default_tenant_id,
@@ -526,6 +531,7 @@ impl LocalEnv {
             } = on_disk_config;
             LocalEnv {
                 base_data_dir: repopath.to_owned(),
+                pg_version,
                 pg_distrib_dir,
                 neon_distrib_dir,
                 default_tenant_id,
@@ -629,6 +635,7 @@ impl LocalEnv {
         Self::persist_config_impl(
             &self.base_data_dir,
             &OnDiskConfig {
+                pg_version: self.pg_version,
                 pg_distrib_dir: self.pg_distrib_dir.clone(),
                 neon_distrib_dir: self.neon_distrib_dir.clone(),
                 default_tenant_id: self.default_tenant_id,
@@ -713,6 +720,7 @@ impl LocalEnv {
         }
 
         let NeonLocalInitConf {
+            pg_version,
             pg_distrib_dir,
             neon_distrib_dir,
             default_tenant_id,
@@ -759,6 +767,7 @@ impl LocalEnv {
         // TODO: refactor to avoid this, LocalEnv should only be constructed from on-disk state
         let env = LocalEnv {
             base_data_dir: base_path.clone(),
+            pg_version,
             pg_distrib_dir,
             neon_distrib_dir,
             default_tenant_id: Some(default_tenant_id),

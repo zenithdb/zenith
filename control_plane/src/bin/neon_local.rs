@@ -110,6 +110,10 @@ struct InitCmdArgs {
     #[arg(value_parser)]
     #[clap(default_value = "must-not-exist")]
     force: InitForceMode,
+
+    #[arg(default_value_t = DEFAULT_PG_VERSION)]
+    #[clap(long, help = "Postgres version")]
+    pg_version: u32,
 }
 
 #[derive(clap::Args)]
@@ -160,9 +164,8 @@ struct TenantCreateCmdArgs {
     #[clap(short = 'c')]
     config: Vec<String>,
 
-    #[arg(default_value_t = DEFAULT_PG_VERSION)]
     #[clap(long, help = "Postgres version to use for the initial timeline")]
-    pg_version: u32,
+    pg_version: Option<u32>,
 
     #[clap(
         long,
@@ -283,9 +286,8 @@ struct TimelineCreateCmdArgs {
     #[clap(long, help = "Human-readable alias for the new timeline")]
     branch_name: String,
 
-    #[arg(default_value_t = DEFAULT_PG_VERSION)]
     #[clap(long, help = "Postgres version")]
-    pg_version: u32,
+    pg_version: Option<u32>,
 }
 
 #[derive(clap::Args)]
@@ -315,9 +317,8 @@ struct TimelineImportCmdArgs {
     #[clap(long, help = "Lsn the basebackup ends at")]
     end_lsn: Option<Lsn>,
 
-    #[arg(default_value_t = DEFAULT_PG_VERSION)]
     #[clap(long, help = "Postgres version of the backup being imported")]
-    pg_version: u32,
+    pg_version: Option<u32>,
 }
 
 #[derive(clap::Subcommand)]
@@ -565,9 +566,8 @@ struct EndpointCreateCmdArgs {
     )]
     config_only: bool,
 
-    #[arg(default_value_t = DEFAULT_PG_VERSION)]
     #[clap(long, help = "Postgres version")]
-    pg_version: u32,
+    pg_version: Option<u32>,
 
     #[clap(
         long,
@@ -974,6 +974,7 @@ fn handle_init(args: &InitCmdArgs) -> anyhow::Result<LocalEnv> {
                     }
                 })
                 .collect(),
+            pg_version: args.pg_version,
             pg_distrib_dir: None,
             neon_distrib_dir: None,
             default_tenant_id: TenantId::from_array(std::array::from_fn(|_| 0)),
@@ -1102,7 +1103,7 @@ async fn handle_tenant(subcmd: &TenantCmd, env: &mut local_env::LocalEnv) -> any
                         new_timeline_id,
                         mode: pageserver_api::models::TimelineCreateRequestMode::Bootstrap {
                             existing_initdb_timeline_id: None,
-                            pg_version: Some(args.pg_version),
+                            pg_version: Some(args.pg_version.unwrap_or(env.pg_version)),
                         },
                     },
                 )
@@ -1162,7 +1163,7 @@ async fn handle_timeline(cmd: &TimelineCmd, env: &mut local_env::LocalEnv) -> Re
                 new_timeline_id,
                 mode: pageserver_api::models::TimelineCreateRequestMode::Bootstrap {
                     existing_initdb_timeline_id: None,
-                    pg_version: Some(args.pg_version),
+                    pg_version: Some(args.pg_version.unwrap_or(env.pg_version)),
                 },
             };
             let timeline_info = storage_controller
@@ -1193,8 +1194,9 @@ async fn handle_timeline(cmd: &TimelineCmd, env: &mut local_env::LocalEnv) -> Re
             let pg_wal = end_lsn.zip(wal_tarfile);
 
             println!("Importing timeline into pageserver ...");
+            let pg_version = args.pg_version.unwrap_or(env.pg_version);
             pageserver
-                .timeline_import(tenant_id, timeline_id, base, pg_wal, args.pg_version)
+                .timeline_import(tenant_id, timeline_id, base, pg_wal, pg_version)
                 .await?;
             env.register_branch_mapping(branch_name.to_string(), tenant_id, timeline_id)?;
             println!("Done");
@@ -1354,7 +1356,7 @@ async fn handle_endpoint(subcmd: &EndpointCmd, env: &local_env::LocalEnv) -> Res
                 timeline_id,
                 args.pg_port,
                 args.http_port,
-                args.pg_version,
+                args.pg_version.unwrap_or(env.pg_version),
                 mode,
                 !args.update_catalog,
                 false,
