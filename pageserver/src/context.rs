@@ -89,7 +89,13 @@
 //! [`RequestContext`] argument. Functions in the middle of the call chain
 //! only need to pass it on.
 
+use futures::future::BoxFuture;
+use futures::FutureExt;
+use std::future::Future;
+use tracing::Instrument;
+
 use crate::task_mgr::TaskKind;
+use tracing::Span;
 
 // The main structure of this module, see module-level comment.
 #[derive(Clone)]
@@ -98,6 +104,19 @@ pub struct RequestContext {
     download_behavior: DownloadBehavior,
     access_stats_behavior: AccessStatsBehavior,
     page_content_kind: PageContentKind,
+    perf_span: Option<Span>,
+}
+
+impl std::fmt::Debug for RequestContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestContext")
+            .field("task_kind", &self.task_kind)
+            .field("download_behavior", &self.download_behavior)
+            .field("access_stats_behavior", &self.access_stats_behavior)
+            .field("page_content_kind", &self.page_content_kind)
+            // perf_span is omitted on purpose
+            .finish()
+    }
 }
 
 /// The kind of access to the page cache.
@@ -155,6 +174,7 @@ impl RequestContextBuilder {
                 download_behavior: DownloadBehavior::Download,
                 access_stats_behavior: AccessStatsBehavior::Update,
                 page_content_kind: PageContentKind::Unknown,
+                perf_span: None,
             },
         }
     }
@@ -186,6 +206,21 @@ impl RequestContextBuilder {
 
     pub(crate) fn page_content_kind(mut self, k: PageContentKind) -> Self {
         self.inner.page_content_kind = k;
+        self
+    }
+
+    pub fn root_perf_span(mut self, span: Span) -> Self {
+        assert!(self.inner.perf_span.is_none());
+        self.inner.perf_span = Some(span);
+        self
+    }
+
+    pub fn perf_span<Fn>(mut self, make_span: Fn) -> Self
+    where Fn: FnOnce(&Span) -> Span {
+        if let Some(ref span) = self.inner.perf_span {
+            self.inner.perf_span = Some(make_span(span))
+        }
+
         self
     }
 
@@ -295,5 +330,47 @@ impl RequestContext {
 
     pub(crate) fn page_content_kind(&self) -> PageContentKind {
         self.page_content_kind
+    }
+
+    pub(crate) fn in_perf_span_scope<F: FnOnce() -> T, T>(&self, f: F) -> T {
+        match self.perf_span {
+            Some(ref span) => span.in_scope(f),
+            None => f(),
+        }
+    }
+
+    pub(crate) fn perf_follows_from(&self, from: &RequestContext) {
+        if let (Some(span), Some(from_span)) = (&self.perf_span, &from.perf_span) {
+            span.follows_from(from_span);
+        }
+    }
+
+    pub(crate) fn maybe_instrument<'a, Fut, Fn>(
+        &self,
+        future: Fut,
+        make_span: Fn,
+    ) -> BoxFuture<'a, Fut::Output>
+    where
+        Fut: Future + Send + 'a,
+        Fn: FnOnce(&Span) -> Span,
+    {
+        match &self.perf_span {
+            Some(span) => future.instrument(make_span(span)).boxed(),
+            None => future.boxed(),
+        }
+    }
+
+    pub fn perf_span_record<Q: tracing::field::AsField + ?Sized, V: tracing::field::Value>(
+        &self,
+        field: &Q,
+        value: V,
+    ) {
+        if let Some(span) = &self.perf_span {
+            span.record(field, value);
+        }
+    }
+
+    pub(crate) fn has_perf_span(&self) -> bool {
+        self.perf_span.is_some()
     }
 }

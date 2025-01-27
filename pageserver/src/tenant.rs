@@ -5519,6 +5519,7 @@ pub(crate) mod harness {
                 // enable it in case the tests exercise code paths that use
                 // debug_assert_current_span_has_tenant_and_timeline_id
                 logging::TracingErrorLayerEnablement::EnableWithRustLogFilter,
+                utils::logging::OtelEnablement::Disabled,
                 logging::Output::Stdout,
             )
             .expect("Failed to init test logging")

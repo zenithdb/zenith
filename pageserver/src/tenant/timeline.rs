@@ -69,6 +69,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::context::RequestContextBuilder;
 use crate::l0_flush::{self, L0FlushGlobalState};
 use crate::{
     aux_file::AuxFileSizeEstimator,
@@ -1157,9 +1158,19 @@ impl Timeline {
         reconstruct_state: &mut ValuesReconstructState,
         ctx: &RequestContext,
     ) -> Result<BTreeMap<Key, Result<Bytes, PageReconstructError>>, GetVectoredError> {
-        let traversal_res: Result<(), _> = self
-            .get_vectored_reconstruct_data(keyspace.clone(), lsn, reconstruct_state, ctx)
-            .await;
+        let plan_context = RequestContextBuilder::from(ctx)
+            .perf_span(|crnt_perf_span| info_span!(
+                target: "get_page",
+                parent: crnt_perf_span,
+                "PLAN_IO",
+            ))
+            .attached_child();
+
+        let traversal_res: Result<(), _> = plan_context.maybe_instrument(
+            self.get_vectored_reconstruct_data(keyspace.clone(), lsn, reconstruct_state, &plan_context),
+            |crnt_perf_span| { crnt_perf_span.clone() }
+        ).await;
+
         if let Err(err) = traversal_res {
             // Wait for all the spawned IOs to complete.
             // See comments on `spawn_io` inside `storage_layer` for more details.
@@ -1173,14 +1184,42 @@ impl Timeline {
 
         let layers_visited = reconstruct_state.get_layers_visited();
 
+        let execute_context = RequestContextBuilder::from(ctx)
+            .perf_span(|crnt_perf_span| info_span!(
+                target: "get_page",
+                parent: crnt_perf_span,
+                "RECONSTRUCT",
+            ))
+            .attached_child();
+
         let futs = FuturesUnordered::new();
         for (key, state) in std::mem::take(&mut reconstruct_state.keys) {
             futs.push({
                 let walredo_self = self.myself.upgrade().expect("&self method holds the arc");
+                let execute_key_context = RequestContextBuilder::from(&execute_context).perf_span(|crnt_perf_span| {
+                    info_span!(
+                        target: "get_page",
+                        parent: crnt_perf_span,
+                        "RECONSTRUCT_KEY",
+                        key = %key,
+                    )
+                }).attached_child();
+
                 async move {
                     assert_eq!(state.situation, ValueReconstructSituation::Complete);
 
-                    let converted = match state.collect_pending_ios().await {
+                    let res = execute_key_context.maybe_instrument(
+                        state.collect_pending_ios(),
+                        |crnt_perf_span| {
+                            info_span!(
+                                target: "get_page",
+                                parent: crnt_perf_span,
+                                "EXECUTE_IO",
+                            )
+                        }
+                    ).await;
+
+                    let converted = match res {
                         Ok(ok) => ok,
                         Err(err) => {
                             return (key, Err(err));
@@ -1196,17 +1235,26 @@ impl Timeline {
                         "{converted:?}"
                     );
 
-                    (
-                        key,
-                        walredo_self.reconstruct_value(key, lsn, converted).await,
-                    )
+                    let walredo_res = execute_key_context.maybe_instrument(
+                        walredo_self.reconstruct_value(key, lsn, converted),
+                        |crnt_perf_span| {
+                            info_span!(
+                                target: "get_page",
+                                parent: crnt_perf_span,
+                                "WALREDO"
+                            )
+                        }
+                    ).await;
+
+                    (key, walredo_res)
                 }
             });
         }
 
-        let results = futs
-            .collect::<BTreeMap<Key, Result<Bytes, PageReconstructError>>>()
-            .await;
+        let results = execute_context.maybe_instrument(
+            futs.collect::<BTreeMap<Key, Result<Bytes, PageReconstructError>>>(),
+            |crnt_perf_span| { crnt_perf_span.clone() }
+        ).await;
 
         // For aux file keys (v1 or v2) the vectored read path does not return an error
         // when they're missing. Instead they are omitted from the resulting btree
