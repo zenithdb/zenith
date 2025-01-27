@@ -16,14 +16,19 @@ use axum::{
 use http::StatusCode;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
-use tower_http::{request_id::PropagateRequestIdLayer, trace::TraceLayer};
+use tower_http::{
+    auth::AsyncRequireAuthorizationLayer, request_id::PropagateRequestIdLayer, trace::TraceLayer,
+};
 use tracing::{debug, error, info, Span};
 use uuid::Uuid;
 
-use super::routes::{
-    check_writability, configure, database_schema, dbs_and_roles, extension_server, extensions,
-    grants, info as info_route, insights, installed_extensions, metrics, metrics_json, status,
-    terminate,
+use super::{
+    middleware::authorize::Authorize,
+    routes::{
+        check_writability, configure, database_schema, dbs_and_roles, extension_server, extensions,
+        grants, info as info_route, insights, installed_extensions, metrics, metrics_json, status,
+        terminate,
+    },
 };
 use crate::compute::ComputeNode;
 
@@ -49,13 +54,20 @@ async fn maybe_add_request_id_header(mut request: Request, next: Next) -> Respon
 /// Run the HTTP server and wait on it forever.
 #[tokio::main]
 async fn serve(port: u16, compute: Arc<ComputeNode>) {
+    let jwks = {
+        let state = compute.state.lock().unwrap();
+        let spec = &state.pspec.as_ref().unwrap().spec;
+
+        spec.jwks.clone()
+    };
+
     let mut app = Router::new()
         .route("/check_writability", post(check_writability::is_writable))
         .route("/configure", post(configure::configure))
         .route("/database_schema", get(database_schema::get_schema_dump))
         .route("/dbs_and_roles", get(dbs_and_roles::get_catalog_objects))
         .route(
-            "/extension_server/*filename",
+            "/extension_server/{*filename}",
             post(extension_server::download_extension),
         )
         .route("/extensions", post(extensions::install_extension))
@@ -73,6 +85,10 @@ async fn serve(port: u16, compute: Arc<ComputeNode>) {
         .fallback(handle_404)
         .layer(
             ServiceBuilder::new()
+                .layer(AsyncRequireAuthorizationLayer::new(Authorize::new(
+                    compute.id.clone(),
+                    jwks.unwrap(),
+                )))
                 // Add this middleware since we assume the request ID exists
                 .layer(middleware::from_fn(maybe_add_request_id_header))
                 .layer(
