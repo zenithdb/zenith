@@ -95,7 +95,7 @@ pub enum TracingErrorLayerEnablement {
 
 pub enum OtelEnablement {
     Disabled,
-    Enabled { service_name: String }
+    Enabled { service_name: String },
 }
 
 /// Where the logging should output to.
@@ -141,15 +141,11 @@ pub fn init(
     });
 
     let otel_layer = match otel_enablement {
-        OtelEnablement::Disabled => {
-            None
-        },
-        OtelEnablement::Enabled { service_name } => {
-            Some(
-                tracing_utils::init_tracing_without_runtime(&service_name)
-                    .with_filter(filter::Targets::new().with_target("get_page", Level::INFO)),
-            )
-        }
+        OtelEnablement::Disabled => None,
+        OtelEnablement::Enabled { service_name } => Some(
+            tracing_utils::init_tracing_without_runtime(&service_name)
+                .with_filter(filter::Targets::new().with_target("get_page", Level::INFO)),
+        ),
     };
 
     let r = r.with(otel_layer);

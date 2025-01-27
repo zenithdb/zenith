@@ -1159,17 +1159,26 @@ impl Timeline {
         ctx: &RequestContext,
     ) -> Result<BTreeMap<Key, Result<Bytes, PageReconstructError>>, GetVectoredError> {
         let plan_context = RequestContextBuilder::from(ctx)
-            .perf_span(|crnt_perf_span| info_span!(
-                target: "get_page",
-                parent: crnt_perf_span,
-                "PLAN_IO",
-            ))
+            .perf_span(|crnt_perf_span| {
+                info_span!(
+                    target: "get_page",
+                    parent: crnt_perf_span,
+                    "PLAN_IO",
+                )
+            })
             .attached_child();
 
-        let traversal_res: Result<(), _> = plan_context.maybe_instrument(
-            self.get_vectored_reconstruct_data(keyspace.clone(), lsn, reconstruct_state, &plan_context),
-            |crnt_perf_span| { crnt_perf_span.clone() }
-        ).await;
+        let traversal_res: Result<(), _> = plan_context
+            .maybe_instrument(
+                self.get_vectored_reconstruct_data(
+                    keyspace.clone(),
+                    lsn,
+                    reconstruct_state,
+                    &plan_context,
+                ),
+                |crnt_perf_span| crnt_perf_span.clone(),
+            )
+            .await;
 
         if let Err(err) = traversal_res {
             // Wait for all the spawned IOs to complete.
@@ -1185,39 +1194,42 @@ impl Timeline {
         let layers_visited = reconstruct_state.get_layers_visited();
 
         let execute_context = RequestContextBuilder::from(ctx)
-            .perf_span(|crnt_perf_span| info_span!(
-                target: "get_page",
-                parent: crnt_perf_span,
-                "RECONSTRUCT",
-            ))
+            .perf_span(|crnt_perf_span| {
+                info_span!(
+                    target: "get_page",
+                    parent: crnt_perf_span,
+                    "RECONSTRUCT",
+                )
+            })
             .attached_child();
 
         let futs = FuturesUnordered::new();
         for (key, state) in std::mem::take(&mut reconstruct_state.keys) {
             futs.push({
                 let walredo_self = self.myself.upgrade().expect("&self method holds the arc");
-                let execute_key_context = RequestContextBuilder::from(&execute_context).perf_span(|crnt_perf_span| {
-                    info_span!(
-                        target: "get_page",
-                        parent: crnt_perf_span,
-                        "RECONSTRUCT_KEY",
-                        key = %key,
-                    )
-                }).attached_child();
+                let execute_key_context = RequestContextBuilder::from(&execute_context)
+                    .perf_span(|crnt_perf_span| {
+                        info_span!(
+                            target: "get_page",
+                            parent: crnt_perf_span,
+                            "RECONSTRUCT_KEY",
+                            key = %key,
+                        )
+                    })
+                    .attached_child();
 
                 async move {
                     assert_eq!(state.situation, ValueReconstructSituation::Complete);
 
-                    let res = execute_key_context.maybe_instrument(
-                        state.collect_pending_ios(),
-                        |crnt_perf_span| {
+                    let res = execute_key_context
+                        .maybe_instrument(state.collect_pending_ios(), |crnt_perf_span| {
                             info_span!(
                                 target: "get_page",
                                 parent: crnt_perf_span,
                                 "EXECUTE_IO",
                             )
-                        }
-                    ).await;
+                        })
+                        .await;
 
                     let converted = match res {
                         Ok(ok) => ok,
@@ -1235,26 +1247,32 @@ impl Timeline {
                         "{converted:?}"
                     );
 
-                    let walredo_res = execute_key_context.maybe_instrument(
-                        walredo_self.reconstruct_value(key, lsn, converted),
-                        |crnt_perf_span| {
-                            info_span!(
-                                target: "get_page",
-                                parent: crnt_perf_span,
-                                "WALREDO"
-                            )
-                        }
-                    ).await;
+                    let walredo_depth = converted.depth();
+                    let walredo_res = execute_key_context
+                        .maybe_instrument(
+                            walredo_self.reconstruct_value(key, lsn, converted),
+                            |crnt_perf_span| {
+                                info_span!(
+                                    target: "get_page",
+                                    parent: crnt_perf_span,
+                                    "WALREDO",
+                                    depth = %walredo_depth,
+                                )
+                            },
+                        )
+                        .await;
 
                     (key, walredo_res)
                 }
             });
         }
 
-        let results = execute_context.maybe_instrument(
-            futs.collect::<BTreeMap<Key, Result<Bytes, PageReconstructError>>>(),
-            |crnt_perf_span| { crnt_perf_span.clone() }
-        ).await;
+        let results = execute_context
+            .maybe_instrument(
+                futs.collect::<BTreeMap<Key, Result<Bytes, PageReconstructError>>>(),
+                |crnt_perf_span| crnt_perf_span.clone(),
+            )
+            .await;
 
         // For aux file keys (v1 or v2) the vectored read path does not return an error
         // when they're missing. Instead they are omitted from the resulting btree
@@ -3376,18 +3394,34 @@ impl Timeline {
                 return Err(GetVectoredError::Cancelled);
             }
 
+            let plan_context = RequestContextBuilder::from(ctx)
+                .perf_span(|crnt_perf_span| {
+                    info_span!(
+                        target: "get_page",
+                        parent: crnt_perf_span,
+                        "PLAN_IO_TIMELINE",
+                        timeline = %timeline.timeline_id,
+                        lsn = %cont_lsn,
+                    )
+                })
+                .attached_child();
+
             let TimelineVisitOutcome {
                 completed_keyspace: completed,
                 image_covered_keyspace,
-            } = Self::get_vectored_reconstruct_data_timeline(
-                timeline,
-                keyspace.clone(),
-                cont_lsn,
-                reconstruct_state,
-                &self.cancel,
-                ctx,
-            )
-            .await?;
+            } = plan_context
+                .maybe_instrument(
+                    Self::get_vectored_reconstruct_data_timeline(
+                        timeline,
+                        keyspace.clone(),
+                        cont_lsn,
+                        reconstruct_state,
+                        &self.cancel,
+                        &plan_context,
+                    ),
+                    |crnt_perf_span| crnt_perf_span.clone(),
+                )
+                .await?;
 
             keyspace.remove_overlapping_with(&completed);
 
@@ -3429,8 +3463,26 @@ impl Timeline {
 
             // Take the min to avoid reconstructing a page with data newer than request Lsn.
             cont_lsn = std::cmp::min(Lsn(request_lsn.0 + 1), Lsn(timeline.ancestor_lsn.0 + 1));
-            timeline_owned = timeline
-                .get_ready_ancestor_timeline(ancestor_timeline, ctx)
+
+            let get_ancestor_context = RequestContextBuilder::from(ctx)
+                .perf_span(|crnt_perf_span| {
+                    info_span!(
+                        target: "get_page",
+                        parent: crnt_perf_span,
+                        "GET_ANCESTOR",
+                        timeline = %timeline.timeline_id,
+                        lsn = %cont_lsn,
+                        ancestor = %ancestor_timeline.timeline_id,
+                        ancestor_lsn = %timeline.ancestor_lsn
+                    )
+                })
+                .attached_child();
+
+            timeline_owned = get_ancestor_context
+                .maybe_instrument(
+                    timeline.get_ready_ancestor_timeline(ancestor_timeline, &get_ancestor_context),
+                    |crnt_perf_span| crnt_perf_span.clone(),
+                )
                 .await?;
             timeline = &*timeline_owned;
         };

@@ -216,7 +216,9 @@ impl RequestContextBuilder {
     }
 
     pub fn perf_span<Fn>(mut self, make_span: Fn) -> Self
-    where Fn: FnOnce(&Span) -> Span {
+    where
+        Fn: FnOnce(&Span) -> Span,
+    {
         if let Some(ref span) = self.inner.perf_span {
             self.inner.perf_span = Some(make_span(span))
         }
