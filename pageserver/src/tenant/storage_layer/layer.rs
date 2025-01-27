@@ -1709,9 +1709,9 @@ impl DownloadedLayer {
             );
 
             let res = if owner.desc.is_delta {
-                let ctx = RequestContextBuilder::extend(ctx)
+                let ctx = RequestContextBuilder::from(ctx)
                     .page_content_kind(crate::context::PageContentKind::DeltaLayerSummary)
-                    .build();
+                    .attached_child();
                 let summary = Some(delta_layer::Summary::expected(
                     owner.desc.tenant_shard_id.tenant_id,
                     owner.desc.timeline_id,
@@ -1727,9 +1727,9 @@ impl DownloadedLayer {
                 .await
                 .map(LayerKind::Delta)
             } else {
-                let ctx = RequestContextBuilder::extend(ctx)
+                let ctx = RequestContextBuilder::from(ctx)
                     .page_content_kind(crate::context::PageContentKind::ImageLayerSummary)
-                    .build();
+                    .attached_child();
                 let lsn = owner.desc.image_layer_lsn();
                 let summary = Some(image_layer::Summary::expected(
                     owner.desc.tenant_shard_id.tenant_id,

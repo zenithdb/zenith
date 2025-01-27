@@ -900,9 +900,9 @@ impl DeltaLayerInner {
     where
         Reader: BlockReader + Clone,
     {
-        let ctx = RequestContextBuilder::extend(ctx)
+        let ctx = RequestContextBuilder::from(ctx)
             .page_content_kind(PageContentKind::DeltaLayerBtreeNode)
-            .build();
+            .attached_child();
 
         for range in keyspace.ranges.iter() {
             let mut range_end_handled = false;
@@ -1106,9 +1106,9 @@ impl DeltaLayerInner {
                     all_keys.push(entry);
                     true
                 },
-                &RequestContextBuilder::extend(ctx)
+                &RequestContextBuilder::from(ctx)
                     .page_content_kind(PageContentKind::DeltaLayerBtreeNode)
-                    .build(),
+                    .attached_child(),
             )
             .await?;
         if let Some(last) = all_keys.last_mut() {

@@ -419,9 +419,9 @@ impl InMemoryLayer {
         reconstruct_state: &mut ValuesReconstructState,
         ctx: &RequestContext,
     ) -> Result<(), GetVectoredError> {
-        let ctx = RequestContextBuilder::extend(ctx)
+        let ctx = RequestContextBuilder::from(ctx)
             .page_content_kind(PageContentKind::InMemoryLayer)
-            .build();
+            .attached_child();
 
         let inner = self.inner.read().await;
 
