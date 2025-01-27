@@ -452,6 +452,15 @@ prefetch_pump_state(void)
 		/* update slot state */
 		slot->status = PRFS_RECEIVED;
 		slot->response = response;
+
+		if (response->tag == T_NeonGetPageResponse)
+		{
+			/*
+			 * Store prefetched result in LFC (please reed comments to lfc_prefetch
+			 * explaining why it can be done without holding shared buffer lock
+			 */
+			lfc_prefetch(BufTagGetNRelFileInfo(slot->buftag), slot->buftag.forkNum, slot->buftag.blockNum, ((NeonGetPageResponse*)response)->page, slot->request_lsns.not_modified_since);
+		}
 	}
 }
 
@@ -721,7 +730,7 @@ prefetch_read(PrefetchRequest *slot)
 			 * Store prefetched result in LFC (please reed comments to lfc_prefetch
 			 * explaining why it can be done without holding shared buffer lock
 			 */
-			lfc_prefetch(BufTagGetNRelFileInfo(buftag), buftag.forkNum,  buftag.blockNum, ((NeonGetPageResponse*)response)->page, slot->request_lsns.not_modified_since);
+			lfc_prefetch(BufTagGetNRelFileInfo(buftag), buftag.forkNum, buftag.blockNum, ((NeonGetPageResponse*)response)->page, slot->request_lsns.not_modified_since);
 		}
 		return true;
 	}
