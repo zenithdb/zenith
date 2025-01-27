@@ -976,9 +976,25 @@ lfc_init_new_entry(FileCacheEntry* entry, uint32 hash)
  * Store received prefetch result in LFC cache.
  * Unlike lfc_read/lfc_write this call is is not protected by shared buffer lock.
  * So we should be ready that other backends will try to concurrently read or write this block.
- * We do not store prefetched block if it already exists in LFC or it's not_modified_since LSN is smaller than current
- * last written LSN.
- */
+ * We do not store prefetched block if it already exists in LFC or it's not_modified_since LSN is smaller
+ * than current last written LSN (LwLSN).
+ *
+ * We can enforce correctness of storing page in LFC by the following steps:
+ * 1. Check under LFC lock that page in not present in LFC.
+ * 2. Check under LFC lock that LwLSN is not changed since prefetch request time (not_modified_since).
+ * 3. Change page state to "Pending" under LFC lock to prevent all other backends to read or write this
+ *    pages until this write is completed.
+ * 4. Assume that some other backend creates new image of the page without reading it
+ *    (because reads will be blocked because of 2). This version of the page is stored in shared buffer.
+ *    Any attempt to throw away this page from shared buffer will be blocked, because Postgres first
+ *    needs to save dirty page and write will be blocked because of 2.
+ *    So any backend trying to access this page, will take it from shared buffer without accessing
+ *    SMGR and LFC.
+ * 5. After write completion we once again obtain LFC lock and wake-up all waiting backends.
+ *    If there is some backend waiting to write new image of the page (4) then now it will be able to
+ *    do it,overwriting old (prefetched) page image. As far as this write will be completed before
+ *    shared buffer can be reassigned, not other backend can see old page image.
+*/
 void
 lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 			 const void* buffer, XLogRecPtr lsn)

@@ -717,7 +717,10 @@ prefetch_read(PrefetchRequest *slot)
 
 		if (response->tag == T_NeonGetPageResponse)
 		{
-			/* store prefetched result in LFC */
+			/*
+			 * Store prefetched result in LFC (please reed comments to lfc_prefetch
+			 * explaining why it can be done without holding shared buffer lock
+			 */
 			lfc_prefetch(BufTagGetNRelFileInfo(buftag), buftag.forkNum,  buftag.blockNum, ((NeonGetPageResponse*)response)->page, slot->request_lsns.not_modified_since);
 		}
 		return true;
