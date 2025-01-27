@@ -870,7 +870,7 @@ impl PageServerHandler {
                 let key = rel_block_to_key(req.rel, req.blkno);
 
                 fn sampled() -> bool {
-                    const SAMPLE_RATE: f32 = 0.5;
+                    const SAMPLE_RATE: f32 = 0.01;
                     if SAMPLE_RATE <= 0.0 {
                         false
                     } else if SAMPLE_RATE >= 1.0 {
