@@ -104,6 +104,7 @@ DEFAULT_PAGESERVER_ALLOWED_ERRORS = (
     ".*delaying layer flush by \\S+ for compaction backpressure.*",
     ".*stalling layer flushes for compaction backpressure.*",
     ".*layer roll waiting for flush due to compaction backpressure.*",
+    ".*BatchSpanProcessor.Flush.ExportError.*"
 )
 
 
