@@ -20,6 +20,11 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+        with:
+          egress-policy: audit
+
       - name: Cancel previous e2e-tests runs for this PR
         env:
           GH_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
@@ -35,7 +40,12 @@ jobs:
 
     steps:
       # Need `fetch-depth: 0` to count the number of commits in the branch
-      - uses: actions/checkout@v4
+      - name: Harden Runner
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
@@ -68,6 +78,11 @@ jobs:
       GH_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
       TAG: ${{ needs.tag.outputs.build-tag }}
     steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+        with:
+          egress-policy: audit
+
       - name: Wait for `promote-images-dev` job to finish
         # It's important to have a timeout here, the script in the step can run infinitely
         timeout-minutes: 60

@@ -8,6 +8,9 @@ defaults:
   run:
     shell: bash -euxo pipefail {0}
 
+permissions:
+  contents: read
+
 jobs:
   setup-databases:
     permissions:
@@ -34,6 +37,11 @@ jobs:
       options: --init
 
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+      with:
+        egress-policy: audit
+
     - name: Set up Connection String
       id: set-up-prep-connstr
       run: |
@@ -55,10 +63,10 @@ jobs:
 
         echo "connstr=${CONNSTR}" >> $GITHUB_OUTPUT
 
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
+      uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
       with:
         aws-region: eu-central-1
         role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}

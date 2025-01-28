@@ -44,6 +44,11 @@ jobs:
       skip: ${{ steps.check-manifests.outputs.skip }}
 
     steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+        with:
+          egress-policy: audit
+
       - name: Check if we really need to pin the image
         id: check-manifests
         run: |
@@ -70,20 +75,25 @@ jobs:
       id-token: write # for `azure/login` and aws auth
 
     steps:
-      - uses: docker/login-action@v3
+      - name: Harden Runner
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+        with:
+          egress-policy: audit
+
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
           username: ${{ secrets.NEON_DOCKERHUB_USERNAME }}
           password: ${{ secrets.NEON_DOCKERHUB_PASSWORD }}
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
           aws-region: eu-central-1
           role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
           role-duration-seconds: 3600
 
       - name: Login to Amazon Dev ECR
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
 
       - name: Azure login
         uses: azure/login@6c251865b4e6290e7b78be643ea2d005bc51f69a  # @v2.1.1

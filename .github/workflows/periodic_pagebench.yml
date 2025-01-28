@@ -25,6 +25,9 @@ concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   trigger_bench_on_ec2_machine_in_eu_central_1:
     permissions:
@@ -48,13 +51,18 @@ jobs:
     steps:
     # we don't need the neon source code because we run everything remotely
     # however we still need the local github actions to run the allure step below
-    - uses: actions/checkout@v4
+    - name: Harden Runner
+      uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+      with:
+        egress-policy: audit
+
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Show my own (github runner) external IP address - usefull for IP allowlisting
       run: curl https://ifconfig.me
 
     - name: Assume AWS OIDC role that allows to manage (start/stop/describe... EC machine)
-      uses: aws-actions/configure-aws-credentials@v4
+      uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
       with:
         aws-region: eu-central-1
         role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_MANAGE_BENCHMARK_EC2_VMS_ARN }}
@@ -141,7 +149,7 @@ jobs:
 
     - name: Post to a Slack channel
       if: ${{ github.event.schedule && failure() }}
-      uses: slackapi/slack-github-action@v1
+      uses: slackapi/slack-github-action@fcfb566f8b0aab22203f066d80ca1d7e4b5d05b3 # v1.27.1
       with:
         channel-id: "C06KHQVQ7U3" # on-call-qa-staging-stream
         slack-message: "Periodic pagebench testing on dedicated hardware: ${{ job.status }}\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -159,7 +167,7 @@ jobs:
 
     - name: Assume AWS OIDC role that allows to manage (start/stop/describe... EC machine)
       if: always() && steps.poll_step.outputs.too_many_runs != 'true'
-      uses: aws-actions/configure-aws-credentials@v4
+      uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
       with:
         aws-region: eu-central-1
         role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_MANAGE_BENCHMARK_EC2_VMS_ARN }}

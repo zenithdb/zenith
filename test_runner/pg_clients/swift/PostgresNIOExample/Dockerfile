@@ -1,10 +1,10 @@
-FROM swift:5.10 AS build
+FROM swift:5.10@sha256:2351780014bad244d1867e03ef282508aedbc438b0a722ea126eac5c6d104131 AS build
 WORKDIR /source
 
 COPY . .
 RUN swift build --configuration release
 
-FROM swift:5.10
+FROM swift:5.10@sha256:2351780014bad244d1867e03ef282508aedbc438b0a722ea126eac5c6d104131
 WORKDIR /app
 COPY --from=build /source/.build/release .
 CMD ["/app/PostgresNIOExample"]

@@ -27,6 +27,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   push-to-acr:
     runs-on: ubuntu-22.04
@@ -35,6 +38,11 @@ jobs:
       id-token: write # This is required for Azure Login to work.
 
     steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+        with:
+          egress-policy: audit
+
       - name: Azure login
         uses: azure/login@6c251865b4e6290e7b78be643ea2d005bc51f69a  # @v2.1.1
         with:
