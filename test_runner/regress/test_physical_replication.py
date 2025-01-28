@@ -260,4 +260,4 @@ def test_physical_replication_config_mismatch_max_locks_per_transaction(neon_sim
         secondary.stop()
 
     log.info(f"Replica crashed with {e}")
-    assert secondary.log_contains("You might need to increase")
+    assert secondary.log_contains("out of shared memory")
