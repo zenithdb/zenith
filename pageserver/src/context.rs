@@ -334,6 +334,7 @@ impl RequestContext {
         self.page_content_kind
     }
 
+    #[allow(unused)]
     pub(crate) fn in_perf_span_scope<F: FnOnce() -> T, T>(&self, f: F) -> T {
         match self.perf_span {
             Some(ref span) => span.in_scope(f),
