@@ -699,6 +699,15 @@ pub(crate) enum LayerId {
     InMemoryLayerId(InMemoryLayerFileId),
 }
 
+impl std::fmt::Display for LayerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LayerId::PersitentLayerId(key) => write!(f, "{}", key),
+            LayerId::InMemoryLayerId(_) => write!(f, "<in-memory layer>"),
+        }
+    }
+}
+
 /// Uniquely identify a layer visit by the layer
 /// and LSN floor (or start LSN) of the reads.
 /// The layer itself is not enough since we may
