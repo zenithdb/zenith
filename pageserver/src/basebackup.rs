@@ -280,7 +280,7 @@ where
             .timeline
             .get_control_file(self.lsn, self.ctx)
             .await
-            .context("failed get control bytes")?;
+            .context("failed to get control bytes")?;
         let (pg_control_bytes, system_identifier, was_shutdown) =
             postgres_ffi::generate_pg_control(
                 &pg_control_bytes,
