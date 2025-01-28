@@ -12,6 +12,9 @@ defaults:
   run:
     shell: bash -euxo pipefail {0}
 
+permissions:
+  contents: read
+
 jobs:
   check-codestyle-python:
     runs-on: [ self-hosted, small ]
@@ -23,9 +26,14 @@ jobs:
       options: --init
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Harden Runner
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+        with:
+          egress-policy: audit
 
-      - uses: actions/cache@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: ~/.cache/pypoetry/virtualenvs
           key: v2-${{ runner.os }}-${{ runner.arch }}-python-deps-bookworm-${{ hashFiles('poetry.lock') }}

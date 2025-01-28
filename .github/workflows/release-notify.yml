@@ -22,7 +22,12 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - uses: neondatabase/dev-actions/release-pr-notify@main
+      - name: Harden Runner
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+        with:
+          egress-policy: audit
+
+      - uses: neondatabase/dev-actions/release-pr-notify@3a0764620154f6baa48c74744a56c2d6fca72bf8 # main
         with:
           slack-token: ${{ secrets.SLACK_BOT_TOKEN }}
           slack-channel-id: ${{ vars.SLACK_UPCOMING_RELEASE_CHANNEL_ID || 'C05QQ9J1BRC' }} # if not set, then `#test-release-notifications`

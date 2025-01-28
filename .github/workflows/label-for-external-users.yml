@@ -27,6 +27,11 @@ jobs:
       is-member: ${{ steps.check-user.outputs.is-member }}
 
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+      with:
+        egress-policy: audit
+
     - name: Check whether `${{ github.actor }}` is a member of `${{ github.repository_owner }}`
       id: check-user
       env:
@@ -69,6 +74,11 @@ jobs:
       issues: write        # for `gh issue edit`
 
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+      with:
+        egress-policy: audit
+
     - name: Add `${{ env.LABEL }}` label
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

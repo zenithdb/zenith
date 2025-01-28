@@ -6,6 +6,9 @@ on:
     - cron: '25 0 * * *'
     - cron: '25 1 * * 6'
 
+permissions:
+  contents: read
+
 jobs:
   gh-workflow-stats-batch-2h:
     name: GitHub Workflow Stats Batch 2 hours
@@ -14,8 +17,13 @@ jobs:
     permissions:
       actions: read
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+      with:
+        egress-policy: audit
+
     - name: Export Workflow Run for the past 2 hours
-      uses: neondatabase/gh-workflow-stats-action@v0.2.1
+      uses: neondatabase/gh-workflow-stats-action@4c998b25ab5cc6588b52a610b749531f6a566b6b # v0.2.1
       with:
         db_uri: ${{ secrets.GH_REPORT_STATS_DB_RW_CONNSTR }}
         db_table: "gh_workflow_stats_neon"
@@ -29,8 +37,13 @@ jobs:
     permissions:
       actions: read
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+      with:
+        egress-policy: audit
+
     - name: Export Workflow Run for the past 48 hours
-      uses: neondatabase/gh-workflow-stats-action@v0.2.1
+      uses: neondatabase/gh-workflow-stats-action@4c998b25ab5cc6588b52a610b749531f6a566b6b # v0.2.1
       with:
         db_uri: ${{ secrets.GH_REPORT_STATS_DB_RW_CONNSTR }}
         db_table: "gh_workflow_stats_neon"
@@ -44,8 +57,13 @@ jobs:
     permissions:
       actions: read
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+      with:
+        egress-policy: audit
+
     - name: Export Workflow Run for the past 30 days
-      uses: neondatabase/gh-workflow-stats-action@v0.2.1
+      uses: neondatabase/gh-workflow-stats-action@4c998b25ab5cc6588b52a610b749531f6a566b6b # v0.2.1
       with:
         db_uri: ${{ secrets.GH_REPORT_STATS_DB_RW_CONNSTR }}
         db_table: "gh_workflow_stats_neon"

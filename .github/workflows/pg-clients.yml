@@ -88,7 +88,12 @@ jobs:
         ports:
           - 8083:8083
     steps:
-      - uses: actions/checkout@v4
+      - name: Harden Runner
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Download Neon artifact
         uses: ./.github/actions/download
@@ -136,7 +141,7 @@ jobs:
 
       - name: Post to a Slack channel
         if: github.event.schedule && failure()
-        uses: slackapi/slack-github-action@v1
+        uses: slackapi/slack-github-action@fcfb566f8b0aab22203f066d80ca1d7e4b5d05b3 # v1.27.1
         with:
           channel-id: "C06KHQVQ7U3" # on-call-qa-staging-stream
           slack-message: |
@@ -156,7 +161,12 @@ jobs:
       options: --init --user root
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Harden Runner
+      uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+      with:
+        egress-policy: audit
+
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Download Neon artifact
       uses: ./.github/actions/download
@@ -204,7 +214,7 @@ jobs:
 
     - name: Post to a Slack channel
       if: github.event.schedule && failure()
-      uses: slackapi/slack-github-action@v1
+      uses: slackapi/slack-github-action@fcfb566f8b0aab22203f066d80ca1d7e4b5d05b3 # v1.27.1
       with:
         channel-id: "C06KHQVQ7U3" # on-call-qa-staging-stream
         slack-message: |
