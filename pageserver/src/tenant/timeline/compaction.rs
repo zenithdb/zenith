@@ -678,9 +678,9 @@ impl Timeline {
         {
             Ok(((dense_partitioning, sparse_partitioning), lsn)) => {
                 // Disables access_stats updates, so that the files we read remain candidates for eviction after we're done with them
-                let image_ctx = RequestContextBuilder::extend(ctx)
+                let image_ctx = RequestContextBuilder::from(ctx)
                     .access_stats_behavior(AccessStatsBehavior::Skip)
-                    .build();
+                    .attached_child();
 
                 // 2. Compact
                 let timer = self.metrics.compact_time_histo.start_timer();

@@ -7553,6 +7553,7 @@ dependencies = [
  "tracing",
  "tracing-error",
  "tracing-subscriber",
+ "tracing-utils",
  "url",
  "uuid",
  "walkdir",

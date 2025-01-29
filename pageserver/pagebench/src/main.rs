@@ -35,6 +35,7 @@ fn main() {
     logging::init(
         logging::LogFormat::Plain,
         logging::TracingErrorLayerEnablement::Disabled,
+        utils::logging::OtelEnablement::Disabled,
         logging::Output::Stderr,
     )
     .unwrap();

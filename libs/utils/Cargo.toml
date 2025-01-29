@@ -50,6 +50,7 @@ toml_edit = { workspace = true, features = ["serde"] }
 tracing.workspace = true
 tracing-error.workspace = true
 tracing-subscriber = { workspace = true, features = ["json", "registry"] }
+tracing-utils.workspace = true
 rand.workspace = true
 scopeguard.workspace = true
 strum.workspace = true

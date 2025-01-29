@@ -4,6 +4,8 @@ use anyhow::Context;
 use metrics::{IntCounter, IntCounterVec};
 use once_cell::sync::Lazy;
 use strum_macros::{EnumString, VariantNames};
+use tracing::Level;
+use tracing_subscriber::filter;
 
 #[derive(EnumString, strum_macros::Display, VariantNames, Eq, PartialEq, Debug, Clone, Copy)]
 #[strum(serialize_all = "snake_case")]
@@ -91,6 +93,11 @@ pub enum TracingErrorLayerEnablement {
     EnableWithRustLogFilter,
 }
 
+pub enum OtelEnablement {
+    Disabled,
+    Enabled { service_name: String },
+}
+
 /// Where the logging should output to.
 #[derive(Clone, Copy)]
 pub enum Output {
@@ -101,6 +108,7 @@ pub enum Output {
 pub fn init(
     log_format: LogFormat,
     tracing_error_layer_enablement: TracingErrorLayerEnablement,
+    otel_enablement: OtelEnablement,
     output: Output,
 ) -> anyhow::Result<()> {
     // We fall back to printing all spans at info-level or above if
@@ -131,6 +139,17 @@ pub fn init(
         };
         log_layer.with_filter(rust_log_env_filter())
     });
+
+    let otel_layer = match otel_enablement {
+        OtelEnablement::Disabled => None,
+        OtelEnablement::Enabled { service_name } => Some(
+            tracing_utils::init_tracing_without_runtime(&service_name)
+                .with_filter(filter::Targets::new().with_target("get_page", Level::INFO)),
+        ),
+    };
+
+    let r = r.with(otel_layer);
+
     let r = r.with(
         TracingEventCountLayer(&TRACING_EVENT_COUNT_METRIC).with_filter(rust_log_env_filter()),
     );

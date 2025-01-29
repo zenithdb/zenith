@@ -26,6 +26,7 @@ use postgres_backend::{
 use pq_proto::framed::ConnectionError;
 use pq_proto::FeStartupPacket;
 use pq_proto::{BeMessage, FeMessage, RowDescriptor};
+use rand::random;
 use std::borrow::Cow;
 use std::io;
 use std::num::NonZeroUsize;
@@ -51,7 +52,7 @@ use utils::{
 use crate::auth::check_permission;
 use crate::basebackup::BasebackupError;
 use crate::config::PageServerConf;
-use crate::context::{DownloadBehavior, RequestContext};
+use crate::context::{DownloadBehavior, RequestContext, RequestContextBuilder};
 use crate::metrics::{self, SmgrOpTimer};
 use crate::metrics::{ComputeCommandKind, COMPUTE_COMMANDS_COUNTERS, LIVE_CONNECTIONS};
 use crate::pgdatadir_mapping::Version;
@@ -581,6 +582,7 @@ impl std::fmt::Display for BatchedPageStreamError {
 struct BatchedGetPageRequest {
     req: PagestreamGetPageRequest,
     timer: SmgrOpTimer,
+    ctx: RequestContext,
 }
 
 #[cfg(feature = "testing")]
@@ -866,11 +868,54 @@ impl PageServerHandler {
                 }
 
                 let key = rel_block_to_key(req.rel, req.blkno);
-                let shard = match timeline_handles
-                    .get(tenant_id, timeline_id, ShardSelector::Page(key))
-                    .instrument(span.clone()) // sets `shard_id` field
-                    .await
-                {
+
+                fn sampled() -> bool {
+                    const SAMPLE_RATE: f32 = 0.00;
+                    if SAMPLE_RATE <= 0.0 {
+                        false
+                    } else if SAMPLE_RATE >= 1.0 {
+                        true
+                    } else {
+                        random::<f32>() < SAMPLE_RATE
+                    }
+                }
+
+                // TODO: perf impact?
+                let get_page_context = if sampled() {
+                    RequestContextBuilder::from(ctx)
+                        .root_perf_span(info_span!(
+                            target: "get_page",
+                            "GET_PAGE",
+                            tenant_id = %tenant_id,
+                            timeline_id = %timeline_id,
+                            lsn = %req.hdr.request_lsn,
+                            request_id = %req.hdr.reqid,
+                            key = %key))
+                        .attached_child()
+                } else {
+                    ctx.attached_child()
+                };
+
+                let res = get_page_context
+                    .maybe_instrument(
+                        timeline_handles
+                            .get(tenant_id, timeline_id, ShardSelector::Page(key))
+                            .instrument(span.clone()), // sets `shard_id` field
+                        |current_perf_span| {
+                            info_span!(
+                                target: "get_page",
+                                parent: current_perf_span,
+                                "SHARD_SELECTION",
+                                tenant_id = %tenant_id,
+                                timeline_id = %timeline_id,
+                                lsn = %req.hdr.request_lsn,
+                                request_id = %req.hdr.reqid
+                            )
+                        },
+                    )
+                    .await;
+
+                let shard = match res {
                     Ok(tl) => tl,
                     Err(GetActiveTimelineError::Tenant(GetActiveTenantError::NotFound(_))) => {
                         // We already know this tenant exists in general, because we resolved it at
@@ -890,24 +935,59 @@ impl PageServerHandler {
                     }
                 };
 
-                let timer = record_op_start_and_throttle(
-                    &shard,
-                    metrics::SmgrQueryType::GetPageAtLsn,
-                    received_at,
-                )
-                .await?;
+                // TODO(vlad): why does this not show up?
+                get_page_context.perf_span_record(
+                    "shard",
+                    tracing::field::display(shard.get_shard_identity().shard_slug()),
+                );
+
+                let timer = get_page_context
+                    .maybe_instrument(
+                        record_op_start_and_throttle(
+                            &shard,
+                            metrics::SmgrQueryType::GetPageAtLsn,
+                            received_at,
+                        ),
+                        |current_perf_span| {
+                            info_span!(
+                                target: "get_page",
+                                parent: current_perf_span,
+                                "THROTTLE",
+                                tenant_id = %tenant_id,
+                                timeline_id = %timeline_id,
+                                lsn = %req.hdr.request_lsn,
+                                request_id = %req.hdr.reqid
+                            )
+                        },
+                    )
+                    .await?;
 
                 // We're holding the Handle
-                let effective_request_lsn = match Self::wait_or_get_last_lsn(
-                    &shard,
-                    req.hdr.request_lsn,
-                    req.hdr.not_modified_since,
-                    &shard.get_latest_gc_cutoff_lsn(),
-                    ctx,
-                )
                 // TODO: if we actually need to wait for lsn here, it delays the entire batch which doesn't need to wait
-                .await
-                {
+                let res = get_page_context
+                    .maybe_instrument(
+                        Self::wait_or_get_last_lsn(
+                            &shard,
+                            req.hdr.request_lsn,
+                            req.hdr.not_modified_since,
+                            &shard.get_latest_gc_cutoff_lsn(),
+                            ctx,
+                        ),
+                        |current_perf_span| {
+                            info_span!(
+                                target: "get_page",
+                                parent: current_perf_span,
+                                "WAIT_LSN",
+                                tenant_id = %tenant_id,
+                                timeline_id = %timeline_id,
+                                lsn = %req.hdr.request_lsn,
+                                request_id = %req.hdr.reqid
+                            )
+                        },
+                    )
+                    .await;
+
+                let effective_request_lsn = match res {
                     Ok(lsn) => lsn,
                     Err(e) => {
                         return respond_error!(e);
@@ -917,7 +997,11 @@ impl PageServerHandler {
                     span,
                     shard: shard.downgrade(),
                     effective_request_lsn,
-                    pages: smallvec::smallvec![BatchedGetPageRequest { req, timer }],
+                    pages: smallvec::smallvec![BatchedGetPageRequest {
+                        req,
+                        timer,
+                        ctx: get_page_context
+                    }],
                 }
             }
             #[cfg(feature = "testing")]
@@ -1889,7 +1973,9 @@ impl PageServerHandler {
 
         let results = timeline
             .get_rel_page_at_lsn_batched(
-                requests.iter().map(|p| (&p.req.rel, &p.req.blkno)),
+                requests
+                    .iter()
+                    .map(|p| (&p.req.rel, &p.req.blkno, p.ctx.attached_child())),
                 effective_lsn,
                 io_concurrency,
                 ctx,

@@ -11,7 +11,7 @@ mod layer_name;
 pub mod merge_iterator;
 
 use crate::config::PageServerConf;
-use crate::context::{AccessStatsBehavior, RequestContext};
+use crate::context::{AccessStatsBehavior, RequestContext, RequestContextBuilder};
 use bytes::Bytes;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -28,7 +28,7 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{trace, Instrument};
+use tracing::{info_span, trace, Instrument};
 use utils::sync::gate::GateGuard;
 
 use utils::lsn::Lsn;
@@ -78,6 +78,12 @@ where
 pub(crate) struct ValueReconstructState {
     pub(crate) records: Vec<(Lsn, NeonWalRecord)>,
     pub(crate) img: Option<(Lsn, Bytes)>,
+}
+
+impl ValueReconstructState {
+    pub(crate) fn depth(&self) -> usize {
+        self.records.len() + self.img.as_ref().map_or(0, |_| 1)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -856,13 +862,51 @@ impl ReadableLayer {
     ) -> Result<(), GetVectoredError> {
         match self {
             ReadableLayer::PersistentLayer(layer) => {
-                layer
-                    .get_values_reconstruct_data(keyspace, lsn_range, reconstruct_state, ctx)
+                let persistent_context = RequestContextBuilder::from(ctx)
+                    .perf_span(|crnt_perf_span| {
+                        info_span!(
+                            target: "get_page",
+                            parent: crnt_perf_span,
+                            "PLAN_LAYER",
+                            layer = %layer
+                        )
+                    })
+                    .attached_child();
+
+                persistent_context
+                    .maybe_instrument(
+                        layer.get_values_reconstruct_data(
+                            keyspace,
+                            lsn_range,
+                            reconstruct_state,
+                            &persistent_context,
+                        ),
+                        |crnt_perf_span| crnt_perf_span.clone(),
+                    )
                     .await
             }
             ReadableLayer::InMemoryLayer(layer) => {
-                layer
-                    .get_values_reconstruct_data(keyspace, lsn_range.end, reconstruct_state, ctx)
+                let in_mem_context = RequestContextBuilder::from(ctx)
+                    .perf_span(|crnt_perf_span| {
+                        info_span!(
+                            target: "get_page",
+                            parent: crnt_perf_span,
+                            "PLAN_LAYER",
+                            layer = %layer
+                        )
+                    })
+                    .attached_child();
+
+                in_mem_context
+                    .maybe_instrument(
+                        layer.get_values_reconstruct_data(
+                            keyspace,
+                            lsn_range.end,
+                            reconstruct_state,
+                            &in_mem_context,
+                        ),
+                        |crnt_perf_span| crnt_perf_span.clone(),
+                    )
                     .await
             }
         }

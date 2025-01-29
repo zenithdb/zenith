@@ -117,6 +117,9 @@ fn main() -> anyhow::Result<()> {
     logging::init(
         conf.log_format,
         tracing_error_layer_enablement,
+        utils::logging::OtelEnablement::Enabled {
+            service_name: "pageserver".to_string(),
+        },
         logging::Output::Stdout,
     )?;
 
