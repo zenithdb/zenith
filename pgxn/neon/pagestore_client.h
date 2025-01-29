@@ -281,6 +281,9 @@ extern PGDLLEXPORT void neon_read_at_lsn(NRelFileInfo rnode, ForkNumber forkNum,
 #endif
 extern int64 neon_dbsize(Oid dbNode);
 
+extern void prefetch_page(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno);
+extern void read_page(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno, char *page);
+
 /* utils for neon relsize cache */
 extern void relsize_hash_init(void);
 extern bool get_cached_relsize(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber *size);
@@ -299,10 +302,21 @@ extern int lfc_readv_select(NRelFileInfo rinfo, ForkNumber forkNum,
 
 extern bool lfc_cache_contains(NRelFileInfo rinfo, ForkNumber forkNum,
 							   BlockNumber blkno);
+/*
+ * Same as above, but also returns true if prewarm is currently active on this
+ * chunk 
+ */
+extern bool lfc_cache_contains_prewarm(NRelFileInfo rinfo, ForkNumber forkNum,
+									   BlockNumber blkno);
 extern int lfc_cache_containsv(NRelFileInfo rinfo, ForkNumber forkNum,
 							   BlockNumber blkno, int nblocks, bits8 *bitmap);
-extern void lfc_evict(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno);
 extern void lfc_init(void);
+/* sideload pages at LSNs into the LFC */
+extern void lfc_sideload_data(const Page *pages, const BufferTag *bufhdrs,
+							  const XLogRecPtr *lsns,
+							  bits8 *removable, int npages,
+							  int *n_added, int *n_discarded, int *n_expired);
+
 
 static inline bool
 lfc_read(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
