@@ -182,6 +182,7 @@ typedef enum PrefetchStatus
 typedef enum {
 	PRFSF_NONE	= 0x0,
 	PRFSF_SEQ	= 0x1,
+	PRFSF_LFC	= 0x2,
 } PrefetchRequestFlags;
 
 typedef struct PrefetchRequest
@@ -453,13 +454,14 @@ prefetch_pump_state(void)
 		slot->status = PRFS_RECEIVED;
 		slot->response = response;
 
-		if (response->tag == T_NeonGetPageResponse)
+		if (response->tag == T_NeonGetPageResponse && !(slot->flags & PRFSF_LFC))
 		{
 			/*
 			 * Store prefetched result in LFC (please reed comments to lfc_prefetch
 			 * explaining why it can be done without holding shared buffer lock
 			 */
 			lfc_prefetch(BufTagGetNRelFileInfo(slot->buftag), slot->buftag.forkNum, slot->buftag.blockNum, ((NeonGetPageResponse*)response)->page, slot->request_lsns.not_modified_since);
+			slot->flags |= PRFSF_LFC;
 		}
 	}
 }
@@ -724,13 +726,14 @@ prefetch_read(PrefetchRequest *slot)
 		slot->status = PRFS_RECEIVED;
 		slot->response = response;
 
-		if (response->tag == T_NeonGetPageResponse)
+		if (response->tag == T_NeonGetPageResponse && !(slot->flags & PRFSF_LFC))
 		{
 			/*
 			 * Store prefetched result in LFC (please reed comments to lfc_prefetch
 			 * explaining why it can be done without holding shared buffer lock
 			 */
 			lfc_prefetch(BufTagGetNRelFileInfo(buftag), buftag.forkNum, buftag.blockNum, ((NeonGetPageResponse*)response)->page, slot->request_lsns.not_modified_since);
+			slot->flags |= PRFSF_LFC;
 		}
 		return true;
 	}
