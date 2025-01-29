@@ -4448,7 +4448,12 @@ neon_redo_read_buffer_filter(XLogReaderState *record, uint8 block_id)
 	if (no_redo_needed)
 	{
 		SetLastWrittenLSNForBlock(end_recptr, rinfo, forknum, blkno);
-		lfc_evict(rinfo, forknum, blkno);
+		/*
+		 * Redo changes if page exists in LFC.
+		 * We should perform this check after assigning LwLSN to prevent
+		 * prefetching of some older version of the page by some other backend.
+		 */
+		no_redo_needed = !lfc_cache_contains(rinfo, forknum, blkno);
 	}
 
 	LWLockRelease(partitionLock);
