@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 # For reference, the space usage of the snapshots:
 # sudo du -hs /instance_store/neon/test_output/shared-snapshots/*
 # 416G	/instance_store/neon/test_output/shared-snapshots/max_throughput_latest_lsn-500-13
-@pytest.mark.parametrize("duration", [60 * 3])
+@pytest.mark.parametrize("duration", [60 * 60])
 @pytest.mark.parametrize("pgbench_scale", [get_scale_for_db(200)])
 @pytest.mark.parametrize("n_tenants", [500])
 @pytest.mark.timeout(10000)
@@ -56,7 +56,7 @@ def test_pageserver_characterize_throughput_with_n_tenants(
 # For reference, the space usage of the snapshots:
 # sudo du -hs /instance_store/neon/test_output/shared-snapshots/*
 # 19G	/instance_store/neon/test_output/shared-snapshots/max_throughput_latest_lsn-1-136
-@pytest.mark.parametrize("duration", [60 * 3])
+@pytest.mark.parametrize("duration", [20 * 60])
 @pytest.mark.parametrize("pgbench_scale", [get_scale_for_db(2048)])
 # we use 1 client to characterize latencies, and 64 clients to characterize throughput/scalability
 # we use 64 clients because typically for a high number of connections we recommend the connection pooler
