@@ -141,6 +141,8 @@ typedef struct FileCacheControl
 	uint64		writes;			/* number of writes issued */
 	uint64		time_read;		/* time spent reading (us) */
 	uint64		time_write;		/* time spent writing (us) */
+	uint64		resizes;        /* number of LFC resizes   */
+	uint64      evicted_pages;	/* number of evicted pages */
 	dlist_head	lru;			/* double linked list for LRU replacement
 								 * algorithm */
 	dlist_head  holes;          /* double linked list of punched holes */
@@ -294,14 +296,7 @@ lfc_shmem_startup(void)
 								 n_chunks + 1, n_chunks + 1,
 								 &info,
 								 HASH_ELEM | HASH_BLOBS);
-		lfc_ctl->generation = 0;
-		lfc_ctl->size = 0;
-		lfc_ctl->used = 0;
-		lfc_ctl->hits = 0;
-		lfc_ctl->misses = 0;
-		lfc_ctl->writes = 0;
-		lfc_ctl->time_read = 0;
-		lfc_ctl->time_write = 0;
+		memset(lfc_ctl, 0, sizeof *lfc_ctl);
 		dlist_init(&lfc_ctl->lru);
 		dlist_init(&lfc_ctl->holes);
 
@@ -378,6 +373,8 @@ lfc_change_limit_hook(int newval, void *extra)
 
 	LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
 
+	lfc_ctl->resizes += lfc_ctl->limit != new_size;
+
 	while (new_size < lfc_ctl->used && !dlist_is_empty(&lfc_ctl->lru))
 	{
 		/*
@@ -399,7 +396,9 @@ lfc_change_limit_hook(int newval, void *extra)
 		/* We remove the old entry, and re-enter a hole to the hash table */
 		for (int i = 0; i < BLOCKS_PER_CHUNK; i++)
 		{
-			lfc_ctl->used_pages -= GET_STATE(victim, i) == AVAILABLE;
+			bool is_page_cached = GET_STATE(victim, i) == AVAILABLE;
+			lfc_ctl->used_pages -= is_page_cached;
+			lfc_ctl->evicted_pages += is_page_cached;
 		}
 		hash_search_with_hash_value(lfc_hash, &victim->key, victim->hash, HASH_REMOVE, NULL);
 
@@ -867,7 +866,9 @@ lfc_init_new_entry(FileCacheEntry* entry, uint32 hash)
 
 		for (int i = 0; i < BLOCKS_PER_CHUNK; i++)
 		{
-			lfc_ctl->used_pages -= GET_STATE(victim, i) == AVAILABLE;
+			bool is_page_cached = GET_STATE(victim, i) == AVAILABLE;
+			lfc_ctl->used_pages -= is_page_cached;
+			lfc_ctl->evicted_pages += is_page_cached;
 		}
 
 		CriticalAssert(victim->access_count == 0);
@@ -1304,6 +1305,16 @@ neon_get_lfc_stats(PG_FUNCTION_ARGS)
 			key = "file_cache_used_pages";
 			if (lfc_ctl)
 				value = lfc_ctl->used_pages;
+			break;
+		case 6:
+			key = "file_cache_evicted_pages";
+			if (lfc_ctl)
+				value = lfc_ctl->evicted_pages;
+			break;
+		case 7:
+			key = "file_cache_limit";
+			if (lfc_ctl)
+				value = lfc_ctl->limit;
 			break;
 		default:
 			SRF_RETURN_DONE(funcctx);
