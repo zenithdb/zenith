@@ -11,7 +11,7 @@ rustdocflags = ["-Arustdoc::private_intra_doc_links"]
 # * <https://github.com/rust-lang/rust/pull/122646>
 #
 # NB: the RUSTFLAGS envvar will replace this. Make sure to update e.g. Dockerfile as well.
-rustflags = ["-Cforce-frame-pointers=yes"]
+rustflags = ["-Cforce-frame-pointers=yes", "--cfg", "tokio_unstable", "--cfg", "tokio_taskdump"]
 
 [alias]
 build_testing = ["build", "--features", "testing"]

@@ -2985,6 +2985,33 @@ async fn get_utilization(
         .map_err(ApiError::InternalServerError)
 }
 
+async fn get_taskdump(
+    request: Request<Body>,
+    _cancel: CancellationToken,
+) -> Result<Response<Body>, ApiError> {
+    check_permission(&request, None)?;
+
+    use std::io::Write;
+    use tokio::runtime::Handle;
+
+    let out = async {
+        let mut out = Vec::new();
+        // Inside an async block or function.
+        let handle = Handle::current();
+        let dump = handle.dump().await;
+        for (i, task) in dump.tasks().iter().enumerate() {
+            let trace = task.trace();
+            writeln!(out, "TASK {i}:")?;
+            writeln!(out, "{trace}\n")?;
+        }
+        Ok(String::from_utf8(out).unwrap())
+    }
+    .await
+    .map_err(|e: anyhow::Error| ApiError::InternalServerError(e))?;
+
+    json_response(StatusCode::OK, out)
+}
+
 async fn list_aux_files(
     mut request: Request<Body>,
     _cancel: CancellationToken,
@@ -3679,6 +3706,10 @@ pub fn make_router(
         .put(
             "/v1/tenant/:tenant_id/timeline/:timeline_id/import_wal",
             |r| api_handler(r, put_tenant_timeline_import_wal),
+        )
+        .get(
+            "/debug/taskdump",
+            |r| api_handler(r,  get_taskdump),
         )
         .any(handler_404))
 }
