@@ -56,6 +56,8 @@ uint32		WAIT_EVENT_NEON_LFC_MAINTENANCE;
 uint32		WAIT_EVENT_NEON_LFC_READ;
 uint32		WAIT_EVENT_NEON_LFC_TRUNCATE;
 uint32		WAIT_EVENT_NEON_LFC_WRITE;
+uint32		WAIT_EVENT_NEON_LFC_PREWARM_IO;
+uint32		WAIT_EVENT_NEON_LFC_PREWARM_ACCESS;
 uint32		WAIT_EVENT_NEON_PS_STARTING;
 uint32		WAIT_EVENT_NEON_PS_CONFIGURING;
 uint32		WAIT_EVENT_NEON_PS_SEND;
@@ -538,6 +540,8 @@ neon_shmem_startup_hook(void)
 	WAIT_EVENT_NEON_LFC_READ = WaitEventExtensionNew("Neon/FileCache_Read");
 	WAIT_EVENT_NEON_LFC_TRUNCATE = WaitEventExtensionNew("Neon/FileCache_Truncate");
 	WAIT_EVENT_NEON_LFC_WRITE = WaitEventExtensionNew("Neon/FileCache_Write");
+	WAIT_EVENT_NEON_LFC_PREWARM_IO = WaitEventExtensionNew("Neon/FileCachePrewarm_ConcurrentWrites");
+	WAIT_EVENT_NEON_LFC_PREWARM_ACCESS = WaitEventExtensionNew("Neon/FileCachePrewarmAccess");
 	WAIT_EVENT_NEON_PS_STARTING = WaitEventExtensionNew("Neon/PS_Starting");
 	WAIT_EVENT_NEON_PS_CONFIGURING = WaitEventExtensionNew("Neon/PS_Configuring");
 	WAIT_EVENT_NEON_PS_SEND = WaitEventExtensionNew("Neon/PS_SendIO");
