@@ -666,10 +666,24 @@ impl Timeline {
 
         // Define partitioning schema if needed
 
+        let l0_l1_boundary_lsn = {
+            // We do the repartition on the L0-L1 boundary. All data below the boundary
+            // are compacted by L0 with low read amplification, thus making the `repartition`
+            // function run fast.
+            let guard = self.layers.read().await;
+            let l0_min_lsn = guard
+                .layer_map()?
+                .level0_deltas()
+                .iter()
+                .map(|l| l.get_lsn_range().start)
+                .min()
+                .unwrap_or(self.get_last_record_lsn());
+            l0_min_lsn.max(self.get_ancestor_lsn())
+        };
         // FIXME: the match should only cover repartitioning, not the next steps
         let (partition_count, has_pending_tasks) = match self
             .repartition(
-                self.get_last_record_lsn(),
+                l0_l1_boundary_lsn,
                 self.get_compaction_target_size(),
                 options.flags,
                 ctx,
