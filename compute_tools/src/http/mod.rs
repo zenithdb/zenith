@@ -4,11 +4,9 @@ use http::{header::CONTENT_TYPE, StatusCode};
 use serde::Serialize;
 use tracing::error;
 
-pub use server::launch_http_server;
-
 mod extract;
 mod routes;
-mod server;
+pub mod server;
 
 /// Convenience response builder for JSON responses
 struct JsonResponse;

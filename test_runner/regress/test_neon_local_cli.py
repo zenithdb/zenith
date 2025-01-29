@@ -17,11 +17,13 @@ def test_neon_cli_basics(neon_env_builder: NeonEnvBuilder, port_distributor: Por
 
         main_branch_name = "main"
         pg_port = port_distributor.get_port()
-        http_port = port_distributor.get_port()
+        external_http_port = port_distributor.get_port()
+        internal_http_port = port_distributor.get_port()
         env.neon_cli.endpoint_create(
             main_branch_name,
             pg_port,
-            http_port,
+            external_http_port,
+            internal_http_port,
             endpoint_id="ep-basic-main",
             tenant_id=env.initial_tenant,
             pg_version=env.pg_version,
@@ -35,11 +37,13 @@ def test_neon_cli_basics(neon_env_builder: NeonEnvBuilder, port_distributor: Por
             new_branch_name=branch_name,
         )
         pg_port = port_distributor.get_port()
-        http_port = port_distributor.get_port()
+        external_http_port = port_distributor.get_port()
+        internal_http_port = port_distributor.get_port()
         env.neon_cli.endpoint_create(
             branch_name,
             pg_port,
-            http_port,
+            external_http_port,
+            internal_http_port,
             endpoint_id=f"ep-{branch_name}",
             tenant_id=env.initial_tenant,
             pg_version=env.pg_version,
@@ -59,23 +63,27 @@ def test_neon_two_primary_endpoints_fail(
     branch_name = "main"
 
     pg_port = port_distributor.get_port()
-    http_port = port_distributor.get_port()
+    external_http_port = port_distributor.get_port()
+    internal_http_port = port_distributor.get_port()
     env.neon_cli.endpoint_create(
         branch_name,
         pg_port,
-        http_port,
+        external_http_port,
+        internal_http_port,
         endpoint_id="ep1",
         tenant_id=env.initial_tenant,
         pg_version=env.pg_version,
     )
 
     pg_port = port_distributor.get_port()
-    http_port = port_distributor.get_port()
+    external_http_port = port_distributor.get_port()
+    internal_http_port = port_distributor.get_port()
     # ep1 is not running so create will succeed
     env.neon_cli.endpoint_create(
         branch_name,
         pg_port,
-        http_port,
+        external_http_port,
+        internal_http_port,
         endpoint_id="ep2",
         tenant_id=env.initial_tenant,
         pg_version=env.pg_version,
