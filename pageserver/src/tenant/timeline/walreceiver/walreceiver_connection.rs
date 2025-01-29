@@ -284,6 +284,8 @@ pub(super) async fn handle_walreceiver_connection(
         }
     } {
         let replication_message = replication_message?;
+tracing::info!("!!!handle_walreceiver_connection| processing replication_message");
+std::thread::sleep(core::time::Duration::from_millis(200));
 
         let now = Utc::now().naive_utc();
         let last_rec_lsn_before_msg = last_rec_lsn;
