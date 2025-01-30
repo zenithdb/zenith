@@ -894,7 +894,56 @@ class NeonEnvBuilder:
         traceback: TracebackType | None,
     ):
         # Stop all the nodes.
+        bytes_written: int = 0
+        getpage_requests: int = 0
+
         if self.env:
+            log.info("Checking for lots of I/O in tests that shouldn't")
+
+            sk_bytes_written: float = 0
+            if self.env.safekeepers[0].running:
+                try:
+                    _sk_bytes_written = (
+                        self.env.safekeepers[0]
+                        .http_client()
+                        .get_metric_value("safekeeper_write_wal_bytes_sum")
+                    )
+                except requests.exceptions.ConnectionError:
+                    _sk_bytes_written = 0
+
+                if _sk_bytes_written is not None:
+                    sk_bytes_written = int(_sk_bytes_written)
+
+            ps_bytes_written: float = 0
+            for pageserver in self.env.pageservers:
+                if pageserver.running:
+                    try:
+                        _tmp_bytes_written = pageserver.http_client().get_metric_sum(
+                            ["pageserver_io_operations_bytes_total"],
+                            {"operation": "write"},
+                            absence_ok=True,
+                        )
+                    except requests.exceptions.ConnectionError:
+                        _tmp_bytes_written = 0
+                    if _tmp_bytes_written is not None:
+                        ps_bytes_written += int(_tmp_bytes_written)
+
+                    try:
+                        _tmp_getpage = pageserver.http_client().get_metric_value(
+                            "pageserver_smgr_query_started_global_count_total",
+                            {"smgr_query_type": "get_page_at_lsn"},
+                        )
+                    except requests.exceptions.ConnectionError:
+                        _tmp_getpage = 0
+
+                    if _tmp_getpage is not None:
+                        getpage_requests += int(_tmp_getpage)
+            assert ps_bytes_written is not None
+
+            log.info(f"Bytes written: SK {sk_bytes_written}, PS {ps_bytes_written}")
+            log.info(f"GetPage@LSN requests: {getpage_requests}")
+            bytes_written = int(max(ps_bytes_written, sk_bytes_written))
+
             log.info("Cleaning up all storage and compute nodes")
             self.env.stop(
                 immediate=False,
@@ -954,6 +1003,31 @@ class NeonEnvBuilder:
             log.error(f"Error cleaning up overlay state: {e}")
             if cleanup_error is not None:
                 cleanup_error = e
+
+        if (
+            os.environ.get("BUILD_TYPE") == "debug"
+            and bytes_written
+            and bytes_written > 512 * 1024 * 1024
+        ):
+            raise RuntimeError(
+                f"This test wrote too much data in debug mode: {bytes_written} bytes"
+            )
+        elif bytes_written > 1024 * 1024 * 1024:
+            raise RuntimeError(
+                f"This test wrote too much data in release mode: {bytes_written} bytes"
+            )
+        else:
+            log.info(f"This test wrote {bytes_written} bytes")
+
+        # Fail tests that do more than 100MB of GetPage@LSN requests in debug mode
+        if os.environ.get("BUILD_TYPE") == "debug" and getpage_requests > 12800:
+            raise RuntimeError(
+                f"This test read too much data from pageservers in debug mode: {getpage_requests * 8192} bytes"
+            )
+        elif getpage_requests > 128000:
+            raise RuntimeError(
+                f"This test read too much data from pageservers in release mode: {getpage_requests * 8192} bytes"
+            )
 
 
 class NeonEnv:
@@ -1279,6 +1353,7 @@ class NeonEnv:
 
         for sk in self.safekeepers:
             sk.stop(immediate=immediate)
+
         for pageserver in self.pageservers:
             if ps_assert_metric_no_errors:
                 try:

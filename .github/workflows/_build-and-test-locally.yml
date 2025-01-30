@@ -307,7 +307,7 @@ jobs:
           run_with_real_s3: true
           real_s3_bucket: neon-github-ci-tests
           real_s3_region: eu-central-1
-          rerun_failed: true
+          rerun_failed: false
           pg_version: ${{ matrix.pg_version }}
           aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
         env:
