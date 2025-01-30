@@ -63,6 +63,8 @@ char	   *wal_acceptors_list = "";
 int			wal_acceptor_reconnect_timeout = 1000;
 int			wal_acceptor_connection_timeout = 10000;
 
+int         max_vacuum_defer_cleanup_age = 0;
+
 /* Set to true in the walproposer bgw. */
 static bool am_walproposer;
 static WalproposerShmemState *walprop_shared;
@@ -218,6 +220,16 @@ nwp_register_gucs(void)
 							10000, 0, INT_MAX,
 							PGC_SIGHUP,
 							GUC_UNIT_MS,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable(
+							"neon.max_vacuum_defer_cleanup_age",
+							"Restrict oldest xmin pinned by hot standby feedback to prevent bloating of master",
+							NULL,
+							&max_vacuum_defer_cleanup_age,
+							0, 0, INT_MAX,
+							PGC_SIGHUP,
+							0,
 							NULL, NULL, NULL);
 }
 
@@ -1963,6 +1975,7 @@ walprop_pg_process_safekeeper_feedback(WalProposer *wp, Safekeeper *sk)
 		FullTransactionId xmin = hsFeedback.xmin;
 		FullTransactionId catalog_xmin = hsFeedback.catalog_xmin;
 		FullTransactionId next_xid = ReadNextFullTransactionId();
+
 		/*
 		 * Page server is updating nextXid in checkpoint each 1024 transactions,
 		 * so feedback xmin can be actually larger then nextXid and
@@ -1971,8 +1984,14 @@ walprop_pg_process_safekeeper_feedback(WalProposer *wp, Safekeeper *sk)
 		 */
 		if (FullTransactionIdPrecedes(next_xid, xmin))
 			xmin = next_xid;
+		else if (max_vacuum_defer_cleanup_age != 0 && xmin.value < next_xid.value - max_vacuum_defer_cleanup_age)
+			xmin.value = next_xid.value - max_vacuum_defer_cleanup_age;
+
 		if (FullTransactionIdPrecedes(next_xid, catalog_xmin))
 			catalog_xmin = next_xid;
+		else if (max_vacuum_defer_cleanup_age != 0 && catalog_xmin.value < next_xid.value - max_vacuum_defer_cleanup_age)
+			catalog_xmin.value = next_xid.value - max_vacuum_defer_cleanup_age;
+
 		agg_hs_feedback = hsFeedback;
 		elog(DEBUG2, "ProcessStandbyHSFeedback(xmin=%d, catalog_xmin=%d", XidFromFullTransactionId(hsFeedback.xmin), XidFromFullTransactionId(hsFeedback.catalog_xmin));
 		ProcessStandbyHSFeedback(hsFeedback.ts,
