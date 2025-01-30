@@ -1336,10 +1336,20 @@ pub struct DatadirModification<'a> {
 
     /// For special "directory" keys that store key-value maps, track the size of the map
     /// if it was updated in this modification.
-    pending_directory_entries: Vec<(DirectoryKind, usize)>,
+    pending_directory_entries: Vec<(DirectoryKind, MetricsUpdate)>,
 
     /// An **approximation** of how many metadata bytes will be written to the EphemeralFile.
     pending_metadata_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetricsUpdate {
+    /// Set the metrics to this value
+    Set(u64),
+    /// Increment the metrics by this value
+    Add(u64),
+    /// Decrement the metrics by this value
+    Sub(u64),
 }
 
 impl DatadirModification<'_> {
@@ -1401,7 +1411,8 @@ impl DatadirModification<'_> {
         let buf = DbDirectory::ser(&DbDirectory {
             dbdirs: HashMap::new(),
         })?;
-        self.pending_directory_entries.push((DirectoryKind::Db, 0));
+        self.pending_directory_entries
+            .push((DirectoryKind::Db, MetricsUpdate::Set(0)));
         self.put(DBDIR_KEY, Value::Image(buf.into()));
 
         let buf = if self.tline.pg_version >= 17 {
@@ -1414,7 +1425,7 @@ impl DatadirModification<'_> {
             })
         }?;
         self.pending_directory_entries
-            .push((DirectoryKind::TwoPhase, 0));
+            .push((DirectoryKind::TwoPhase, MetricsUpdate::Set(0)));
         self.put(TWOPHASEDIR_KEY, Value::Image(buf.into()));
 
         let buf: Bytes = SlruSegmentDirectory::ser(&SlruSegmentDirectory::default())?.into();
@@ -1424,17 +1435,23 @@ impl DatadirModification<'_> {
         // harmless but they'd just be dropped on later compaction.
         if self.tline.tenant_shard_id.is_shard_zero() {
             self.put(slru_dir_to_key(SlruKind::Clog), empty_dir.clone());
-            self.pending_directory_entries
-                .push((DirectoryKind::SlruSegment(SlruKind::Clog), 0));
+            self.pending_directory_entries.push((
+                DirectoryKind::SlruSegment(SlruKind::Clog),
+                MetricsUpdate::Set(0),
+            ));
             self.put(
                 slru_dir_to_key(SlruKind::MultiXactMembers),
                 empty_dir.clone(),
             );
-            self.pending_directory_entries
-                .push((DirectoryKind::SlruSegment(SlruKind::Clog), 0));
+            self.pending_directory_entries.push((
+                DirectoryKind::SlruSegment(SlruKind::Clog),
+                MetricsUpdate::Set(0),
+            ));
             self.put(slru_dir_to_key(SlruKind::MultiXactOffsets), empty_dir);
-            self.pending_directory_entries
-                .push((DirectoryKind::SlruSegment(SlruKind::MultiXactOffsets), 0));
+            self.pending_directory_entries.push((
+                DirectoryKind::SlruSegment(SlruKind::MultiXactOffsets),
+                MetricsUpdate::Set(0),
+            ));
         }
 
         Ok(())
@@ -1704,7 +1721,8 @@ impl DatadirModification<'_> {
             let buf = RelDirectory::ser(&RelDirectory {
                 rels: HashSet::new(),
             })?;
-            self.pending_directory_entries.push((DirectoryKind::Rel, 0));
+            self.pending_directory_entries
+                .push((DirectoryKind::Rel, MetricsUpdate::Set(0)));
             self.put(
                 rel_dir_to_key(spcnode, dbnode),
                 Value::Image(Bytes::from(buf)),
@@ -1728,8 +1746,10 @@ impl DatadirModification<'_> {
             if !dir.xids.insert(xid) {
                 anyhow::bail!("twophase file for xid {} already exists", xid);
             }
-            self.pending_directory_entries
-                .push((DirectoryKind::TwoPhase, dir.xids.len()));
+            self.pending_directory_entries.push((
+                DirectoryKind::TwoPhase,
+                MetricsUpdate::Set(dir.xids.len() as u64),
+            ));
             Bytes::from(TwoPhaseDirectoryV17::ser(&dir)?)
         } else {
             let xid = xid as u32;
@@ -1737,8 +1757,10 @@ impl DatadirModification<'_> {
             if !dir.xids.insert(xid) {
                 anyhow::bail!("twophase file for xid {} already exists", xid);
             }
-            self.pending_directory_entries
-                .push((DirectoryKind::TwoPhase, dir.xids.len()));
+            self.pending_directory_entries.push((
+                DirectoryKind::TwoPhase,
+                MetricsUpdate::Set(dir.xids.len() as u64),
+            ));
             Bytes::from(TwoPhaseDirectory::ser(&dir)?)
         };
         self.put(TWOPHASEDIR_KEY, Value::Image(newdirbuf));
@@ -1787,8 +1809,10 @@ impl DatadirModification<'_> {
         let mut dir = DbDirectory::des(&buf)?;
         if dir.dbdirs.remove(&(spcnode, dbnode)).is_some() {
             let buf = DbDirectory::ser(&dir)?;
-            self.pending_directory_entries
-                .push((DirectoryKind::Db, dir.dbdirs.len()));
+            self.pending_directory_entries.push((
+                DirectoryKind::Db,
+                MetricsUpdate::Set(dir.dbdirs.len() as u64),
+            ));
             self.put(DBDIR_KEY, Value::Image(buf.into()));
         } else {
             warn!(
@@ -1827,8 +1851,10 @@ impl DatadirModification<'_> {
                 // Didn't exist. Update dbdir
                 e.insert(false);
                 let buf = DbDirectory::ser(&dbdir).context("serialize db")?;
-                self.pending_directory_entries
-                    .push((DirectoryKind::Db, dbdir.dbdirs.len()));
+                self.pending_directory_entries.push((
+                    DirectoryKind::Db,
+                    MetricsUpdate::Set(dbdir.dbdirs.len() as u64),
+                ));
                 self.put(DBDIR_KEY, Value::Image(buf.into()));
                 false
             } else {
@@ -1865,18 +1891,33 @@ impl DatadirModification<'_> {
             // We don't write `rel_dir.rels` back to the storage in the v2 path unless it's the initial creation.
         }
 
-        if !dbdir_exists || !self.tline.get_rel_size_v2_enabled() {
-            // TODO: if we have fully migrated to v2, no need to create this directory
-
+        if !dbdir_exists {
             self.pending_directory_entries
-                .push((DirectoryKind::Rel, rel_dir.rels.len()));
+                .push((DirectoryKind::Rel, MetricsUpdate::Set(0)));
+        }
 
+        if !self.tline.get_rel_size_v2_enabled() {
+            self.pending_directory_entries
+                .push((DirectoryKind::Rel, MetricsUpdate::Add(1)));
             self.put(
                 rel_dir_key,
                 Value::Image(Bytes::from(
                     RelDirectory::ser(&rel_dir).context("serialize")?,
                 )),
             );
+        } else {
+            if !dbdir_exists {
+                // TODO: if we have fully migrated to v2, no need to create this directory. Otherwise, there
+                // will be key not found errors if we don't create an empty one for rel_size_v2.
+                self.put(
+                    rel_dir_key,
+                    Value::Image(Bytes::from(
+                        RelDirectory::ser(&rel_dir).context("serialize")?,
+                    )),
+                );
+            }
+            self.pending_directory_entries
+                .push((DirectoryKind::Rel, MetricsUpdate::Add(1)));
         }
 
         // Put size
@@ -1965,6 +2006,8 @@ impl DatadirModification<'_> {
             let mut dirty = false;
             for rel_tag in rel_tags {
                 let found = if dir.rels.remove(&(rel_tag.relnode, rel_tag.forknum)) {
+                    self.pending_directory_entries
+                        .push((DirectoryKind::Rel, MetricsUpdate::Sub(1)));
                     dirty = true;
                     true
                 } else if self.tline.get_rel_size_v2_enabled() {
@@ -1974,6 +2017,8 @@ impl DatadirModification<'_> {
                     let key =
                         rel_tag_sparse_key(spc_node, db_node, rel_tag.relnode, rel_tag.forknum);
                     if self.sparse_get(key, ctx).await?.is_some() {
+                        self.pending_directory_entries
+                            .push((DirectoryKind::Rel, MetricsUpdate::Sub(1)));
                         // put tombstone
                         self.put(key, Value::Image(SPARSE_TOMBSTONE_MARKER.clone()));
                     }
@@ -1999,8 +2044,6 @@ impl DatadirModification<'_> {
 
             if dirty {
                 self.put(dir_key, Value::Image(Bytes::from(RelDirectory::ser(&dir)?)));
-                self.pending_directory_entries
-                    .push((DirectoryKind::Rel, dir.rels.len()));
             }
         }
 
@@ -2024,8 +2067,10 @@ impl DatadirModification<'_> {
         if !dir.segments.insert(segno) {
             anyhow::bail!("slru segment {kind:?}/{segno} already exists");
         }
-        self.pending_directory_entries
-            .push((DirectoryKind::SlruSegment(kind), dir.segments.len()));
+        self.pending_directory_entries.push((
+            DirectoryKind::SlruSegment(kind),
+            MetricsUpdate::Set(dir.segments.len() as u64),
+        ));
         self.put(
             dir_key,
             Value::Image(Bytes::from(SlruSegmentDirectory::ser(&dir)?)),
@@ -2072,8 +2117,10 @@ impl DatadirModification<'_> {
         if !dir.segments.remove(&segno) {
             warn!("slru segment {:?}/{} does not exist", kind, segno);
         }
-        self.pending_directory_entries
-            .push((DirectoryKind::SlruSegment(kind), dir.segments.len()));
+        self.pending_directory_entries.push((
+            DirectoryKind::SlruSegment(kind),
+            MetricsUpdate::Set(dir.segments.len() as u64),
+        ));
         self.put(
             dir_key,
             Value::Image(Bytes::from(SlruSegmentDirectory::ser(&dir)?)),
@@ -2105,8 +2152,10 @@ impl DatadirModification<'_> {
             if !dir.xids.remove(&xid) {
                 warn!("twophase file for xid {} does not exist", xid);
             }
-            self.pending_directory_entries
-                .push((DirectoryKind::TwoPhase, dir.xids.len()));
+            self.pending_directory_entries.push((
+                DirectoryKind::TwoPhase,
+                MetricsUpdate::Set(dir.xids.len() as u64),
+            ));
             Bytes::from(TwoPhaseDirectoryV17::ser(&dir)?)
         } else {
             let xid: u32 = u32::try_from(xid)?;
@@ -2115,8 +2164,10 @@ impl DatadirModification<'_> {
             if !dir.xids.remove(&xid) {
                 warn!("twophase file for xid {} does not exist", xid);
             }
-            self.pending_directory_entries
-                .push((DirectoryKind::TwoPhase, dir.xids.len()));
+            self.pending_directory_entries.push((
+                DirectoryKind::TwoPhase,
+                MetricsUpdate::Set(dir.xids.len() as u64),
+            ));
             Bytes::from(TwoPhaseDirectory::ser(&dir)?)
         };
         self.put(TWOPHASEDIR_KEY, Value::Image(newdirbuf));
@@ -2232,7 +2283,7 @@ impl DatadirModification<'_> {
         }
 
         for (kind, count) in std::mem::take(&mut self.pending_directory_entries) {
-            writer.update_directory_entries_count(kind, count as u64);
+            writer.update_directory_entries_count(kind, count);
         }
 
         Ok(())
@@ -2318,7 +2369,7 @@ impl DatadirModification<'_> {
         }
 
         for (kind, count) in std::mem::take(&mut self.pending_directory_entries) {
-            writer.update_directory_entries_count(kind, count as u64);
+            writer.update_directory_entries_count(kind, count);
         }
 
         self.pending_metadata_bytes = 0;
