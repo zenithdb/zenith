@@ -43,10 +43,15 @@ async def test_http_pool_begin_1(static_proxy: NeonProxy):
     print(results)
 
 
-def test_proxy_select_1(static_proxy: NeonProxy):
+def test_proxy_select_1(static_proxy: NeonProxy, vanilla_pg: VanillaPostgres):
     """
     A simplest smoke test: check proxy against a local postgres instance.
     """
+
+    # Establish the default compute for this endpoint
+    vanilla_pg.safe_psql(
+        "INSERT INTO neon_control_plane.endpoints (endpoint_id) VALUES ('generic-project-name')"
+    )
 
     # no SNI, deprecated `options=project` syntax (before we had several endpoint in project)
     out = static_proxy.safe_psql("select 1", sslsni=0, options="project=generic-project-name")
@@ -61,11 +66,16 @@ def test_proxy_select_1(static_proxy: NeonProxy):
     assert out[0][0] == 42
 
 
-def test_password_hack(static_proxy: NeonProxy):
+def test_password_hack(static_proxy: NeonProxy, vanilla_pg: VanillaPostgres):
     """
     Check the PasswordHack auth flow: an alternative to SCRAM auth for
     clients which can't provide the project/endpoint name via SNI or `options`.
     """
+
+    # Establish the default compute for this endpoint
+    vanilla_pg.safe_psql(
+        "INSERT INTO neon_control_plane.endpoints (endpoint_id) VALUES ('irrelevant')"
+    )
 
     user = "borat"
     password = "password"
@@ -107,13 +117,18 @@ async def test_link_auth(vanilla_pg: VanillaPostgres, link_proxy: NeonProxy):
 
 
 @pytest.mark.parametrize("option_name", ["project", "endpoint"])
-def test_proxy_options(static_proxy: NeonProxy, option_name: str):
+def test_proxy_options(static_proxy: NeonProxy, vanilla_pg: VanillaPostgres, option_name: str):
     """
     Check that we pass extra `options` to the PostgreSQL server:
     * `project=...` and `endpoint=...` shouldn't be passed at all
     * (otherwise postgres will raise an error).
     * everything else should be passed as-is.
     """
+
+    # Establish the default compute for this endpoint
+    vanilla_pg.safe_psql(
+        "INSERT INTO neon_control_plane.endpoints (endpoint_id) VALUES ('irrelevant')"
+    )
 
     options = f"{option_name}=irrelevant -cproxytest.option=value"
     out = static_proxy.safe_psql("show proxytest.option", options=options, sslsni=0)

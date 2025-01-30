@@ -3340,7 +3340,7 @@ class NeonProxy(PgProtocol):
         metric_collection_interval: str | None = None,
     ):
         host = "127.0.0.1"
-        domain = "proxy.localtest.me"  # resolves to 127.0.0.1
+        domain = "ep-test-endpoint.localtest.me"  # resolves to 127.0.0.1
         super().__init__(dsn=auth_backend.default_conn_url, host=domain, port=proxy_port)
 
         self.domain = domain
@@ -3705,7 +3705,19 @@ def static_proxy(
     vanilla_pg.safe_psql("create user proxy with login superuser password 'password'")
     vanilla_pg.safe_psql("CREATE SCHEMA IF NOT EXISTS neon_control_plane")
     vanilla_pg.safe_psql(
-        "CREATE TABLE neon_control_plane.endpoints (endpoint_id VARCHAR(255) PRIMARY KEY, allowed_ips VARCHAR(255))"
+        f"""
+        CREATE TABLE neon_control_plane.endpoints (
+            endpoint_id text PRIMARY KEY,
+            allowed_ips text,
+            host text not null default '{host}',
+            port integer not null default {port}
+        )
+        """
+    )
+    vanilla_pg.safe_psql(
+        """
+        insert into neon_control_plane.endpoints (endpoint_id) VALUES ('ep-test-endpoint');
+        """
     )
 
     proxy_port = port_distributor.get_port()
