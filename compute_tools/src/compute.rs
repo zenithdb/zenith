@@ -723,6 +723,7 @@ impl ComputeNode {
             ComputeMode::Primary => {}
             ComputeMode::Replica | ComputeMode::Static(..) => {
                 add_standby_signal(pgdata_path)?;
+                remove_logrep_files(pgdata_path).context("remove_logrep_files")?;
             }
         }
 
