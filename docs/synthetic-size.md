@@ -1,5 +1,41 @@
 # Synthetic size
 
+## How to get the data
+
+Pageserver provides a HTTP API for getting the synthetic size of a tenant
+along with the data that was used to calculate it. Usage examples:
+
+1. This query returns the synthetic size of the tenant, along with the "raw" data
+That is returned in the `segments` and `timeline_inputs` fields.
+
+```
+curl localhost:9898/v1/tenant/5e1de642394b00a0a583a088e8276b98/synthetic_size | jq
+```
+
+2. If `inputs_only=true` is passed, the response will contain only the raw data.
+Actual synthetic size is not calculated.
+
+```
+curl localhost:9898/v1/tenant/5e1de642394b00a0a583a088e8276b98/synthetic_size?inputs_only=true | jq
+
+```
+
+3. 'retention_period' is a cutoff (in bytes) that overrides the cutoff that is used in the size calculation.
+Note, that override is applied only if provided `retnention_period` is shorter than the real cutoff.
+
+```
+curl localhost:9898/v1/tenant/5e1de642394b00a0a583a088e8276b98/synthetic_size?retention_period=1048576 | jq
+```
+
+4. If header `Accept: text/html` is passed, the response will be in HTML format.
+The HTML contains a json with the same data as in the previous examples + SVG diagram of the tenant timelines.
+
+```
+curl -H "Accept: text/html" localhost:9898/v1/tenant/5e1de642394b00a0a583a088e8276b98/synthetic_size > ./size.html |  google-chrome ./size.html
+```
+
+## Overview
+
 Neon storage has copy-on-write branching, which makes it difficult to
 answer the question "how large is my database"? To give one reasonable
 answer, we calculate _synthetic size_ for a project.
