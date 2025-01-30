@@ -23,6 +23,25 @@ if TYPE_CHECKING:
     from psycopg2.extensions import connection, cursor
 
 
+"""
+These benchmarks stress test logical replication within Neon. In order to run
+them locally, they require setting up some infrastructure. See
+https://docs.neon.build/compute/logical_replication_benchmarks.html for how to
+do that. After setting that up, run the following shell commands.
+
+# These are the project IDs setup for the purposes of running these benchmarks
+export BENCHMARK_PROJECT_ID_PUB=
+export BENCHMARK_PROJECT_ID_SUB=
+
+# See https://neon.tech/docs/manage/api-keys
+export NEON_API_KEY=
+
+# Fiddling with the --timeout parameter may be required depending on the
+# performance of the benchmark
+pytest -m remote_cluster 'test_runner/performance/test_logical_replication.py'
+"""
+
+
 @pytest.mark.timeout(1000)
 def test_logical_replication(neon_simple_env: NeonEnv, pg_bin: PgBin, vanilla_pg: VanillaPostgres):
     env = neon_simple_env
