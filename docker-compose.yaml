@@ -1,0 +1,96 @@
+version: '3.8'
+
+x-build-args-bullseye: &build-args-bullseye
+  DEBIAN_VERSION: bullseye
+  GIT_VERSION: local # seems to be not used in compute node though
+  BUILD_TAG: ${BUILD_TAG:-local}
+
+x-build-args-bookworm: &build-args-bookworm
+  DEBIAN_VERSION: bookworm
+  GIT_VERSION: local # seems to be not used in compute node though
+  BUILD_TAG: ${BUILD_TAG:-local}
+
+services:
+  compute-node-v14: &compute-node-v14-base
+    image: neondatabase/compute-node-v14:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: compute/compute-node.Dockerfile
+      args:
+        <<: *build-args-bullseye
+        PG_VERSION: v14
+      cache_from:
+        - neondatabase/compute-node-v14:${CACHE_FROM_TAG:-latest}
+
+  compute-node-v14-amd64:
+    <<: *compute-node-v14-base
+    platform: linux/amd64
+    image: neondatabase/compute-node-v14:${IMAGE_TAG:-local}-amd64
+
+  compute-node-v14-arm64:
+    <<: *compute-node-v14-base
+    platform: linux/arm64
+    image: neondatabase/compute-node-v14:${IMAGE_TAG:-local}-arm64
+
+  compute-node-v15: &compute-node-v15-base
+    image: neondatabase/compute-node-v15:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: compute/compute-node.Dockerfile
+      args:
+        <<: *build-args-bullseye
+        PG_VERSION: v15
+      cache_from:
+        - neondatabase/compute-node-v15:${CACHE_FROM_TAG:-latest}
+
+  compute-node-v15-amd64:
+    <<: *compute-node-v15-base
+    platform: linux/amd64
+    image: neondatabase/compute-node-v15:${IMAGE_TAG:-local}-amd64
+
+  compute-node-v15-arm64:
+    <<: *compute-node-v15-base
+    platform: linux/arm64
+    image: neondatabase/compute-node-v15:${IMAGE_TAG:-local}-arm64
+
+  compute-node-v16: &compute-node-v16-base
+    image: neondatabase/compute-node-v16:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: compute/compute-node.Dockerfile
+      args:
+        <<: *build-args-bullseye
+        PG_VERSION: v16
+      cache_from:
+        - neondatabase/compute-node-v16:${CACHE_FROM_TAG:-latest}
+
+  compute-node-v16-amd64:
+    <<: *compute-node-v16-base
+    platform: linux/amd64
+    image: neondatabase/compute-node-v16:${IMAGE_TAG:-local}-amd64
+
+  compute-node-v16-arm64:
+    <<: *compute-node-v16-base
+    platform: linux/arm64
+    image: neondatabase/compute-node-v16:${IMAGE_TAG:-local}-arm64
+
+  compute-node-v17: &compute-node-v17-base
+    image: neondatabase/compute-node-v17:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: compute/compute-node.Dockerfile
+      args:
+        <<: *build-args-bookworm
+        PG_VERSION: v17
+      cache_from:
+        - neondatabase/compute-node-v17:${CACHE_FROM_TAG:-latest}
+
+  compute-node-v17-amd64:
+    <<: *compute-node-v17-base
+    platform: linux/amd64
+    image: neondatabase/compute-node-v17:${IMAGE_TAG:-local}-amd64
+
+  compute-node-v17-arm64:
+    <<: *compute-node-v17-base
+    platform: linux/arm64
+    image: neondatabase/compute-node-v17:${IMAGE_TAG:-local}-arm64
