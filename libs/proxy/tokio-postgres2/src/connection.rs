@@ -1,11 +1,10 @@
 use crate::codec::{BackendMessage, BackendMessages, FrontendMessage, PostgresCodec};
-use crate::error::DbError;
 use crate::maybe_tls_stream::MaybeTlsStream;
 use crate::{AsyncMessage, Error, Notification};
 use bytes::BytesMut;
 use fallible_iterator::FallibleIterator;
 use futures_util::{ready, Sink, Stream};
-use log::{info, trace};
+use log::trace;
 use postgres_protocol2::message::backend::Message;
 use postgres_protocol2::message::frontend;
 use std::collections::{HashMap, VecDeque};
@@ -55,7 +54,7 @@ pub struct Connection<S, T> {
     /// HACK: we need this in the Neon Proxy to forward params.
     pub parameters: HashMap<String, String>,
     receiver: mpsc::UnboundedReceiver<Request>,
-    pending_responses: VecDeque<BackendMessage>,
+    pending_responses: Option<BackendMessage>,
     responses: VecDeque<Response>,
     state: State,
 }
@@ -67,7 +66,6 @@ where
 {
     pub(crate) fn new(
         stream: Framed<MaybeTlsStream<S, T>, PostgresCodec>,
-        pending_responses: VecDeque<BackendMessage>,
         parameters: HashMap<String, String>,
         receiver: mpsc::UnboundedReceiver<Request>,
     ) -> Connection<S, T> {
@@ -75,7 +73,7 @@ where
             stream,
             parameters,
             receiver,
-            pending_responses,
+            pending_responses: None,
             responses: VecDeque::new(),
             state: State::Active,
         }
@@ -85,7 +83,7 @@ where
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<BackendMessage, Error>>> {
-        if let Some(message) = self.pending_responses.pop_front() {
+        if let Some(message) = self.pending_responses.take() {
             trace!("retrying pending response");
             return Poll::Ready(Some(Ok(message)));
         }
@@ -109,9 +107,8 @@ where
             };
 
             let (mut messages, request_complete) = match message {
-                BackendMessage::Async(Message::NoticeResponse(body)) => {
-                    let error = DbError::parse(&mut body.fields()).map_err(Error::parse)?;
-                    return Poll::Ready(Ok(AsyncMessage::Notice(error)));
+                BackendMessage::Async(Message::NoticeResponse(_)) => {
+                    continue;
                 }
                 BackendMessage::Async(Message::NotificationResponse(body)) => {
                     let notification = Notification {
@@ -160,7 +157,7 @@ where
                 }
                 Poll::Pending => {
                     self.responses.push_front(response);
-                    self.pending_responses.push_back(BackendMessage::Normal {
+                    self.pending_responses = Some(BackendMessage::Normal {
                         messages,
                         request_complete,
                     });
@@ -328,11 +325,7 @@ where
     type Output = Result<(), Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
-        while let Some(message) = ready!(self.poll_message(cx)?) {
-            if let AsyncMessage::Notice(notice) = message {
-                info!("{}: {}", notice.severity(), notice.message());
-            }
-        }
+        while ready!(self.poll_message(cx)?).is_some() {}
         Poll::Ready(Ok(()))
     }
 }
