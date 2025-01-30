@@ -285,10 +285,10 @@ To summarize, list of cplane changes:
 
 ### storage_controller implementation
 
-Current 'load everything on startup and keep in memory' easy design is fine.
-Single timeline shouldn't take more than 100 bytes (it's 16 byte tenant_id, 16
-byte timeline_id, int generation, vec of ~3 safekeeper ids plus some flags), so
-10^6 of timelines shouldn't take more than 100MB.
+If desired, we may continue using current 'load everything on startup and keep
+in memory' approach: single timeline shouldn't take more than 100 bytes (it's 16
+byte tenant_id, 16 byte timeline_id, int generation, vec of ~3 safekeeper ids
+plus some flags), so 10^6 of timelines shouldn't take more than 100MB.
 
 Similar to pageserver attachment Intents storage_controller would have in-memory
 `MigrationRequest` (or its absense) for each timeline and pool of tasks trying
@@ -296,7 +296,7 @@ to make these request reality; this ensures one instance of storage_controller
 won't do several migrations on the same timeline concurrently. In the first
 version it is simpler to have more manual control and no retries, i.e. migration
 failure removes the request. Later we can build retries and automatic
-scheduling/migration. `MigrationRequest` is
+scheduling/migration around. `MigrationRequest` is
 ```
 enum MigrationRequest {
     To(Vec<NodeId>),
@@ -313,9 +313,9 @@ similarly, in the first version it is ok to trigger it manually).
 #### Schema
 
 `safekeepers` table mirroring current `nodes` should be added, except that for
-`scheduling_policy` field (seems like `status` is a better name for it): it is enough
-to have at least in the beginning only 3 fields: 1) `active` 2) `offline` 3)
-`decomissioned`.
+`scheduling_policy`: it is enough to have at least in the beginning only 3
+fields: 1) `active` 2) `paused` (initially means only not assign new tlis there
+3) `decomissioned` (node is removed).
 
 `timelines` table:
 ```
@@ -324,18 +324,24 @@ table! {
     timelines (tenant_id, timeline_id) {
         timeline_id -> Varchar,
         tenant_id -> Varchar,
+        start_lsn -> pg_lsn,
         generation -> Int4,
         sk_set -> Array<Int4>, // list of safekeeper ids
-        new_sk_set -> Nullable<Array<Int4>>, // list of safekeeper ids, null if not joint conf
+        new_sk_set -> Nullable<Array<Int8>>, // list of safekeeper ids, null if not joint conf
         cplane_notified_generation -> Int4,
+        deleted_at -> Nullable<Timestamptz>,
     }
 }
 ```
 
+`start_lsn` is needed to create timeline on safekeepers properly, see below. We
+might also want to add ancestor_timeline_id to preserve the hierarchy, but for
+this RFC it is not needed.
+
 #### API
 
 Node management is similar to pageserver:
-1) POST `/control/v1/safekeepers` upserts safekeeper.
+1) POST `/control/v1/safekeepers` inserts safekeeper.
 2) GET `/control/v1/safekeepers` lists safekeepers.
 3) GET `/control/v1/safekeepers/:node_id` gets safekeeper.
 4) PUT `/control/v1/safekepers/:node_id/status` changes status to e.g.
@@ -345,25 +351,15 @@ Node management is similar to pageserver:
 Safekeeper deploy scripts should register safekeeper at storage_contorller as
 they currently do with cplane, under the same id.
 
-Timeline creation/deletion: already existing POST `tenant/:tenant_id/timeline`
-would 1) choose initial set of safekeepers; 2) write to the db initial
-`Configuration` with `INSERT ON CONFLICT DO NOTHING` returning existing row in
-case of conflict; 3) create timeline on the majority of safekeepers (already
-created is ok).
+Timeline creation/deletion will work through already existing POST and DELETE
+`tenant/:tenant_id/timeline`. Cplane is expected to retry both until they
+succeed. See next section on the implementation details.
 
-We don't want to block timeline creation when one safekeeper is down. Currently
-this is solved by compute implicitly creating timeline on any safekeeper it is
-connected to. This creates ugly timeline state on safekeeper when timeline is
-created, but start LSN is not defined yet. It would be nice to remove this; to
-do that, controller can in the background retry to create timeline on
-safekeeper(s) which missed that during initial creation call. It can do that
-through `pull_timeline` from majority so it doesn't need to remember
-`parent_lsn` in its db.
-
-Timeline deletion removes the row from the db and forwards deletion to the
-current configuration members. Without additional actions deletions might leak,
-see below on this; initially let's ignore these, reporting to cplane success if
-at least one safekeeper deleted the timeline (this will remove s3 data).
+We don't want to block timeline creation/deletion when one safekeeper is down.
+Currently this is crutched by compute implicitly creating timeline on any
+safekeeper it is connected to. This creates ugly timeline state on safekeeper
+when timeline is created, but start LSN is not defined yet. Next section
+describes dealing with this.
 
 Tenant deletion repeats timeline deletion for all timelines.
 
@@ -395,26 +391,6 @@ Similar call should be added for the tenant.
 It would be great to have some way of subscribing to the results (apart from
 looking at logs/metrics).
 
-Migration is executed as described above. One subtlety is that (local) deletion on
-source safekeeper might fail, which is not a problem if we are going to
-decomission the node but leaves garbage otherwise. I'd propose in the first version
-1) Don't attempt deletion at all if node status is `offline`.
-2) If it failed, just issue warning.
-And add PUT `/control/v1/safekeepers/:node_id/scrub` endpoint which would find and
-remove garbage timelines for manual use. It will 1) list all timelines on the
-safekeeper 2) compare each one against configuration storage: if timeline
-doesn't exist at all (had been deleted), it can be deleted. Otherwise, it can
-be deleted under generation number if node is not member of current generation.
-
-Automating this is untrivial; we'd need to register all potential missing
-deletions <tenant_id, timeline_id, generation, node_id> in the same transaction
-which switches configurations. Similarly when timeline is fully deleted to
-prevent cplane operation from blocking when some safekeeper is not available
-deletion should be also registered.
-
-One more task pool should infinitely retry notifying control plane about changed
-safekeeper sets.
-
 3) GET `/control/v1/tenant/:tenant_id/timeline/:timeline_id/` should return
    current in memory state of the timeline and pending `MigrationRequest`,
    if any.
@@ -423,11 +399,152 @@ safekeeper sets.
    migration by switching configuration from the joint to the one with (previous) `sk_set` under CAS
    (incrementing generation as always).
 
+#### API implementation and reconciliation
+
+For timeline creation/deletion we want to preserve the basic assumption that
+unreachable minority (1 sk of 3) doesn't block their completion, but eventually
+we want to finish creation/deletion on nodes which missed it (unless they are
+removed). Similarly for migration; it may and should finish even though excluded
+members missed their exclusion. And of course e.g. such pending exclusion on
+node C after migration ABC -> ABD must not prevent next migration ABD -> ABE. As
+another example, if some node missed timeline creation it clearly must not block
+migration from it. Hence it is natural to have per safekeeper background
+reconciler which retries these ops until they succeed. There are 3 possible
+operation types, and the type is defined by timeline state (membership
+configuration and whether it is deleted) and safekeeper id: we may need to
+create timeline on sk (node added), locally delete it (node excluded, somewhat
+similar to detach) or globally delete it (timeline is deleted).
+
+Next, on storage controller restart in principle these pending operations can be
+figured out by comparing safekeepers state against storcon state. But it seems
+better to me to materialize them in the database; it is not expensive, avoids
+these startup scans which themselves can fail etc and makes it very easy to see
+outstanding work directly at the source of truth -- the db. So we can add table
+`safekeeper_timeline_pending_ops`
+```
+table! {
+    // timeline_id, sk_id is primary key
+    safekeeper_timeline_pending_ops (sk_id, tenant_id, timeline_id) {
+        sk_id -> int8,
+        tenant_id -> Varchar,
+        timeline_id -> Varchar,
+        generation -> Int4,
+        op_type -> Varchar,
+    }
+}
+```
+
+`op_type` can be `include` (seed from peers and ensure generation is up to
+date), `exclude` (remove locally) and `delete`. Field is actually not strictly
+needed as it can be computed from current configuration, but gives more explicit
+observability.
+
+`generation` is necessary there because after op is done reconciler must remove
+it and not remove another row with higher gen which in theory might appear.
+
+Any insert of row should overwrite (remove) all rows with the same sk and
+timeline id but lower `generation` as next op makes previous obsolete. Insertion
+of `op_type` `delete` overwrites all rows.
+
+About `exclude`: rather than adding explicit safekeeper http endpoint, it is
+reasonable to reuse membership switch endpoint: if safekeeper is not member
+of the configuration it locally removes the timeline on the switch. In this case
+404 should also be considered an 'ok' answer by the caller.
+
+So, main loop of per sk reconcile reads `safekeeper_timeline_pending_ops`
+joined with timeline configuration to get current conf (with generation `n`)
+for the safekeeper and does the jobs, infinitely retrying failures:
+1) If node is member (`include`):
+  - Check if timeline exists on it, if not, call pull_timeline on it from 
+     other members
+  - Call switch configuration to the current
+2) If node is not member (`exclude`):
+  - Call switch configuration to the current, 404 is ok.
+3) If timeline is deleted (`delete`), call delete.
+
+In cases 1 and 2 remove `safekeeper_timeline_pending_ops` for the sk and 
+timeline with generation <= `n` if `op_type` is not `delete`.
+In case 3 also remove `safekeeper_timeline_pending_ops` 
+entry + remove `timelines` entry if there is nothing left  in `safekeeper_timeline_pending_ops` for the timeline.
+
+Let's consider in details how APIs can be implemented from this angle.
+
+Timeline creation. It is assumed that cplane retries it until success, so all
+actions must be idempotent. Now, a tricky point here is timeline start LSN. For
+the initial (tenant creation) call cplane doesn't know it. However, setting
+start_lsn on safekeepers during creation is a good thing -- it provides a
+guarantee that walproposer can always find a common point in WAL histories of
+safekeeper and its own, and so absense of it would be a clear sign of
+corruption. The following sequence works:
+1) Create timeline (or observe that it exists) on pageserver,
+   figuring out last_record_lsn in response.
+2) Choose safekeepers and insert (ON CONFLICT DO NOTHING) timeline row into the
+   db. Note that last_record_lsn returned on the previous step is movable as it
+   changes once ingestion starts, insert must not overwrite it (as well as other
+   fields like membership conf). On the contrary, start_lsn used in the next
+   step must be set to the value in the db. cplane_notified_generation can be set
+   to 1 (initial generation) in insert to avoid notifying cplane about initial 
+   conf as cplane will receive it in timeline creation request anyway.
+3) Issue timeline creation calls to at least majority of safekeepers. Using
+   majority here is not necessary but handy because it guarantees that any live
+   majority will have at least one sk with created timeline and so
+   reconciliation task can use pull_timeline shared with migration instead of
+   create timeline special init case. OFC if timeline is already exists call is
+   ignored.
+4) For minority of safekeepers which could have missed creation insert
+   entries to `safekeeper_timeline_pending_ops`. We won't miss this insertion 
+   because response to cplane is sent only after it has happened, and cplane 
+   retries the call until 200 response.
+
+   There is a small question how request handler (timeline creation in this
+   case) would interact with per sk reconciler. As always I prefer to do the
+   simplest possible thing and here it seems to be just waking it up so it
+   re-reads the db for work to do. Passing work in memory is faster, but
+   that shouldn't matter, and path to scan db for work will exist anyway, 
+   simpler to reuse it.
+
+For pg version / wal segment size: while we may persist them in `timelines`
+table, it is not necessary as initial creation at step 3 can take them from
+pageserver or cplane creation call and later pull_timeline will carry them
+around.
+
+Timeline migration.
+1) CAS to the db to create joint conf, and in the same transaction create
+   `safekeeper_timeline_pending_ops` `include` entries to initialize new members
+   as well as deliver this conf to current ones; poke per sk reconcilers to work
+   on it. Also any conf change should also poke cplane notifier task(s).
+2) Once it becomes possible per alg description above, get out of joint conf
+   with another CAS. Task should get wakeups from per sk reconcilers because 
+   conf switch is required for advancement; however retries should be sleep
+   based as well as LSN advancement might be needed, though in happy path 
+   it isn't. To see whether further transition is possible on wakup migration
+   executor polls safekeepers per the algorithm. CAS creating new conf with only
+   new members should again insert entries to `safekeeper_timeline_pending_ops`
+   to switch them there, as well as `exclude` rows to remove timeline from 
+   old members.
+
+Timeline deletion: just set `deleted_at` on the timeline row and insert
+`safekeeper_timeline_pending_ops` entries in the same xact, the rest is done by
+per sk reconcilers.
+
+When node is removed (set to `decomissioned`), `safekeeper_timeline_pending_ops`
+for it must be cleared in the same transaction.
+
+One more task pool should infinitely retry notifying control plane about changed
+safekeeper sets (trying making `cplane_notified_generation` equal `generation`).
+
 #### Dealing with multiple instances of storage_controller
 
 Operations described above executed concurrently might create some errors but do
 not prevent progress, so while we normally don't want to run multiple instances
 of storage_controller it is fine to have it temporarily, e.g. during redeploy.
+
+To harden against some controller instance creating some work in
+`safekeeper_timeline_pending_ops` and then disappearing without anyone pickup up
+the job per sk reconcilers apart from explicit wakups should scan for work
+periodically. It is possible to remove that though if all db updates are
+protected with leadership token/term -- then such scans are needed only after
+leadership is acquired.
 
 Any interactions with db update in-memory controller state, e.g. if migration
 request failed because different one is in progress, controller remembers that
@@ -545,7 +662,7 @@ Aurora does this but similarly I don't think this is needed.
 
 We should use Compute <-> safekeeper protocol change to include other (long
 yearned) modifications:
-- send data in network order to make arm work.
+- send data in network order without putting whole structs to be arch independent
 - remove term_start_lsn from AppendRequest
 - add horizon to TermHistory
 - add to ProposerGreeting number of connection from this wp to sk
