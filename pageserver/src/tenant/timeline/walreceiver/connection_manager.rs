@@ -736,6 +736,12 @@ impl ConnectionManagerState {
             timeline_update.standby_horizon
         );
         if timeline_update.standby_horizon != 0 {
+            tracing::info!(
+                "register_timeline_update: sk={} standby_horizon={} commit_lsn={}",
+                timeline_update.safekeeper_id,
+                Lsn(timeline_update.standby_horizon),
+                Lsn(timeline_update.commit_lsn)
+            );
             // ignore reports from safekeepers not connected to replicas
             self.timeline
                 .standby_horizon
@@ -744,6 +750,12 @@ impl ConnectionManagerState {
                 .metrics
                 .standby_horizon_gauge
                 .set(timeline_update.standby_horizon as i64);
+        } else {
+            tracing::info!(
+                "register_timeline_update: sk={} standby_horizon=None commit_lsn={}",
+                timeline_update.safekeeper_id,
+                Lsn(timeline_update.commit_lsn)
+            );
         }
 
         let new_safekeeper_id = NodeId(timeline_update.safekeeper_id);
