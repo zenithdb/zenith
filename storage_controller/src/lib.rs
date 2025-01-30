@@ -17,6 +17,7 @@ mod pageserver_client;
 mod peer_client;
 pub mod persistence;
 mod reconciler;
+mod safekeeper_client;
 mod scheduler;
 mod schema;
 pub mod service;

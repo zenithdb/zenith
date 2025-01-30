@@ -280,6 +280,18 @@ pub struct TimelineCreateRequest {
     pub new_timeline_id: TimelineId,
     #[serde(flatten)]
     pub mode: TimelineCreateRequestMode,
+    /// Whether to also create timeline on the safekeepers (specific to storcon API)
+    pub safekeepers: Option<bool>,
+}
+
+/// Storage controller specific extensions to [`TimelineInfo`].
+#[derive(Serialize, Deserialize, Clone)]
+pub struct TimelineCreateResponseStorcon {
+    #[serde(flatten)]
+    pub timeline_info: TimelineInfo,
+
+    pub safekeepers: Option<Vec<NodeId>>,
+    pub safekeepers_generation: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

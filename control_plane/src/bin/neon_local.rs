@@ -1104,6 +1104,7 @@ async fn handle_tenant(subcmd: &TenantCmd, env: &mut local_env::LocalEnv) -> any
                             existing_initdb_timeline_id: None,
                             pg_version: Some(args.pg_version),
                         },
+                        safekeepers: None,
                     },
                 )
                 .await?;
@@ -1164,6 +1165,7 @@ async fn handle_timeline(cmd: &TimelineCmd, env: &mut local_env::LocalEnv) -> Re
                     existing_initdb_timeline_id: None,
                     pg_version: Some(args.pg_version),
                 },
+                safekeepers: None,
             };
             let timeline_info = storage_controller
                 .tenant_timeline_create(tenant_id, create_req)
@@ -1222,6 +1224,7 @@ async fn handle_timeline(cmd: &TimelineCmd, env: &mut local_env::LocalEnv) -> Re
                     ancestor_start_lsn: start_lsn,
                     pg_version: None,
                 },
+                safekeepers: None,
             };
             let timeline_info = storage_controller
                 .tenant_timeline_create(tenant_id, create_req)

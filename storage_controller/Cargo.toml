@@ -32,6 +32,8 @@ postgres_connection.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 routerify.workspace = true
+safekeeper_api.workspace = true
+safekeeper_client.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

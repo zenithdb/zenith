@@ -26,7 +26,9 @@ use pageserver_api::shard::{ShardCount, ShardNumber, TenantShardId};
 use scoped_futures::ScopedBoxFuture;
 use serde::{Deserialize, Serialize};
 use utils::generation::Generation;
+use utils::id::TimelineId;
 use utils::id::{NodeId, TenantId};
+use utils::lsn::Lsn;
 
 use crate::metrics::{
     DatabaseQueryErrorLabelGroup, DatabaseQueryLatencyLabelGroup, METRICS_REGISTRY,
@@ -112,6 +114,9 @@ pub(crate) enum DatabaseOperation {
     ListMetadataHealthUnhealthy,
     ListMetadataHealthOutdated,
     ListSafekeepers,
+    ListTimelines,
+    LoadTimeline,
+    InsertTimeline,
     GetLeader,
     UpdateLeader,
     SetPreferredAzs,
@@ -1156,7 +1161,7 @@ impl Persistence {
     /// At startup, populate the list of nodes which our shards may be placed on
     pub(crate) async fn list_safekeepers(&self) -> DatabaseResult<Vec<SafekeeperPersistence>> {
         let safekeepers: Vec<SafekeeperPersistence> = self
-            .with_measured_conn(DatabaseOperation::ListNodes, move |conn| {
+            .with_measured_conn(DatabaseOperation::ListSafekeepers, move |conn| {
                 Box::pin(async move {
                     Ok(crate::schema::safekeepers::table
                         .load::<SafekeeperPersistence>(conn)
@@ -1166,6 +1171,66 @@ impl Persistence {
             .await?;
 
         tracing::info!("list_safekeepers: loaded {} nodes", safekeepers.len());
+
+        Ok(safekeepers)
+    }
+
+    pub(crate) async fn list_safekeepers_with_timeline_count(
+        &self,
+    ) -> DatabaseResult<Vec<(NodeId, String, u64)>> {
+        #[derive(QueryableByName, PartialEq, Debug)]
+        struct SafekeeperTimelineCountResponse {
+            #[diesel(sql_type = diesel::sql_types::Int8)]
+            sk_id: i64,
+            #[diesel(sql_type = diesel::sql_types::Varchar)]
+            az_id: String,
+            #[diesel(sql_type = diesel::sql_types::Int8)]
+            timeline_count: i64,
+            #[diesel(sql_type = diesel::sql_types::Varchar)]
+            host: String,
+            #[diesel(sql_type = diesel::sql_types::Int8)]
+            port: i64,
+        }
+        let safekeepers: Vec<SafekeeperTimelineCountResponse> = self
+            .with_measured_conn(
+                DatabaseOperation::ListSafekeepers,
+                move |conn| {
+                    Box::pin(async move {
+                        let query = diesel::sql_query("\
+                            SELECT safekeepers.id as sk_id, safekeepers.availability_zone_id as az_id, COUNT(*) as timeline_count, safekeepers.host as host, safekeepers.port as port \
+                            FROM (select tenant_id, timeline_id, unnest(sk_set) as sk_id from timelines) as timelines_unnested \
+                            JOIN safekeepers ON (safekeepers.id = timelines_unnested.id)\
+                        ");
+                        let results: Vec<_> = query.load(conn).await?;
+                        Ok(results)
+                    })
+                },
+            )
+            .await?;
+
+        let safekeepers = safekeepers
+            .into_iter()
+            .map(|sk| {
+                if sk.sk_id < 0 {
+                    return Err(DatabaseError::Logical(format!(
+                        "invalid safekeeper id: {}",
+                        sk.sk_id
+                    )));
+                }
+                if sk.timeline_count < 0 {
+                    return Err(DatabaseError::Logical(format!(
+                        "invalid timeline count {} for sk: {}",
+                        sk.timeline_count, sk.sk_id
+                    )));
+                }
+                Ok((NodeId(sk.sk_id as u64), sk.az_id, sk.timeline_count as u64))
+            })
+            .collect::<Result<Vec<_>, DatabaseError>>()?;
+
+        tracing::info!(
+            "list_safekeepers_with_timeline_count: loaded {} safekeepers",
+            safekeepers.len()
+        );
 
         Ok(safekeepers)
     }
@@ -1253,6 +1318,191 @@ impl Persistence {
             })
         })
         .await
+    }
+
+    /// Timelines must be persisted before we schedule them for the first time.
+    pub(crate) async fn insert_timeline(&self, entry: TimelinePersistence) -> DatabaseResult<()> {
+        use crate::schema::timelines;
+
+        let entry = &entry;
+        self.with_measured_conn(DatabaseOperation::InsertTimeline, move |conn| {
+            Box::pin(async move {
+                let inserted_updated = diesel::insert_into(timelines::table)
+                    .values(entry)
+                    .on_conflict((timelines::tenant_id, timelines::timeline_id))
+                    .do_nothing()
+                    .execute(conn)
+                    .await?;
+
+                if inserted_updated != 1 {
+                    return Err(DatabaseError::Logical(format!(
+                        "unexpected number of rows ({})",
+                        inserted_updated
+                    )));
+                }
+
+                Ok(())
+            })
+        })
+        .await
+    }
+    pub(crate) async fn update_timeline_status(
+        &self,
+        tenant_id: TenantId,
+        timeline_id: TimelineId,
+        status_kind: TimelineStatusKind,
+        status: String,
+    ) -> DatabaseResult<()> {
+        use crate::schema::timelines;
+
+        let status = &status;
+        self.with_measured_conn(DatabaseOperation::InsertTimeline, move |conn| {
+            Box::pin(async move {
+                let inserted_updated = diesel::update(timelines::table)
+                    .filter(timelines::tenant_id.eq(tenant_id.to_string()))
+                    .filter(timelines::timeline_id.eq(timeline_id.to_string()))
+                    .set((
+                        timelines::status_kind.eq(String::from(status_kind)),
+                        timelines::status.eq(status),
+                    ))
+                    .execute(conn)
+                    .await?;
+
+                if inserted_updated != 1 {
+                    return Err(DatabaseError::Logical(format!(
+                        "unexpected number of rows ({})",
+                        inserted_updated
+                    )));
+                }
+
+                Ok(())
+            })
+        })
+        .await
+    }
+    pub(crate) async fn update_timeline_status_deleted(
+        &self,
+        tenant_id: TenantId,
+        timeline_id: TimelineId,
+    ) -> DatabaseResult<()> {
+        use crate::schema::timelines;
+
+        let now = chrono::offset::Utc::now();
+        self.with_measured_conn(DatabaseOperation::InsertTimeline, move |conn| {
+            Box::pin(async move {
+                let inserted_updated = diesel::update(timelines::table)
+                    .filter(timelines::tenant_id.eq(tenant_id.to_string()))
+                    .filter(timelines::timeline_id.eq(timeline_id.to_string()))
+                    .filter(timelines::status_kind.eq(String::from(TimelineStatusKind::Deleting)))
+                    .set((
+                        timelines::status_kind.eq(String::from(TimelineStatusKind::Deleted)),
+                        timelines::status.eq("{}"),
+                        timelines::deleted_at.eq(now),
+                    ))
+                    .execute(conn)
+                    .await?;
+
+                if inserted_updated != 1 {
+                    return Err(DatabaseError::Logical(format!(
+                        "unexpected number of rows ({})",
+                        inserted_updated
+                    )));
+                }
+
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// Obtains the timeline, returns None if not present
+    pub(crate) async fn get_timeline(
+        &self,
+        tenant_id: TenantId,
+        timeline_id: TimelineId,
+    ) -> DatabaseResult<Option<TimelinePersistence>> {
+        use crate::schema::timelines;
+        let mut timelines: Vec<TimelineFromDb> = self
+            .with_measured_conn(DatabaseOperation::LoadTimeline, move |conn| {
+                Box::pin(async move {
+                    Ok(timelines::table
+                        .filter(timelines::tenant_id.eq(tenant_id.to_string()))
+                        .filter(timelines::timeline_id.eq(timeline_id.to_string()))
+                        .load::<TimelineFromDb>(conn)
+                        .await?)
+                })
+            })
+            .await?;
+        if timelines.is_empty() {
+            return Ok(None);
+        } else if timelines.len() > 1 {
+            return Err(DatabaseError::Logical(format!(
+                "incorrect number of returned timelines: ({})",
+                timelines.len()
+            )));
+        }
+
+        let tl = timelines.pop().unwrap().into_persistence();
+
+        tracing::info!("get_timeline: loaded timeline");
+
+        Ok(Some(tl))
+    }
+
+    /// Marks all timelines referencing a tenant for deletion
+    pub(crate) async fn mark_timelines_for_deletion(
+        &self,
+        del_tenant_id: TenantId,
+    ) -> DatabaseResult<()> {
+        use crate::schema::timelines::dsl::*;
+        let count = self
+            .with_measured_conn(DatabaseOperation::DeleteTenant, move |conn| {
+                Box::pin(async move {
+                    Ok(diesel::update(timelines)
+                        .filter(tenant_id.eq(del_tenant_id.to_string()))
+                        .filter(status_kind.ne(String::from(TimelineStatusKind::Deleted)))
+                        .set((
+                            status.eq(String::from("")),
+                            status_kind.eq(String::from(TimelineStatusKind::Deleted)),
+                        ))
+                        .execute(conn)
+                        .await?)
+                })
+            })
+            .await?;
+
+        tracing::info!("marked {count} timelines for deletion in timelines table");
+
+        Ok(())
+    }
+
+    pub(crate) async fn timelines_to_be_reconciled(
+        &self,
+    ) -> DatabaseResult<Vec<TimelinePersistence>> {
+        use crate::schema::timelines;
+        let timelines: Vec<TimelineFromDb> = self
+            .with_measured_conn(DatabaseOperation::ListTimelines, move |conn| {
+                Box::pin(async move {
+                    Ok(timelines::table
+                        .filter(
+                            timelines::status
+                                .eq(String::from(TimelineStatusKind::Creating))
+                                .or(timelines::status
+                                    .eq(String::from(TimelineStatusKind::Deleting))),
+                        )
+                        .load::<TimelineFromDb>(conn)
+                        .await?)
+                })
+            })
+            .await?;
+        let timelines = timelines
+            .into_iter()
+            .map(|tl| tl.into_persistence())
+            .collect::<Vec<_>>();
+
+        tracing::info!("list_timelines: loaded {} timelines", timelines.len());
+
+        Ok(timelines)
     }
 }
 
@@ -1431,6 +1681,9 @@ impl SafekeeperPersistence {
             scheduling_policy,
         })
     }
+    pub(crate) fn base_url(&self) -> String {
+        format!("http://{}:{}", self.host, self.http_port)
+    }
 }
 
 /// What we expect from the upsert http api
@@ -1480,4 +1733,83 @@ struct InsertUpdateSafekeeper<'a> {
     http_port: i32,
     availability_zone_id: &'a str,
     scheduling_policy: Option<&'a str>,
+}
+
+#[derive(Insertable, AsChangeset, Queryable, Selectable, Clone)]
+#[diesel(table_name = crate::schema::timelines)]
+pub(crate) struct TimelinePersistence {
+    pub(crate) tenant_id: String,
+    pub(crate) timeline_id: String,
+    pub(crate) generation: i32,
+    pub(crate) sk_set: Vec<i64>,
+    pub(crate) cplane_notified_generation: i32,
+    pub(crate) status_kind: String,
+    pub(crate) status: String,
+}
+
+#[derive(Queryable, Selectable)]
+#[diesel(table_name = crate::schema::timelines)]
+pub(crate) struct TimelineFromDb {
+    pub(crate) tenant_id: String,
+    pub(crate) timeline_id: String,
+    pub(crate) generation: i32,
+    pub(crate) sk_set: Vec<Option<i64>>,
+    pub(crate) cplane_notified_generation: i32,
+    pub(crate) status_kind: String,
+    pub(crate) status: String,
+    #[allow(unused)]
+    pub(crate) deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl TimelineFromDb {
+    fn into_persistence(self) -> TimelinePersistence {
+        TimelinePersistence {
+            tenant_id: self.tenant_id,
+            timeline_id: self.timeline_id,
+            generation: self.generation,
+            sk_set: self.sk_set.into_iter().flatten().collect(),
+            cplane_notified_generation: self.cplane_notified_generation,
+            status_kind: self.status_kind,
+            status: self.status,
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Copy, Clone, Debug)]
+pub(crate) enum TimelineStatusKind {
+    Creating,
+    Created,
+    Deleting,
+    Deleted,
+}
+
+impl FromStr for TimelineStatusKind {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "creating" => TimelineStatusKind::Creating,
+            "created" => TimelineStatusKind::Created,
+            "deleting" => TimelineStatusKind::Deleting,
+            "deleted" => TimelineStatusKind::Deleted,
+            _ => return Err(anyhow::anyhow!("unexpected timeline status: {s}")),
+        })
+    }
+}
+
+impl From<TimelineStatusKind> for String {
+    fn from(value: TimelineStatusKind) -> Self {
+        match value {
+            TimelineStatusKind::Creating => "creating",
+            TimelineStatusKind::Created => "created",
+            TimelineStatusKind::Deleting => "deleting",
+            TimelineStatusKind::Deleted => "deleted",
+        }
+        .to_string()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct TimelineStatusCreating {
+    pub(crate) pg_version: u32,
+    pub(crate) start_lsn: Lsn,
 }

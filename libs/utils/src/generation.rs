@@ -144,6 +144,30 @@ impl Debug for Generation {
     }
 }
 
+/// Like tenant generations, but for safekeepers
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SafekeeperGeneration(u32);
+
+impl SafekeeperGeneration {
+    pub const fn new(v: u32) -> Self {
+        Self(v)
+    }
+
+    #[track_caller]
+    pub fn previous(&self) -> Option<Self> {
+        Some(Self(self.0.checked_sub(1)?))
+    }
+
+    #[track_caller]
+    pub fn next(&self) -> Self {
+        Self(self.0 + 1)
+    }
+
+    pub fn into_inner(self) -> u32 {
+        self.0
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

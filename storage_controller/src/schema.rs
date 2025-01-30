@@ -58,10 +58,24 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    timelines (tenant_id, timeline_id) {
+        tenant_id -> Varchar,
+        timeline_id -> Varchar,
+        generation -> Int4,
+        sk_set -> Array<Nullable<Int8>>,
+        cplane_notified_generation -> Int4,
+        status_kind -> Varchar,
+        status -> Varchar,
+        deleted_at -> Nullable<Timestamptz>,
+    }
+}
+
 diesel::allow_tables_to_appear_in_same_query!(
     controllers,
     metadata_health,
     nodes,
     safekeepers,
     tenant_shards,
+    timelines,
 );

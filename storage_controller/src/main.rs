@@ -10,6 +10,7 @@ use storage_controller::http::make_router;
 use storage_controller::metrics::preinitialize_metrics;
 use storage_controller::persistence::Persistence;
 use storage_controller::service::chaos_injector::ChaosInjector;
+use storage_controller::service::safekeeper_reconciler::SafekeeperReconciler;
 use storage_controller::service::{
     Config, Service, HEARTBEAT_INTERVAL_DEFAULT, LONG_RECONCILE_THRESHOLD_DEFAULT,
     MAX_OFFLINE_INTERVAL_DEFAULT, MAX_WARMING_UP_INTERVAL_DEFAULT, RECONCILER_CONCURRENCY_DEFAULT,
@@ -351,6 +352,24 @@ async fn async_main() -> anyhow::Result<()> {
         )
     });
 
+    const SAFEKEEPER_RECONCILER_INTERVAL: Duration = Duration::from_secs(120);
+    let safekeeper_reconciler_task = {
+        let service = service.clone();
+        let cancel = CancellationToken::new();
+        let cancel_bg = cancel.clone();
+        (
+            tokio::task::spawn(
+                async move {
+                    let reconciler =
+                        SafekeeperReconciler::new(service, SAFEKEEPER_RECONCILER_INTERVAL);
+                    reconciler.run(cancel_bg).await
+                }
+                .instrument(tracing::info_span!("safekeeper_reconciler")),
+            ),
+            cancel,
+        )
+    };
+
     // Wait until we receive a signal
     let mut sigint = tokio::signal::unix::signal(SignalKind::interrupt())?;
     let mut sigquit = tokio::signal::unix::signal(SignalKind::quit())?;
@@ -383,6 +402,11 @@ async fn async_main() -> anyhow::Result<()> {
     if let Some((chaos_jh, chaos_cancel)) = chaos_task {
         chaos_cancel.cancel();
         chaos_jh.await.ok();
+    }
+    // Do the same for the safekeeper reconciler
+    {
+        safekeeper_reconciler_task.1.cancel();
+        _ = safekeeper_reconciler_task.0.await;
     }
 
     service.shutdown().await;
