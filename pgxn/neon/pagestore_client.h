@@ -202,6 +202,7 @@ typedef struct
 {
 	/*
 	 * Send this request to the PageServer associated with this shard.
+	 * This function assigns request_id to the request which can be extracted by caller from request struct.
 	 */
 	bool		(*send) (shardno_t  shard_no, NeonRequest * request);
 	/*
@@ -213,7 +214,7 @@ typedef struct
 	NeonResponse *(*receive) (shardno_t shard_no);
 	/*
 	 * Try get the next response from the TCP buffers, if any.
-	 * Returns NULL when the data is not yet available. 
+	 * Returns NULL when the data is not yet available.
 	 */
 	NeonResponse *(*try_receive) (shardno_t shard_no);
 	/*

@@ -599,6 +599,7 @@ lfc_prewarm(FileCacheStateEntry* fs, size_t n_entries)
 	/* Do not prewarm more entries than LFC limit */
 	if (lfc_ctl->limit <= lfc_ctl->size)
 	{
+		elog(LOG, "LFC: skip prewarm because LFC limit is smaller than prewarm size");
 		LWLockRelease(lfc_lock);
 		return;
 	}
@@ -608,11 +609,18 @@ lfc_prewarm(FileCacheStateEntry* fs, size_t n_entries)
 		n_entries = lfc_ctl->limit - lfc_ctl->size;
 	}
 
-	LWLockRelease(lfc_lock);
-
+	if (lfc_ctl->prewarm_total_chunks != lfc_ctl->prewarm_curr_chunk)
+	{
+		elog(LOG, "LFC: skip prewarm because concurrent prewarm is detected");
+		LWLockRelease(lfc_lock);
+		return;
+	}
 	/* Initialize fields used to track prewarming progress */
 	lfc_ctl->prewarm_total_chunks = n_entries;
 	lfc_ctl->prewarm_curr_chunk = 0;
+
+	LWLockRelease(lfc_lock);
+
 
 	ring = (PrewarmRequest*)palloc(sizeof(PrewarmRequest)*ring_size);
 
