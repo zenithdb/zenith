@@ -1,6 +1,9 @@
 use futures::{stream::FuturesUnordered, StreamExt};
+use safekeeper_api::models::SafekeeperUtilization;
 use std::{
     collections::HashMap,
+    fmt::Debug,
+    future::Future,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -9,15 +12,15 @@ use tokio_util::sync::CancellationToken;
 use pageserver_api::{controller_api::NodeAvailability, models::PageserverUtilization};
 
 use thiserror::Error;
-use utils::id::NodeId;
+use utils::{id::NodeId, logging::SecretString};
 
-use crate::node::Node;
+use crate::{node::Node, safekeeper::Safekeeper};
 
-struct HeartbeaterTask {
-    receiver: tokio::sync::mpsc::UnboundedReceiver<HeartbeatRequest>,
+struct HeartbeaterTask<Server, State> {
+    receiver: tokio::sync::mpsc::UnboundedReceiver<HeartbeatRequest<Server, State>>,
     cancel: CancellationToken,
 
-    state: HashMap<NodeId, PageserverState>,
+    state: HashMap<NodeId, State>,
 
     max_offline_interval: Duration,
     max_warming_up_interval: Duration,
@@ -36,8 +39,17 @@ pub(crate) enum PageserverState {
     Offline,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum SafekeeperState {
+    Available {
+        last_seen_at: Instant,
+        utilization: SafekeeperUtilization,
+    },
+    Offline,
+}
+
 #[derive(Debug)]
-pub(crate) struct AvailablityDeltas(pub Vec<(NodeId, PageserverState)>);
+pub(crate) struct AvailablityDeltas<State>(pub Vec<(NodeId, State)>);
 
 #[derive(Debug, Error)]
 pub(crate) enum HeartbeaterError {
@@ -45,23 +57,28 @@ pub(crate) enum HeartbeaterError {
     Cancel,
 }
 
-struct HeartbeatRequest {
-    pageservers: Arc<HashMap<NodeId, Node>>,
-    reply: tokio::sync::oneshot::Sender<Result<AvailablityDeltas, HeartbeaterError>>,
+struct HeartbeatRequest<Server, State> {
+    servers: Arc<HashMap<NodeId, Server>>,
+    reply: tokio::sync::oneshot::Sender<Result<AvailablityDeltas<State>, HeartbeaterError>>,
 }
 
-pub(crate) struct Heartbeater {
-    sender: tokio::sync::mpsc::UnboundedSender<HeartbeatRequest>,
+pub(crate) struct Heartbeater<Server, State> {
+    sender: tokio::sync::mpsc::UnboundedSender<HeartbeatRequest<Server, State>>,
 }
 
-impl Heartbeater {
+#[allow(private_bounds)]
+impl<Server: Send + Sync + 'static, State: Debug + Send + 'static> Heartbeater<Server, State>
+where
+    HeartbeaterTask<Server, State>: HeartBeat<Server, State>,
+{
     pub(crate) fn new(
         jwt_token: Option<String>,
         max_offline_interval: Duration,
         max_warming_up_interval: Duration,
         cancel: CancellationToken,
     ) -> Self {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<HeartbeatRequest>();
+        let (sender, receiver) =
+            tokio::sync::mpsc::unbounded_channel::<HeartbeatRequest<Server, State>>();
         let mut heartbeater = HeartbeaterTask::new(
             receiver,
             jwt_token,
@@ -76,12 +93,12 @@ impl Heartbeater {
 
     pub(crate) async fn heartbeat(
         &self,
-        pageservers: Arc<HashMap<NodeId, Node>>,
-    ) -> Result<AvailablityDeltas, HeartbeaterError> {
+        servers: Arc<HashMap<NodeId, Server>>,
+    ) -> Result<AvailablityDeltas<State>, HeartbeaterError> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         self.sender
             .send(HeartbeatRequest {
-                pageservers,
+                servers,
                 reply: sender,
             })
             .map_err(|_| HeartbeaterError::Cancel)?;
@@ -93,9 +110,12 @@ impl Heartbeater {
     }
 }
 
-impl HeartbeaterTask {
+impl<Server, State: Debug> HeartbeaterTask<Server, State>
+where
+    HeartbeaterTask<Server, State>: HeartBeat<Server, State>,
+{
     fn new(
-        receiver: tokio::sync::mpsc::UnboundedReceiver<HeartbeatRequest>,
+        receiver: tokio::sync::mpsc::UnboundedReceiver<HeartbeatRequest<Server, State>>,
         jwt_token: Option<String>,
         max_offline_interval: Duration,
         max_warming_up_interval: Duration,
@@ -110,14 +130,13 @@ impl HeartbeaterTask {
             jwt_token,
         }
     }
-
     async fn run(&mut self) {
         loop {
             tokio::select! {
                 request = self.receiver.recv() => {
                     match request {
                         Some(req) => {
-                            let res = self.heartbeat(req.pageservers).await;
+                            let res = self.heartbeat(req.servers).await;
                             req.reply.send(res).unwrap();
                         },
                         None => { return; }
@@ -127,11 +146,20 @@ impl HeartbeaterTask {
             }
         }
     }
+}
 
+pub(crate) trait HeartBeat<Server, State> {
+    fn heartbeat(
+        &mut self,
+        pageservers: Arc<HashMap<NodeId, Server>>,
+    ) -> impl Future<Output = Result<AvailablityDeltas<State>, HeartbeaterError>> + Send;
+}
+
+impl HeartBeat<Node, PageserverState> for HeartbeaterTask<Node, PageserverState> {
     async fn heartbeat(
         &mut self,
         pageservers: Arc<HashMap<NodeId, Node>>,
-    ) -> Result<AvailablityDeltas, HeartbeaterError> {
+    ) -> Result<AvailablityDeltas<PageserverState>, HeartbeaterError> {
         let mut new_state = HashMap::new();
 
         let mut heartbeat_futs = FuturesUnordered::new();
@@ -246,6 +274,129 @@ impl HeartbeaterTask {
 
                         deltas.push((*node_id, ps_state.clone()));
                         needs_update = true;
+                    }
+                    _ => {
+                        deltas.push((*node_id, ps_state.clone()));
+                        needs_update = true;
+                    }
+                },
+                Vacant(_) => {
+                    // This is a new node. Don't generate a delta for it.
+                    deltas.push((*node_id, ps_state.clone()));
+                }
+            }
+
+            match entry {
+                Occupied(mut occ) if needs_update => {
+                    (*occ.get_mut()) = ps_state.clone();
+                }
+                Vacant(vac) => {
+                    vac.insert(ps_state.clone());
+                }
+                _ => {}
+            }
+        }
+
+        Ok(AvailablityDeltas(deltas))
+    }
+}
+
+impl HeartBeat<Safekeeper, SafekeeperState> for HeartbeaterTask<Safekeeper, SafekeeperState> {
+    async fn heartbeat(
+        &mut self,
+        safekeepers: Arc<HashMap<NodeId, Safekeeper>>,
+    ) -> Result<AvailablityDeltas<SafekeeperState>, HeartbeaterError> {
+        let mut new_state = HashMap::new();
+
+        let mut heartbeat_futs = FuturesUnordered::new();
+        for (node_id, sk) in &*safekeepers {
+            heartbeat_futs.push({
+                let jwt_token = self
+                    .jwt_token
+                    .as_ref()
+                    .map(|t| SecretString::from(t.to_owned()));
+                let cancel = self.cancel.clone();
+
+                async move {
+                    let response = sk
+                        .with_client_retries(
+                            |client| async move { client.get_utilization().await },
+                            &jwt_token,
+                            3,
+                            3,
+                            Duration::from_secs(1),
+                            &cancel,
+                        )
+                        .await;
+
+                    let response = match response {
+                        Some(r) => r,
+                        None => {
+                            // This indicates cancellation of the request.
+                            // We ignore the node in this case.
+                            return None;
+                        }
+                    };
+
+                    let status = if let Ok(utilization) = response {
+                        SafekeeperState::Available {
+                            last_seen_at: Instant::now(),
+                            utilization,
+                        }
+                    } else {
+                        SafekeeperState::Offline
+                    };
+
+                    Some((*node_id, status))
+                }
+            });
+
+            loop {
+                let maybe_status = tokio::select! {
+                    next = heartbeat_futs.next() => {
+                        match next {
+                            Some(result) => result,
+                            None => { break; }
+                        }
+                    },
+                    _ = self.cancel.cancelled() => { return Err(HeartbeaterError::Cancel); }
+                };
+
+                if let Some((node_id, status)) = maybe_status {
+                    new_state.insert(node_id, status);
+                }
+            }
+        }
+
+        let mut offline = 0;
+        for state in new_state.values() {
+            match state {
+                SafekeeperState::Offline { .. } => offline += 1,
+                SafekeeperState::Available { .. } => {}
+            }
+        }
+
+        tracing::info!(
+            "Heartbeat round complete for {} safekeepers, {} offline",
+            new_state.len(),
+            offline
+        );
+
+        let mut deltas = Vec::new();
+        let now = Instant::now();
+        for (node_id, ps_state) in new_state.iter_mut() {
+            use std::collections::hash_map::Entry::*;
+            let entry = self.state.entry(*node_id);
+
+            let mut needs_update = false;
+            match entry {
+                Occupied(ref occ) => match (occ.get(), &ps_state) {
+                    (SafekeeperState::Offline, SafekeeperState::Offline) => {}
+                    (SafekeeperState::Available { last_seen_at, .. }, SafekeeperState::Offline) => {
+                        if now - *last_seen_at >= self.max_offline_interval {
+                            deltas.push((*node_id, ps_state.clone()));
+                            needs_update = true;
+                        }
                     }
                     _ => {
                         deltas.push((*node_id, ps_state.clone()));

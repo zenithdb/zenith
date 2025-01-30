@@ -2,6 +2,7 @@ pub mod chaos_injector;
 mod context_iterator;
 
 use hyper::Uri;
+use safekeeper_api::models::SafekeeperUtilization;
 use std::{
     borrow::Cow,
     cmp::Ordering,
@@ -20,6 +21,7 @@ use crate::{
     },
     compute_hook::{self, NotifyError},
     drain_utils::{self, TenantShardDrain, TenantShardIterator},
+    heartbeater::SafekeeperState,
     id_lock_map::{trace_exclusive_lock, trace_shared_lock, IdLockMap, TracingExclusiveGuard},
     leadership::Leadership,
     metrics,
@@ -29,6 +31,7 @@ use crate::{
         ShardGenerationState, TenantFilter,
     },
     reconciler::{ReconcileError, ReconcileUnits, ReconcilerConfig, ReconcilerConfigBuilder},
+    safekeeper::Safekeeper,
     scheduler::{MaySchedule, ScheduleContext, ScheduleError, ScheduleMode},
     tenant_shard::{
         MigrateAttachment, ObservedStateDelta, ReconcileNeeded, ReconcilerStatus,
@@ -206,6 +209,8 @@ struct ServiceState {
 
     nodes: Arc<HashMap<NodeId, Node>>,
 
+    safekeepers: Arc<HashMap<NodeId, Safekeeper>>,
+
     scheduler: Scheduler,
 
     /// Ongoing background operation on the cluster if any is running.
@@ -272,6 +277,7 @@ fn passthrough_api_error(node: &Node, e: mgmt_api::Error) -> ApiError {
 impl ServiceState {
     fn new(
         nodes: HashMap<NodeId, Node>,
+        safekeepers: HashMap<NodeId, Safekeeper>,
         tenants: BTreeMap<TenantShardId, TenantShard>,
         scheduler: Scheduler,
         delayed_reconcile_rx: tokio::sync::mpsc::Receiver<TenantShardId>,
@@ -283,6 +289,7 @@ impl ServiceState {
             leadership_status: initial_leadership_status,
             tenants,
             nodes: Arc::new(nodes),
+            safekeepers: Arc::new(safekeepers),
             scheduler,
             ongoing_operation: None,
             delayed_reconcile_rx,
@@ -297,6 +304,17 @@ impl ServiceState {
         &mut Scheduler,
     ) {
         (&mut self.nodes, &mut self.tenants, &mut self.scheduler)
+    }
+
+    fn parts_mut_sk(
+        &mut self,
+    ) -> (
+        &mut Arc<HashMap<NodeId, Node>>,
+        &mut Arc<HashMap<NodeId, Safekeeper>>,
+        &mut BTreeMap<TenantShardId, TenantShard>,
+        &mut Scheduler,
+    ) {
+        (&mut self.nodes, &mut self.safekeepers, &mut self.tenants, &mut self.scheduler)
     }
 
     fn get_leadership_status(&self) -> LeadershipStatus {
@@ -397,7 +415,8 @@ pub struct Service {
     compute_hook: Arc<ComputeHook>,
     result_tx: tokio::sync::mpsc::UnboundedSender<ReconcileResultRequest>,
 
-    heartbeater: Heartbeater,
+    heartbeater_ps: Heartbeater<Node, PageserverState>,
+    heartbeater_sk: Heartbeater<Safekeeper, SafekeeperState>,
 
     // Channel for background cleanup from failed operations that require cleanup, such as shard split
     abort_tx: tokio::sync::mpsc::UnboundedSender<TenantShardSplitAbort>,
@@ -607,7 +626,7 @@ impl Service {
             let locked = self.inner.read().unwrap();
             locked.nodes.clone()
         };
-        let mut nodes_online = self.initial_heartbeat_round(all_nodes.keys()).await;
+        let (mut nodes_online, mut sks_online) = self.initial_heartbeat_round(all_nodes.keys()).await;
 
         // List of tenants for which we will attempt to notify compute of their location at startup
         let mut compute_notifications = Vec::new();
@@ -616,7 +635,7 @@ impl Service {
         tracing::info!("Populating tenant shards' states from initial pageserver scan...");
         let shard_count = {
             let mut locked = self.inner.write().unwrap();
-            let (nodes, tenants, scheduler) = locked.parts_mut();
+            let (nodes, safekeepers, tenants, scheduler) = locked.parts_mut_sk();
 
             // Mark nodes online if they responded to us: nodes are offline by default after a restart.
             let mut new_nodes = (**nodes).clone();
@@ -627,6 +646,17 @@ impl Service {
                 }
             }
             *nodes = Arc::new(new_nodes);
+
+            let mut new_sks = (**safekeepers).clone();
+            for (node_id, node) in new_sks.iter_mut() {
+                if let Some((utilization, last_seen_at)) = sks_online.remove(node_id) {
+                    node.set_availability(SafekeeperState::Available {
+                        utilization,
+                        last_seen_at,
+                    });
+                }
+            }
+            *safekeepers = Arc::new(new_sks);
 
             for (tenant_shard_id, observed_state) in observed.0 {
                 let Some(tenant_shard) = tenants.get_mut(&tenant_shard_id) else {
@@ -736,7 +766,10 @@ impl Service {
     async fn initial_heartbeat_round<'a>(
         &self,
         node_ids: impl Iterator<Item = &'a NodeId>,
-    ) -> HashMap<NodeId, PageserverUtilization> {
+    ) -> (
+        HashMap<NodeId, PageserverUtilization>,
+        HashMap<NodeId, (SafekeeperUtilization, Instant)>,
+    ) {
         assert!(!self.startup_complete.is_ready());
 
         let all_nodes = {
@@ -756,14 +789,20 @@ impl Service {
             }
         }
 
+        let all_sks = {
+            let locked = self.inner.read().unwrap();
+            locked.safekeepers.clone()
+        };
+
         tracing::info!("Sending initial heartbeats...");
-        let res = self
-            .heartbeater
+        let res_ps = self
+            .heartbeater_ps
             .heartbeat(Arc::new(nodes_to_heartbeat))
             .await;
+        let res_sk = self.heartbeater_sk.heartbeat(all_sks).await;
 
         let mut online_nodes = HashMap::new();
-        if let Ok(deltas) = res {
+        if let Ok(deltas) = res_ps {
             for (node_id, status) in deltas.0 {
                 match status {
                     PageserverState::Available { utilization, .. } => {
@@ -777,7 +816,22 @@ impl Service {
             }
         }
 
-        online_nodes
+        let mut online_sks = HashMap::new();
+        if let Ok(deltas) = res_sk {
+            for (node_id, status) in deltas.0 {
+                match status {
+                    SafekeeperState::Available {
+                        utilization,
+                        last_seen_at,
+                    } => {
+                        online_sks.insert(node_id, (utilization, last_seen_at));
+                    }
+                    SafekeeperState::Offline => {}
+                }
+            }
+        }
+
+        (online_nodes, online_sks)
     }
 
     /// Used during [`Self::startup_reconcile`]: issue GETs to all nodes concurrently, with a deadline.
@@ -984,8 +1038,14 @@ impl Service {
                 locked.nodes.clone()
             };
 
-            let res = self.heartbeater.heartbeat(nodes).await;
-            if let Ok(deltas) = res {
+            let safekeepers = {
+                let locked = self.inner.read().unwrap();
+                locked.safekeepers.clone()
+            };
+
+            let res_ps = self.heartbeater_ps.heartbeat(nodes).await;
+            let res_sk = self.heartbeater_sk.heartbeat(safekeepers).await;
+            if let Ok(deltas) = res_ps {
                 let mut to_handle = Vec::default();
 
                 for (node_id, state) in deltas.0 {
@@ -1085,6 +1145,18 @@ impl Service {
                         }
                     }
                 }
+            }
+            if let Ok(deltas) = res_sk {
+                let mut locked = self.inner.write().unwrap();
+                let mut safekeepers = (*locked.safekeepers).clone();
+                for (id, state) in deltas.0 {
+                    let Some(sk) = safekeepers.get_mut(&id) else {
+                        tracing::info!("Couldn't update safekeeper safekeeper state for id {id} from heartbeat={state:?}");
+                        continue;
+                    };
+                    sk.set_availability(state);
+                }
+                locked.safekeepers = Arc::new(safekeepers);
             }
         }
     }
@@ -1311,6 +1383,17 @@ impl Service {
             .storage_controller_pageserver_nodes
             .set(nodes.len() as i64);
 
+        tracing::info!("Loading safekeepers from database...");
+        let safekeepers = persistence
+            .list_safekeepers()
+            .await?
+            .into_iter()
+            .map(|skp| Safekeeper::from_persistence(skp, CancellationToken::new()))
+            .collect::<Vec<_>>();
+        let safekeepers: HashMap<NodeId, Safekeeper> =
+            safekeepers.into_iter().map(|n| (n.get_id(), n)).collect();
+        tracing::info!("Loaded {} safekeepers from database.", safekeepers.len());
+
         tracing::info!("Loading shards from database...");
         let mut tenant_shard_persistence = persistence.load_active_tenant_shards().await?;
         tracing::info!(
@@ -1437,7 +1520,14 @@ impl Service {
         let cancel = CancellationToken::new();
         let reconcilers_cancel = cancel.child_token();
 
-        let heartbeater = Heartbeater::new(
+        let heartbeater_ps = Heartbeater::new(
+            config.jwt_token.clone(),
+            config.max_offline_interval,
+            config.max_warming_up_interval,
+            cancel.clone(),
+        );
+
+        let heartbeater_sk = Heartbeater::new(
             config.jwt_token.clone(),
             config.max_offline_interval,
             config.max_warming_up_interval,
@@ -1453,6 +1543,7 @@ impl Service {
         let this = Arc::new(Self {
             inner: Arc::new(std::sync::RwLock::new(ServiceState::new(
                 nodes,
+                safekeepers,
                 tenants,
                 scheduler,
                 delayed_reconcile_rx,
@@ -1462,7 +1553,8 @@ impl Service {
             persistence,
             compute_hook: Arc::new(ComputeHook::new(config.clone())),
             result_tx,
-            heartbeater,
+            heartbeater_ps,
+            heartbeater_sk,
             reconciler_concurrency: Arc::new(tokio::sync::Semaphore::new(
                 config.reconciler_concurrency,
             )),
@@ -7656,29 +7748,64 @@ impl Service {
     pub(crate) async fn safekeepers_list(
         &self,
     ) -> Result<Vec<SafekeeperDescribeResponse>, DatabaseError> {
-        self.persistence
-            .list_safekeepers()
-            .await?
-            .into_iter()
-            .map(|v| v.as_describe_response())
-            .collect::<Result<Vec<_>, _>>()
+        let locked = self.inner.read().unwrap();
+        let mut list = locked
+            .safekeepers
+            .iter()
+            .map(|sk| sk.1.describe_response())
+            .collect::<Result<Vec<_>, _>>()?;
+        list.sort_by_key(|v| v.id);
+        Ok(list)
     }
 
     pub(crate) async fn get_safekeeper(
         &self,
         id: i64,
     ) -> Result<SafekeeperDescribeResponse, DatabaseError> {
-        self.persistence
-            .safekeeper_get(id)
-            .await
-            .and_then(|v| v.as_describe_response())
+        let locked = self.inner.read().unwrap();
+        let sk = locked
+            .safekeepers
+            .get(&NodeId(id as u64))
+            .ok_or(DatabaseError::Logical("Not found".to_string()))?;
+        Ok(sk.describe_response()?)
     }
 
     pub(crate) async fn upsert_safekeeper(
         &self,
         record: crate::persistence::SafekeeperUpsert,
     ) -> Result<(), DatabaseError> {
-        self.persistence.safekeeper_upsert(record).await
+        let node_id = NodeId(record.id as u64);
+        self.persistence.safekeeper_upsert(record.clone()).await?;
+        {
+            let mut locked = self.inner.write().unwrap();
+            let mut safekeepers = (*locked.safekeepers).clone();
+            if !safekeepers.contains_key(&node_id) {
+                safekeepers.insert(
+                    node_id,
+                    Safekeeper::from_persistence(
+                        crate::persistence::SafekeeperPersistence {
+                            id: record.id,
+                            region_id: record.region_id,
+                            version: record.version,
+                            host: record.host,
+                            port: record.port,
+                            http_port: record.http_port,
+                            availability_zone_id: record.availability_zone_id,
+                            scheduling_policy: String::from(SkSchedulingPolicy::Pause),
+                        },
+                        CancellationToken::new(),
+                    ),
+                );
+            } else {
+                // TODO support updates
+                tracing::warn!(
+                    "Not updating in-memory safekeeper after upsert of existing safekeeper {}",
+                    record.host
+                );
+            }
+            locked.safekeepers = Arc::new(safekeepers);
+        }
+        Ok(())
     }
 
     pub(crate) async fn set_safekeeper_scheduling_policy(
@@ -7688,7 +7815,20 @@ impl Service {
     ) -> Result<(), DatabaseError> {
         self.persistence
             .set_safekeeper_scheduling_policy(id, scheduling_policy)
-            .await
+            .await?;
+        let node_id = NodeId(id as u64);
+        // After the change has been persisted successfully, update the in-memory state
+        {
+            let mut locked = self.inner.write().unwrap();
+            let mut safekeepers = (*locked.safekeepers).clone();
+            let sk = safekeepers
+                .get_mut(&node_id)
+                .ok_or(DatabaseError::Logical("Not found".to_string()))?;
+            sk.skp.scheduling_policy = String::from(scheduling_policy);
+
+            locked.safekeepers = Arc::new(safekeepers);
+        }
+        Ok(())
     }
 
     pub(crate) async fn update_shards_preferred_azs(

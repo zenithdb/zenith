@@ -1170,23 +1170,6 @@ impl Persistence {
         Ok(safekeepers)
     }
 
-    pub(crate) async fn safekeeper_get(
-        &self,
-        id: i64,
-    ) -> Result<SafekeeperPersistence, DatabaseError> {
-        use crate::schema::safekeepers::dsl::{id as id_column, safekeepers};
-        self.with_conn(move |conn| {
-            Box::pin(async move {
-                Ok(safekeepers
-                    .filter(id_column.eq(&id))
-                    .select(SafekeeperPersistence::as_select())
-                    .get_result(conn)
-                    .await?)
-            })
-        })
-        .await
-    }
-
     pub(crate) async fn safekeeper_upsert(
         &self,
         record: SafekeeperUpsert,
