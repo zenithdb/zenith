@@ -97,10 +97,6 @@ static char *hexdump_page(char *page);
 
 const int	SmgrTrace = DEBUG5;
 
-#define NEON_PANIC_CONNECTION_STATE(shard_no, elvl, message, ...) \
-	neon_shard_log(shard_no, elvl, "Broken connection state: " message, \
-				   ##__VA_ARGS__)
-
 page_server_api *page_server;
 
 /* unlogged relation build states */
@@ -119,9 +115,6 @@ static bool neon_redo_read_buffer_filter(XLogReaderState *record, uint8 block_id
 static bool (*old_redo_read_buffer_filter) (XLogReaderState *record, uint8 block_id) = NULL;
 
 static BlockNumber neon_nblocks(SMgrRelation reln, ForkNumber forknum);
-
-static uint32 local_request_counter;
-#define GENERATE_REQUEST_ID() (((NeonRequestId)MyProcPid << 32) | ++local_request_counter)
 
 /*
  * Prefetch implementation:
@@ -870,7 +863,6 @@ prefetch_do_request(PrefetchRequest *slot, neon_request_lsns *force_request_lsns
 
 	NeonGetPageRequest request = {
 		.hdr.tag = T_NeonGetPageRequest,
-		.hdr.reqid = GENERATE_REQUEST_ID(),
 		/* lsn and not_modified_since are filled in below */
 		.rinfo = BufTagGetNRelFileInfo(slot->buftag),
 		.forknum = slot->buftag.forkNum,
@@ -878,8 +870,6 @@ prefetch_do_request(PrefetchRequest *slot, neon_request_lsns *force_request_lsns
 	};
 
 	Assert(mySlotNo == MyPState->ring_unused);
-
-	slot->reqid = request.hdr.reqid;
 
 	if (force_request_lsns)
 		slot->request_lsns = *force_request_lsns;
@@ -898,6 +888,7 @@ prefetch_do_request(PrefetchRequest *slot, neon_request_lsns *force_request_lsns
 		Assert(mySlotNo == MyPState->ring_unused);
 		/* loop */
 	}
+	slot->reqid = request.hdr.reqid;
 
 	/* update prefetch state */
 	MyPState->n_requests_inflight += 1;
@@ -2439,7 +2430,6 @@ neon_exists(SMgrRelation reln, ForkNumber forkNum)
 	{
 		NeonExistsRequest request = {
 			.hdr.tag = T_NeonExistsRequest,
-			.hdr.reqid = GENERATE_REQUEST_ID(),
 			.hdr.lsn = request_lsns.request_lsn,
 			.hdr.not_modified_since = request_lsns.not_modified_since,
 			.rinfo = InfoFromSMgrRel(reln),
@@ -3636,7 +3626,6 @@ neon_nblocks(SMgrRelation reln, ForkNumber forknum)
 	{
 		NeonNblocksRequest request = {
 			.hdr.tag = T_NeonNblocksRequest,
-			.hdr.reqid = GENERATE_REQUEST_ID(),
 			.hdr.lsn = request_lsns.request_lsn,
 			.hdr.not_modified_since = request_lsns.not_modified_since,
 			.rinfo = InfoFromSMgrRel(reln),
@@ -3721,7 +3710,6 @@ neon_dbsize(Oid dbNode)
 	{
 		NeonDbSizeRequest request = {
 			.hdr.tag = T_NeonDbSizeRequest,
-			.hdr.reqid = GENERATE_REQUEST_ID(),
 			.hdr.lsn = request_lsns.request_lsn,
 			.hdr.not_modified_since = request_lsns.not_modified_since,
 			.dbNode = dbNode,
@@ -4112,7 +4100,6 @@ neon_read_slru_segment(SMgrRelation reln, const char* path, int segno, void* buf
 
 	request = (NeonGetSlruSegmentRequest) {
 		.hdr.tag = T_NeonGetSlruSegmentRequest,
-		.hdr.reqid = GENERATE_REQUEST_ID(),
 		.hdr.lsn = request_lsn,
 		.hdr.not_modified_since = not_modified_since,
 		.kind = kind,
@@ -4303,7 +4290,6 @@ neon_extend_rel_size(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno, 
 		NeonNblocksRequest request = {
 			.hdr = (NeonRequest) {
 				.tag = T_NeonNblocksRequest,
-				.reqid = GENERATE_REQUEST_ID(),
 				.lsn = end_recptr,
 				.not_modified_since = end_recptr,
 			},

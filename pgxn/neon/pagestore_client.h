@@ -69,6 +69,10 @@ typedef struct
 														(errmsg(NEON_TAG "[shard %d] " fmt, shard_no, ##__VA_ARGS__), \
 														 errhidestmt(true), errhidecontext(true), errposition(0), internalerrposition(0)))
 
+#define NEON_PANIC_CONNECTION_STATE(shard_no, elvl, message, ...) \
+	neon_shard_log(shard_no, elvl, "Broken connection state: " message, \
+				   ##__VA_ARGS__)
+
 /* SLRUs downloadable from page server */
 typedef enum {
 	SLRU_CLOG,
@@ -302,7 +306,7 @@ extern bool lfc_cache_contains(NRelFileInfo rinfo, ForkNumber forkNum,
 extern int lfc_cache_containsv(NRelFileInfo rinfo, ForkNumber forkNum,
 							   BlockNumber blkno, int nblocks, bits8 *bitmap);
 extern void lfc_init(void);
-extern void lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
+extern bool lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 						 const void* buffer, XLogRecPtr lsn);
 
 

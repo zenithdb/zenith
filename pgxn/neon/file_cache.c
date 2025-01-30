@@ -41,12 +41,16 @@
 #include "utils/dynahash.h"
 #include "utils/guc.h"
 
+#if PG_VERSION_NUM >= 150000
+#include "access/xlogrecovery.h"
+#endif
+
 #include "hll.h"
 #include "bitmap.h"
 #include "neon.h"
 #include "neon_perf_counters.h"
 
-#define CriticalAssert(cond) do if (!(cond)) elog(PANIC, "Assertion %s failed at %s:%d: ", #cond, __FILE__, __LINE__); while (0)
+#define CriticalAssert(cond) do if (!(cond)) elog(PANIC, "LFC: assertion %s failed at %s:%d: ", #cond, __FILE__, __LINE__); while (0)
 
 /*
  * Local file cache is used to temporary store relations pages in local file system.
@@ -94,6 +98,7 @@
 #define MB					((uint64)1024*1024)
 
 #define SIZE_MB_TO_CHUNKS(size) ((uint32)((size) * MB / BLCKSZ / BLOCKS_PER_CHUNK))
+#define CHUNK_BITMAP_SIZE ((BLOCKS_PER_CHUNK + 31) / 32)
 
 /*
  * Blocks are read or written to LFC file outside LFC critical section.
@@ -118,9 +123,16 @@ typedef struct FileCacheEntry
 	uint32		hash;
 	uint32		offset;
 	uint32		access_count;
-	uint32		state[(BLOCKS_PER_CHUNK + 31) / 32 * 2]; /* two bits per block */
+	uint32		state[CHUNK_BITMAP_SIZE * 2]; /* two bits per block */
 	dlist_node	list_node;		/* LRU/holes list node */
 } FileCacheEntry;
+
+typedef struct PrewarmRequest
+{
+	NeonRequestId	reqid;
+	XLogRecPtr		lsn;
+	XLogRecPtr		not_modified_since;
+} PrewarmRequest;
 
 #define GET_STATE(entry, i) (((entry)->state[(i) / 16] >> ((i) % 16 * 2)) & 3)
 #define SET_STATE(entry, i, new_state) (entry)->state[(i) / 16] = ((entry)->state[(i) / 16] & ~(3 << ((i) % 16 * 2))) | ((new_state) << ((i) % 16 * 2))
@@ -143,6 +155,10 @@ typedef struct FileCacheControl
 	uint64		time_write;		/* time spent writing (us) */
 	uint64		resizes;        /* number of LFC resizes   */
 	uint64      evicted_pages;	/* number of evicted pages */
+	uint32		prewarm_total_chunks;
+	uint32		prewarm_curr_chunk;
+	uint32		prewarmed_pages;
+	uint32		skipped_pages;
 	dlist_head	lru;			/* double linked list for LRU replacement
 								 * algorithm */
 	dlist_head  holes;          /* double linked list of punched holes */
@@ -150,11 +166,19 @@ typedef struct FileCacheControl
 	ConditionVariable cv[N_COND_VARS]; /* turnstile of condition variables */
 } FileCacheControl;
 
+typedef struct FileCacheStateEntry
+{
+	BufferTag	key;
+	uint32		bitmap[CHUNK_BITMAP_SIZE];
+} FileCacheStateEntry;
+
 static HTAB *lfc_hash;
 static int	lfc_desc = 0;
 static LWLockId lfc_lock;
 static int	lfc_max_size;
 static int	lfc_size_limit;
+static int	lfc_prewarm_limit;
+static int	lfc_prewarm_batch;
 static char *lfc_path;
 static FileCacheControl *lfc_ctl;
 static shmem_startup_hook_type prev_shmem_startup_hook;
@@ -175,7 +199,7 @@ lfc_disable(char const *op)
 {
 	int			fd;
 
-	elog(WARNING, "Failed to %s local file cache at %s: %m, disabling local file cache", op, lfc_path);
+	elog(WARNING, "LFC: failed to %s local file cache at %s: %m, disabling local file cache", op, lfc_path);
 
 	/* Invalidate hash */
 	LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
@@ -210,7 +234,7 @@ lfc_disable(char const *op)
 			pgstat_report_wait_end();
 
 			if (rc < 0)
-				elog(WARNING, "Failed to truncate local file cache %s: %m", lfc_path);
+				elog(WARNING, "LFC: failed to truncate local file cache %s: %m", lfc_path);
 		}
 		/* Wakeup waiting backends */
 		for (int i = 0; i < N_COND_VARS; i++)
@@ -225,7 +249,7 @@ lfc_disable(char const *op)
 
 	fd = BasicOpenFile(lfc_path, O_RDWR | O_CREAT | O_TRUNC);
 	if (fd < 0)
-		elog(WARNING, "Failed to recreate local file cache %s: %m", lfc_path);
+		elog(WARNING, "LFC: failed to recreate local file cache %s: %m", lfc_path);
 	else
 		close(fd);
 
@@ -307,7 +331,7 @@ lfc_shmem_startup(void)
 		fd = BasicOpenFile(lfc_path, O_RDWR | O_CREAT | O_TRUNC);
 		if (fd < 0)
 		{
-			elog(WARNING, "Failed to create local file cache %s: %m", lfc_path);
+			elog(WARNING, "LFC: failed to create local file cache %s: %m", lfc_path);
 			lfc_ctl->limit = 0;
 		}
 		else
@@ -354,7 +378,7 @@ lfc_check_limit_hook(int *newval, void **extra, GucSource source)
 {
 	if (*newval > lfc_max_size)
 	{
-		elog(ERROR, "neon.file_cache_size_limit can not be larger than neon.max_file_cache_size");
+		elog(ERROR, "LFC: neon.file_cache_size_limit can not be larger than neon.max_file_cache_size");
 		return false;
 	}
 	return true;
@@ -471,6 +495,32 @@ lfc_init(void)
 							   NULL,
 							   NULL);
 
+	DefineCustomIntVariable("neon.file_cache_prewarm_limit",
+							"Maximal number of prewarmed pages",
+							NULL,
+							&lfc_prewarm_limit,
+							0,	/* disabled by default */
+							0,
+							INT_MAX,
+							PGC_SIGHUP,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("neon.file_cache_prewarm_batch",
+							"Number of pages retrivied by prewarm from page server",
+							NULL,
+							&lfc_prewarm_batch,
+							64,
+							1,
+							INT_MAX,
+							PGC_SIGHUP,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
 	if (lfc_max_size == 0)
 		return;
 
@@ -483,6 +533,212 @@ lfc_init(void)
 	lfc_shmem_request();
 #endif
 }
+
+static FileCacheStateEntry*
+lfc_get_state(size_t* n_entries)
+{
+	size_t max_entries = *n_entries;
+	size_t i = 0;
+	FileCacheStateEntry* fs;
+
+	if (lfc_maybe_disabled() || max_entries == 0)	/* fast exit if file cache is disabled */
+		return NULL;
+
+	fs = (FileCacheStateEntry*)palloc0(sizeof(FileCacheStateEntry) * max_entries);
+
+	LWLockAcquire(lfc_lock, LW_SHARED);
+
+	if (LFC_ENABLED())
+	{
+		dlist_iter	iter;
+		dlist_reverse_foreach(iter, &lfc_ctl->lru)
+		{
+			FileCacheEntry *entry = dlist_container(FileCacheEntry, list_node, iter.cur);
+			memcpy(&fs[i].key, &entry->key, sizeof entry->key);
+			for (int j = 0; j < BLOCKS_PER_CHUNK; j++)
+			{
+				if (GET_STATE(entry, j) != UNAVAILABLE)
+					fs[i].bitmap[j >> 5] |= (uint32)1 << (j & 31);
+			}
+			if (++i == max_entries)
+				break;
+		}
+		elog(LOG, "LFC: save state of %ld chunks", (long)i);
+	}
+
+	LWLockRelease(lfc_lock);
+
+	*n_entries = i;
+	return fs;
+}
+
+/*
+ * Prewarm LFC cache to the specified state. It uses lfc_prefetch function to load prewarmed page without hoilding shared buffer lock
+ * and avoid race conditions with other backends.
+ */
+static void
+lfc_prewarm(FileCacheStateEntry* fs, size_t n_entries)
+{
+	size_t snd_idx = 0, rcv_idx = 0;
+	size_t n_sent = 0, n_received = 0;
+	int    shard_no;
+	PrewarmRequest* ring;
+	size_t ring_size = pg_nextpower2_32(lfc_prewarm_batch);
+
+	if (!lfc_ensure_opened())
+		return;
+
+	if (n_entries == 0 || fs == NULL)
+	{
+		elog(LOG, "LFC: prewarm is disabled");
+		return;
+	}
+
+	LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
+
+	/* Do not prewarm more entries than LFC limit */
+	if (lfc_ctl->limit <= lfc_ctl->size)
+	{
+		LWLockRelease(lfc_lock);
+		return;
+	}
+
+	if (n_entries > lfc_ctl->limit - lfc_ctl->size)
+	{
+		n_entries = lfc_ctl->limit - lfc_ctl->size;
+	}
+
+	LWLockRelease(lfc_lock);
+
+	/* Initialize fields used to track prewarming progress */
+	lfc_ctl->prewarm_total_chunks = n_entries;
+	lfc_ctl->prewarm_curr_chunk = 0;
+
+	ring = (PrewarmRequest*)palloc(sizeof(PrewarmRequest)*ring_size);
+
+	elog(LOG, "LFC: start loading %ld chunks", (long)n_entries);
+
+	while (true)
+	{
+		size_t chunk_no = snd_idx / BLOCKS_PER_CHUNK;
+		BlockNumber offs_in_chunk = snd_idx % BLOCKS_PER_CHUNK;
+		if (chunk_no < n_entries)
+		{
+			if (fs[chunk_no].bitmap[offs_in_chunk >> 5] & (1 << (offs_in_chunk & 31)))
+			{
+				/*
+				 * In case of prewarming replica we should be careful not to load too new version
+				 * of the page - with LSN larger than current replay LSN.
+				 * At primary we are always loading latest version.
+				 */
+				XLogRecPtr req_lsn = RecoveryInProgress() ? GetXLogReplayRecPtr(NULL) : UINT64_MAX;
+
+				NeonGetPageRequest request = {
+					.hdr.tag = T_NeonGetPageRequest,
+					.hdr.lsn = req_lsn,
+					/* not_modified_since is filled in below */
+					.rinfo = BufTagGetNRelFileInfo(fs[chunk_no].key),
+					.forknum = fs[chunk_no].key.forkNum,
+					.blkno = fs[chunk_no].key.blockNum + offs_in_chunk,
+				};
+				shard_no = get_shard_number(&fs[chunk_no].key);
+				request.hdr.not_modified_since = GetLastWrittenLSN(request.rinfo, request.forknum, request.blkno);
+
+				while (!page_server->send(shard_no, (NeonRequest *) &request)
+					|| !page_server->flush(shard_no))
+				{
+					/* page server disconnected: all previusly sent prefetch requests are lost */
+					n_sent = 0;
+					n_received = 0;
+				}
+				ring[n_sent & (ring_size-1)].reqid = request.hdr.reqid;
+				ring[n_sent & (ring_size-1)].lsn = request.hdr.lsn;
+				ring[n_sent & (ring_size-1)].not_modified_since = request.hdr.not_modified_since;
+				n_sent += 1;
+			}
+			snd_idx += 1;
+		}
+		if (n_sent >= n_received + lfc_prewarm_batch || chunk_no == n_entries)
+		{
+			NRelFileInfo rinfo;
+			NeonResponse* resp;
+			PrewarmRequest* req = &ring[n_received & (ring_size-1)];
+
+			do
+			{
+				chunk_no = rcv_idx / BLOCKS_PER_CHUNK;
+				offs_in_chunk = rcv_idx % BLOCKS_PER_CHUNK;
+				rcv_idx += 1;
+			} while (!(fs[chunk_no].bitmap[offs_in_chunk >> 5] & (1 << (offs_in_chunk & 31))));
+
+			shard_no = get_shard_number(&fs[chunk_no].key);
+			resp = page_server->receive(shard_no);
+			lfc_ctl->prewarm_curr_chunk = chunk_no;
+			rinfo = BufTagGetNRelFileInfo(fs[chunk_no].key);
+
+			switch (resp->tag)
+			{
+				case T_NeonGetPageResponse:
+					if (neon_protocol_version >= 3)
+					{
+						NeonGetPageResponse* getpage_resp = (NeonGetPageResponse *) resp;
+						if (resp->reqid != req->reqid ||
+							resp->lsn != req->lsn ||
+							resp->not_modified_since != req->not_modified_since ||
+							!RelFileInfoEquals(getpage_resp->req.rinfo, rinfo) ||
+							getpage_resp->req.forknum != fs[chunk_no].key.forkNum ||
+							getpage_resp->req.blkno != fs[chunk_no].key.blockNum + offs_in_chunk)
+						{
+							NEON_PANIC_CONNECTION_STATE(-1, PANIC,
+													"Unexpect response {reqid=%lx,lsn=%X/%08X, since=%X/%08X, rel=%u/%u/%u.%u, block=%u} to get page request {reqid=%lx,lsn=%X/%08X, since=%X/%08X, rel=%u/%u/%u.%u, block=%u}",
+													resp->reqid, LSN_FORMAT_ARGS(resp->lsn), LSN_FORMAT_ARGS(resp->not_modified_since), RelFileInfoFmt(getpage_resp->req.rinfo), getpage_resp->req.forknum, getpage_resp->req.blkno,
+													req->reqid, LSN_FORMAT_ARGS(req->lsn), LSN_FORMAT_ARGS(req->not_modified_since), RelFileInfoFmt(rinfo), fs[chunk_no].key.forkNum, fs[chunk_no].key.blockNum + offs_in_chunk);
+						}
+					}
+					break;
+				case T_NeonErrorResponse:
+					if (neon_protocol_version >= 3)
+					{
+						if (resp->reqid != req->reqid ||
+							resp->lsn != req->lsn ||
+							resp->not_modified_since != req->not_modified_since)
+						{
+							elog(WARNING, NEON_TAG "Error message {reqid=%lx,lsn=%X/%08X, since=%X/%08X} doesn't match get relsize request {reqid=%lx,lsn=%X/%08X, since=%X/%08X}",
+								 resp->reqid, LSN_FORMAT_ARGS(resp->lsn), LSN_FORMAT_ARGS(resp->not_modified_since),
+								 req->reqid, LSN_FORMAT_ARGS(req->lsn), LSN_FORMAT_ARGS(req->not_modified_since));
+						}
+					}
+					/* Prefech can request page which is already dropped so PS can respond with error: just ignore it */
+					elog(LOG, "LFC: page server failed to load page %u of relation %u/%u/%u.%u: %s",
+						 fs[chunk_no].key.blockNum + offs_in_chunk, RelFileInfoFmt(rinfo), fs[chunk_no].key.forkNum, ((NeonErrorResponse *) resp)->message);
+					goto next_block;
+				default:
+					elog(LOG, "LFC: unexpected response type: %d", resp->tag);
+					return;
+			}
+
+			if (lfc_prefetch(rinfo, fs[chunk_no].key.forkNum, fs[chunk_no].key.blockNum + offs_in_chunk,
+							 ((NeonGetPageResponse*)resp)->page, req->not_modified_since))
+			{
+				lfc_ctl->prewarmed_pages += 1;
+			}
+			else
+			{
+				lfc_ctl->skipped_pages += 1;
+			}
+		  next_block:
+			if (++n_received == n_sent && snd_idx >= n_entries * BLOCKS_PER_CHUNK)
+			{
+				break;
+			}
+		}
+	}
+	Assert(n_sent == n_received);
+	pfree(ring);
+	lfc_ctl->prewarm_curr_chunk = n_entries;
+	elog(LOG, "LFC: complete prewarming: loaded %ld pages", (long)n_received);
+}
+
 
 /*
  * Check if page is present in the cache.
@@ -918,7 +1174,7 @@ lfc_init_new_entry(FileCacheEntry* entry, uint32 hash)
  *    do it,overwriting old (prefetched) page image. As far as this write will be completed before
  *    shared buffer can be reassigned, not other backend can see old page image.
 */
-void
+bool
 lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 			 const void* buffer, XLogRecPtr lsn)
 {
@@ -935,10 +1191,10 @@ lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 	int		chunk_offs = blkno & (BLOCKS_PER_CHUNK - 1);
 
 	if (lfc_maybe_disabled())	/* fast exit if file cache is disabled */
-		return;
+		return false;
 
 	if (!lfc_ensure_opened())
-		return;
+		return false;
 
 	CopyNRelFileInfoToBufTag(tag, rinfo);
 	tag.forkNum = forknum;
@@ -954,12 +1210,12 @@ lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 	if (!LFC_ENABLED())
 	{
 		LWLockRelease(lfc_lock);
-		return;
+		return false;
 	}
 	if (GetLastWrittenLSN(rinfo, forknum, blkno) > lsn)
 	{
 		LWLockRelease(lfc_lock);
-		return;
+		return false;
 	}
 
 	entry = hash_search_with_hash_value(lfc_hash, &tag, hash, HASH_ENTER, &found);
@@ -970,7 +1226,7 @@ lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 		if (state != UNAVAILABLE) {
 			/* Do not rewrite existed LFC entry */
 			LWLockRelease(lfc_lock);
-			return;
+			return false;
 		}
 		/*
 		 * Unlink entry from LRU list to pin it for the duration of IO
@@ -988,7 +1244,7 @@ lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 			 * so skip to the next one
 			 */
 			LWLockRelease(lfc_lock);
-			return;
+			return false;
 		}
 	}
 
@@ -1042,6 +1298,7 @@ lfc_prefetch(NRelFileInfo rinfo, ForkNumber forknum, BlockNumber blkno,
 		}
 		LWLockRelease(lfc_lock);
 	}
+	return true;
 }
 
 /*
@@ -1072,7 +1329,15 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 
 	CriticalAssert(BufTagGetRelNumber(&tag) != InvalidRelFileNumber);
 
-	/* 
+	LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
+
+	if (!LFC_ENABLED())
+	{
+		LWLockRelease(lfc_lock);
+		return;
+	}
+
+	/*
 	 * For every chunk that has blocks we're interested in, we
 	 * 1. get the chunk header
 	 * 2. Check if the chunk actually has the blocks we're interested in
@@ -1101,14 +1366,6 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 		hash = get_hash_value(lfc_hash, &tag);
 		cv = &lfc_ctl->cv[hash % N_COND_VARS];
 
-		LWLockAcquire(lfc_lock, LW_EXCLUSIVE);
-
-		if (!LFC_ENABLED())
-		{
-			LWLockRelease(lfc_lock);
-			return;
-		}
-
 		entry = hash_search_with_hash_value(lfc_hash, &tag, hash, HASH_ENTER, &found);
 
 		if (found)
@@ -1128,7 +1385,6 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 				 * We can't process this chunk due to lack of space in LFC,
 				 * so skip to the next one
 				 */
-				LWLockRelease(lfc_lock);
 				blkno += blocks_in_chunk;
 				buf_offset += blocks_in_chunk;
 				nblocks -= blocks_in_chunk;
@@ -1178,6 +1434,7 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 		if (rc != BLCKSZ * blocks_in_chunk)
 		{
 			lfc_disable("write");
+			return;
 		}
 		else
 		{
@@ -1214,12 +1471,12 @@ lfc_writev(NRelFileInfo rinfo, ForkNumber forkNum, BlockNumber blkno,
 				}
 			}
 
-			LWLockRelease(lfc_lock);
 		}
 		blkno += blocks_in_chunk;
 		buf_offset += blocks_in_chunk;
 		nblocks -= blocks_in_chunk;
 	}
+	LWLockRelease(lfc_lock);
 }
 
 typedef struct
@@ -1553,3 +1810,69 @@ approximate_working_set_size(PG_FUNCTION_ARGS)
 	}
 	PG_RETURN_NULL();
 }
+
+PG_FUNCTION_INFO_V1(get_local_cache_state);
+
+Datum
+get_local_cache_state(PG_FUNCTION_ARGS)
+{
+	size_t n_entries = PG_ARGISNULL(0) ? lfc_prewarm_limit : PG_GETARG_INT32(0);
+	FileCacheStateEntry* fs = lfc_get_state(&n_entries);
+	if (fs != NULL)
+	{
+		size_t size_in_bytes = sizeof(FileCacheStateEntry) * n_entries;
+		bytea* res = (bytea*)palloc(VARHDRSZ + size_in_bytes);
+
+		SET_VARSIZE(res, VARHDRSZ + size_in_bytes);
+		memcpy(VARDATA(res), fs, size_in_bytes);
+		pfree(fs);
+
+		PG_RETURN_BYTEA_P(res);
+	}
+	PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(prewarm_local_cache);
+
+Datum
+prewarm_local_cache(PG_FUNCTION_ARGS)
+{
+	bytea* state = PG_GETARG_BYTEA_PP(0);
+	uint32 n_entries = VARSIZE_ANY_EXHDR(state)/sizeof(FileCacheStateEntry);
+	FileCacheStateEntry* fs = (FileCacheStateEntry*)VARDATA_ANY(state);
+
+	lfc_prewarm(fs, n_entries);
+
+	PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(get_prewarm_info);
+
+Datum
+get_prewarm_info(PG_FUNCTION_ARGS)
+{
+	Datum		values[4];
+	bool		nulls[4];
+	TupleDesc	tupdesc;
+
+	if (lfc_size_limit == 0)
+		PG_RETURN_NULL();
+
+	tupdesc = CreateTemplateTupleDesc(4);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "total_chunks", INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "curr_chunk", INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "prewarmed_pages", INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "skipped_pages", INT4OID, -1, 0);
+	tupdesc = BlessTupleDesc(tupdesc);
+
+	MemSet(nulls, 0, sizeof(nulls));
+	LWLockAcquire(lfc_lock, LW_SHARED);
+	values[0] = Int32GetDatum(lfc_ctl->prewarm_total_chunks);
+	values[1] = Int32GetDatum(lfc_ctl->prewarm_curr_chunk);
+	values[2] = Int32GetDatum(lfc_ctl->prewarmed_pages);
+	values[3] = Int32GetDatum(lfc_ctl->skipped_pages);
+	LWLockRelease(lfc_lock);
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
