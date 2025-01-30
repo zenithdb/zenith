@@ -268,7 +268,8 @@ def endpoint_create_start(
         env,
         tenant_id=env.initial_tenant,
         pg_port=env.port_distributor.get_port(),
-        http_port=env.port_distributor.get_port(),
+        external_http_port=env.port_distributor.get_port(),
+        internal_http_port=env.port_distributor.get_port(),
         # In these tests compute has high probability of terminating on its own
         # before our stop() due to lost consensus leadership.
         check_stop_result=False,

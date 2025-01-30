@@ -47,6 +47,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Parser;
 use compute_tools::disk_quota::set_disk_quota;
+use compute_tools::http::server::Server;
 use compute_tools::lsn_lease::launch_lsn_lease_bg_task_for_static;
 use signal_hook::consts::{SIGQUIT, SIGTERM};
 use signal_hook::{consts::SIGINT, iterator::Signals};
@@ -61,7 +62,6 @@ use compute_tools::compute::{
 };
 use compute_tools::configurator::launch_configurator;
 use compute_tools::extension_server::get_pg_version_string;
-use compute_tools::http::launch_http_server;
 use compute_tools::logger::*;
 use compute_tools::monitor::launch_monitor;
 use compute_tools::params::*;
@@ -94,8 +94,20 @@ struct Cli {
     #[arg(short = 'r', long, value_parser = parse_remote_ext_config)]
     pub remote_ext_config: Option<String>,
 
-    #[arg(long, default_value_t = 3080)]
-    pub http_port: u16,
+    /// The port to bind the external listening HTTP server to. Clients running
+    /// outside the compute will talk to the compute through this port. Keep
+    /// the previous name for this argument around for a smoother release
+    /// with the control plane.
+    ///
+    /// TODO: Remove the alias after the control plane release which teaches the
+    /// control plane about the renamed argument.
+    #[arg(long, alias = "http-port", default_value_t = 3080)]
+    pub external_http_port: u16,
+
+    /// The port to bind the internal listening HTTP server to. Clients like
+    /// the neon extension (for installing remote extensions) and local_proxy.
+    #[arg(long, default_value_t = 3081)]
+    pub internal_http_port: u16,
 
     #[arg(short = 'D', long, value_name = "DATADIR")]
     pub pgdata: String,
@@ -325,7 +337,8 @@ fn wait_spec(
         pgdata: cli.pgdata.clone(),
         pgbin: cli.pgbin.clone(),
         pgversion: get_pg_version_string(&cli.pgbin),
-        http_port: cli.http_port,
+        external_http_port: cli.external_http_port,
+        internal_http_port: cli.internal_http_port,
         live_config_allowed,
         state: Mutex::new(new_state),
         state_changed: Condvar::new(),
@@ -343,10 +356,13 @@ fn wait_spec(
         compute.prewarm_postgres()?;
     }
 
-    // Launch http service first, so that we can serve control-plane requests
-    // while configuration is still in progress.
-    let _http_handle =
-        launch_http_server(cli.http_port, &compute).expect("cannot launch http endpoint thread");
+    // Launch the external HTTP server first, so that we can serve control plane
+    // requests while configuration is still in progress.
+    Server::External(cli.external_http_port).launch(&compute);
+
+    // The internal HTTP server could be launched later, but there isn't much
+    // sense in waiting.
+    Server::Internal(cli.internal_http_port).launch(&compute);
 
     if !spec_set {
         // No spec provided, hang waiting for it.

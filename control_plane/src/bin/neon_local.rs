@@ -552,8 +552,10 @@ struct EndpointCreateCmdArgs {
     lsn: Option<Lsn>,
     #[clap(long)]
     pg_port: Option<u16>,
+    #[clap(long, alias = "http-port")]
+    external_http_port: Option<u16>,
     #[clap(long)]
-    http_port: Option<u16>,
+    internal_http_port: Option<u16>,
     #[clap(long = "pageserver-id")]
     endpoint_pageserver_id: Option<NodeId>,
 
@@ -1353,7 +1355,8 @@ async fn handle_endpoint(subcmd: &EndpointCmd, env: &local_env::LocalEnv) -> Res
                 tenant_id,
                 timeline_id,
                 args.pg_port,
-                args.http_port,
+                args.external_http_port,
+                args.internal_http_port,
                 args.pg_version,
                 mode,
                 !args.update_catalog,

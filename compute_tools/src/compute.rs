@@ -81,8 +81,10 @@ pub struct ComputeNode {
     /// - we push spec and it does configuration
     /// - but then it is restarted without any spec again
     pub live_config_allowed: bool,
-    /// The port that the compute's HTTP server listens on
-    pub http_port: u16,
+    /// The port that the compute's external HTTP server listens on
+    pub external_http_port: u16,
+    /// The port that the compute's internal HTTP server listens on
+    pub internal_http_port: u16,
     /// Volatile part of the `ComputeNode`, which should be used under `Mutex`.
     /// To allow HTTP API server to serving status requests, while configuration
     /// is in progress, lock should be held only for short periods of time to do
@@ -634,7 +636,7 @@ impl ComputeNode {
         config::write_postgres_conf(
             &pgdata_path.join("postgresql.conf"),
             &pspec.spec,
-            self.http_port,
+            self.internal_http_port,
         )?;
 
         // Syncing safekeepers is only safe with primary nodes: if a primary
@@ -1395,7 +1397,7 @@ impl ComputeNode {
         // Write new config
         let pgdata_path = Path::new(&self.pgdata);
         let postgresql_conf_path = pgdata_path.join("postgresql.conf");
-        config::write_postgres_conf(&postgresql_conf_path, &spec, self.http_port)?;
+        config::write_postgres_conf(&postgresql_conf_path, &spec, self.internal_http_port)?;
 
         let max_concurrent_connections = spec.reconfigure_concurrency;
 

@@ -56,7 +56,9 @@ def test_startup_simple(neon_env_builder: NeonEnvBuilder, zenbenchmark: NeonBenc
             endpoint.safe_psql("select 1;")
 
         # Get metrics
-        metrics = requests.get(f"http://localhost:{endpoint.http_port}/metrics.json").json()
+        metrics = requests.get(
+            f"http://localhost:{endpoint.external_http_port}/metrics.json"
+        ).json()
         durations = {
             "wait_for_spec_ms": f"{i}_wait_for_spec",
             "sync_safekeepers_ms": f"{i}_sync_safekeepers",
