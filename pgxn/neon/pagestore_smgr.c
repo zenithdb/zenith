@@ -1876,7 +1876,7 @@ neon_wallog_page(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum, co
 		XLogRecPtr	recptr;
 
 		recptr = log_newpage_copy(&InfoFromSMgrRel(reln), forknum, blocknum,
-								  (Page) buffer, false);
+								  (Page) buffer, forknum == MAIN_FORKNUM);
 		XLogFlush(recptr);
 		lsn = recptr;
 		ereport(SmgrTrace,
