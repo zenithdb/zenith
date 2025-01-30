@@ -64,6 +64,14 @@ pub async fn do_run_initdb(args: RunInitdbArgs<'_>) -> Result<(), Error> {
         .env_clear()
         .env("LD_LIBRARY_PATH", library_search_path)
         .env("DYLD_LIBRARY_PATH", library_search_path)
+        .env(
+            "ASAN_OPTIONS",
+            std::env::var("ASAN_OPTIONS").unwrap_or_default(),
+        )
+        .env(
+            "UBSAN_OPTIONS",
+            std::env::var("UBSAN_OPTIONS").unwrap_or_default(),
+        )
         .stdin(std::process::Stdio::null())
         // stdout invocation produces the same output every time, we don't need it
         .stdout(std::process::Stdio::null())

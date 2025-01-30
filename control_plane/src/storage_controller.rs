@@ -221,7 +221,17 @@ impl StorageController {
             "-p",
             &format!("{}", postgres_port),
         ];
-        let exitcode = Command::new(bin_path).args(args).spawn()?.wait().await?;
+        let pg_lib_dir = self.get_pg_lib_dir().await.unwrap();
+        let envs = [
+            ("LD_LIBRARY_PATH".to_owned(), pg_lib_dir.to_string()),
+            ("DYLD_LIBRARY_PATH".to_owned(), pg_lib_dir.to_string()),
+        ];
+        let exitcode = Command::new(bin_path)
+            .args(args)
+            .envs(envs)
+            .spawn()?
+            .wait()
+            .await?;
 
         Ok(exitcode.success())
     }
@@ -242,6 +252,11 @@ impl StorageController {
 
         let pg_bin_dir = self.get_pg_bin_dir().await?;
         let createdb_path = pg_bin_dir.join("createdb");
+        let pg_lib_dir = self.get_pg_lib_dir().await.unwrap();
+        let envs = [
+            ("LD_LIBRARY_PATH".to_owned(), pg_lib_dir.to_string()),
+            ("DYLD_LIBRARY_PATH".to_owned(), pg_lib_dir.to_string()),
+        ];
         let output = Command::new(&createdb_path)
             .args([
                 "-h",
@@ -254,6 +269,7 @@ impl StorageController {
                 &username(),
                 DB_NAME,
             ])
+            .envs(envs)
             .output()
             .await
             .expect("Failed to spawn createdb");

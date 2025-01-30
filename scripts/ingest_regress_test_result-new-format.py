@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS results (
     flaky        BOOLEAN NOT NULL,
     arch         arch DEFAULT 'X64',
     lfc          BOOLEAN DEFAULT false NOT NULL,
+    sanitizers   BOOLEAN DEFAULT false NOT NULL,
     build_type   TEXT NOT NULL,
     pg_version   INT NOT NULL,
     run_id       BIGINT NOT NULL,
@@ -39,7 +40,7 @@ CREATE TABLE IF NOT EXISTS results (
     reference    TEXT NOT NULL,
     revision     CHAR(40) NOT NULL,
     raw          JSONB COMPRESSION lz4 NOT NULL,
-    UNIQUE (parent_suite, suite, name, arch, build_type, pg_version, started_at, stopped_at, run_id)
+    UNIQUE (parent_suite, suite, name, arch, lfc, sanitizers, build_type, pg_version, started_at, stopped_at, run_id)
 );
 """
 
@@ -56,6 +57,7 @@ class Row:
     flaky: bool
     arch: str
     lfc: bool
+    sanitizers: bool
     build_type: str
     pg_version: int
     run_id: int
@@ -135,6 +137,7 @@ def ingest_test_result(
         }
         arch = parameters.get("arch", "UNKNOWN").strip("'")
         lfc = parameters.get("lfc", "without-lfc").strip("'") == "with-lfc"
+        sanitizers = parameters.get("sanitizers", "disabled").strip("'") == "enabled"
 
         build_type, pg_version, unparametrized_name = parse_test_name(test["name"])
         labels = {label["name"]: label["value"] for label in test["labels"]}
@@ -149,6 +152,7 @@ def ingest_test_result(
             flaky=test["flaky"] or test["retriesStatusChange"],
             arch=arch,
             lfc=lfc,
+            sanitizers=sanitizers,
             build_type=build_type,
             pg_version=pg_version,
             run_id=run_id,

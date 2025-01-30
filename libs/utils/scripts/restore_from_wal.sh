@@ -39,7 +39,7 @@ function initdb_with_args {
             ;;
     esac
 
-    eval env -i LD_LIBRARY_PATH="$PG_BIN"/../lib "${cmd[*]}"
+    eval env -i LD_LIBRARY_PATH="$PG_BIN"/../lib ASAN_OPTIONS="${ASAN_OPTIONS-}" UBSAN_OPTIONS="${UBSAN_OPTIONS-}" "${cmd[*]}"
 }
 
 rm -fr "$DATA_DIR"

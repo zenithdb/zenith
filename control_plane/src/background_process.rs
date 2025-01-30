@@ -261,7 +261,13 @@ fn fill_rust_env_vars(cmd: &mut Command) -> &mut Command {
     let mut filled_cmd = cmd.env_clear().env("RUST_BACKTRACE", backtrace_setting);
 
     // Pass through these environment variables to the command
-    for var in ["LLVM_PROFILE_FILE", "FAILPOINTS", "RUST_LOG"] {
+    for var in [
+        "LLVM_PROFILE_FILE",
+        "FAILPOINTS",
+        "RUST_LOG",
+        "ASAN_OPTIONS",
+        "UBSAN_OPTIONS",
+    ] {
         if let Some(val) = std::env::var_os(var) {
             filled_cmd = filled_cmd.env(var, val);
         }

@@ -124,5 +124,8 @@ def pytest_runtest_makereport(*args, **kwargs):
     allure.dynamic.parameter(
         "__lfc", "with-lfc" if os.getenv("USE_LFC") != "false" else "without-lfc"
     )
+    allure.dynamic.parameter(
+        "__sanitizers", "enabled" if os.getenv("SANITIZERS") == "enabled" else "disabled"
+    )
 
     yield

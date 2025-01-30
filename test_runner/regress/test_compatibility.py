@@ -314,7 +314,10 @@ def test_forward_compatibility(
 
 
 def check_neon_works(env: NeonEnv, test_output_dir: Path, sql_dump_path: Path, repo_dir: Path):
-    ep = env.endpoints.create_start("main")
+    ep = env.endpoints.create("main")
+    ep_env = {"LD_LIBRARY_PATH": str(env.pg_distrib_dir / f"v{env.pg_version}/lib")}
+    ep.start(env=ep_env)
+
     connstr = ep.connstr()
 
     pg_bin = PgBin(test_output_dir, env.pg_distrib_dir, env.pg_version)
@@ -363,7 +366,7 @@ def check_neon_works(env: NeonEnv, test_output_dir: Path, sql_dump_path: Path, r
     )
 
     # Timeline exists again: restart the endpoint
-    ep.start()
+    ep.start(env=ep_env)
 
     pg_bin.run_capture(
         ["pg_dumpall", f"--dbname={connstr}", f"--file={test_output_dir / 'dump-from-wal.sql'}"]

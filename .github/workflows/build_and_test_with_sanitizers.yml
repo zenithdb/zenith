@@ -1,0 +1,133 @@
+name: Build and Test with Sanitizers
+
+on:
+  schedule:
+    # * is a special character in YAML so you have to quote this string
+    #          ┌───────────── minute (0 - 59)
+    #          │ ┌───────────── hour (0 - 23)
+    #          │ │ ┌───────────── day of the month (1 - 31)
+    #          │ │ │ ┌───────────── month (1 - 12 or JAN-DEC)
+    #          │ │ │ │ ┌───────────── day of the week (0 - 6 or SUN-SAT)
+    - cron:   '0 1 * * *' # run once a day, timezone is utc
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
+concurrency:
+  # Allow only one workflow per any non-`main` branch.
+  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.ref_name == 'main' && github.sha || 'anysha' }}
+  cancel-in-progress: true
+
+env:
+  RUST_BACKTRACE: 1
+  COPT: '-Werror'
+
+jobs:
+  tag:
+    runs-on: [ self-hosted, small ]
+    container: 369495373322.dkr.ecr.eu-central-1.amazonaws.com/base:pinned
+    outputs:
+      build-tag: ${{steps.build-tag.outputs.tag}}
+
+    steps:
+      # Need `fetch-depth: 0` to count the number of commits in the branch
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get build tag
+        run: |
+          echo run:$GITHUB_RUN_ID
+          echo ref:$GITHUB_REF_NAME
+          echo rev:$(git rev-list --count HEAD)
+          if [[ "$GITHUB_REF_NAME" == "main" ]]; then
+            echo "tag=$(git rev-list --count HEAD)" >> $GITHUB_OUTPUT
+          elif [[ "$GITHUB_REF_NAME" == "release" ]]; then
+            echo "tag=release-$(git rev-list --count HEAD)" >> $GITHUB_OUTPUT
+          elif [[ "$GITHUB_REF_NAME" == "release-proxy" ]]; then
+            echo "tag=release-proxy-$(git rev-list --count HEAD)" >> $GITHUB_OUTPUT
+          elif [[ "$GITHUB_REF_NAME" == "release-compute" ]]; then
+            echo "tag=release-compute-$(git rev-list --count HEAD)" >> $GITHUB_OUTPUT
+          else
+            echo "GITHUB_REF_NAME (value '$GITHUB_REF_NAME') is not set to either 'main' or 'release', 'release-proxy', 'release-compute'"
+            echo "tag=$GITHUB_RUN_ID" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+        id: build-tag
+
+  build-build-tools-image:
+    uses: ./.github/workflows/build-build-tools-image.yml
+    secrets: inherit
+
+  build-and-test-locally:
+    needs: [ tag, build-build-tools-image ]
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [ x64, arm64 ]
+        build-type: [ release ]
+    uses: ./.github/workflows/_build-and-test-locally.yml
+    with:
+      arch: ${{ matrix.arch }}
+      build-tools-image: ${{ needs.build-build-tools-image.outputs.image }}-bookworm
+      build-tag: ${{ needs.tag.outputs.build-tag }}
+      build-type: ${{ matrix.build-type }}
+      test-cfg: '[{"pg_version":"v17", "sanitizers": "enabled"}]'
+    secrets: inherit
+
+
+  create-test-report:
+    needs: [ build-and-test-locally, build-build-tools-image ]
+    if: ${{ !cancelled() }}
+    permissions:
+      id-token: write # aws-actions/configure-aws-credentials
+      statuses: write
+      contents: write
+      pull-requests: write
+    outputs:
+      report-url: ${{ steps.create-allure-report.outputs.report-url }}
+
+    runs-on: [ self-hosted, small ]
+    container:
+      image: ${{ needs.build-build-tools-image.outputs.image }}-bookworm
+      credentials:
+        username: ${{ secrets.NEON_DOCKERHUB_USERNAME }}
+        password: ${{ secrets.NEON_DOCKERHUB_PASSWORD }}
+      options: --init
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Allure report
+        if: ${{ !cancelled() }}
+        id: create-allure-report
+        uses: ./.github/actions/allure-report-generate
+        with:
+          store-test-results-into-db: true
+          aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
+        env:
+          REGRESS_TEST_RESULT_CONNSTR_NEW: ${{ secrets.REGRESS_TEST_RESULT_CONNSTR_NEW }}
+
+      - uses: actions/github-script@v7
+        if: ${{ !cancelled() }}
+        with:
+          # Retry script for 5XX server errors: https://github.com/actions/github-script#retries
+          retries: 5
+          script: |
+            const report = {
+              reportUrl:     "${{ steps.create-allure-report.outputs.report-url }}",
+              reportJsonUrl: "${{ steps.create-allure-report.outputs.report-json-url }}",
+            }
+
+            const coverage = {}
+
+            const script = require("./scripts/comment-test-report.js")
+            await script({
+              github,
+              context,
+              fetch,
+              report,
+              coverage,
+            })

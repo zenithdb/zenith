@@ -120,7 +120,7 @@ def post_checks(env: NeonEnv, test_output_dir: Path, db_name: str, endpoint: End
 
 # Run the main PostgreSQL regression tests, in src/test/regress.
 #
-@pytest.mark.timeout(900)  # Contains many sub-tests, is slow in debug builds
+@pytest.mark.timeout(3000)  # Contains many sub-tests, is slow in debug builds
 @pytest.mark.parametrize("shard_count", [None, 4])
 def test_pg_regress(
     neon_env_builder: NeonEnvBuilder,
@@ -194,7 +194,7 @@ def test_pg_regress(
 
 # Run the PostgreSQL "isolation" tests, in src/test/isolation.
 #
-@pytest.mark.timeout(600)  # Contains many sub-tests, is slow in debug builds
+@pytest.mark.timeout(1500)  # Contains many sub-tests, is slow in debug builds
 @pytest.mark.parametrize("shard_count", [None, 4])
 def test_isolation(
     neon_env_builder: NeonEnvBuilder,
@@ -222,6 +222,8 @@ def test_isolation(
             "max_prepared_transactions=100",
             # Enable the test mode, so that we don't need to patch the test cases.
             "neon.regress_test_mode = true",
+            # Stack size should be increased for tests to pass with asan.
+            "max_stack_depth = 4MB",
         ],
     )
     endpoint.safe_psql(f"CREATE DATABASE {DBNAME}")
@@ -417,7 +419,7 @@ def test_tx_abort_with_many_relations(
         try:
             # Rollback phase should be fast: this is one WAL record that we should process efficiently
             fut = exec.submit(rollback_and_wait)
-            fut.result(timeout=5)
+            fut.result(timeout=15)
         except:
             exec.shutdown(wait=False, cancel_futures=True)
             raise
