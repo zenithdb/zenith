@@ -4021,6 +4021,24 @@ neon_end_unlogged_build(SMgrRelation reln)
 		/* Make the relation look permanent again */
 		reln->smgr_relpersistence = RELPERSISTENCE_PERMANENT;
 
+		/*
+		 * Drop all buffers of the relation from buffer cache. They have valid contents, so it's a bit sad to throw
+		 * them away, but they might be marked as !BM_PERMANENT, which is no longer true and could cause
+		 * trouble afterwards. Also, there's a race condition with checkpoint and the mdunlink call below: The
+		 * checkpointer uses mdexists() to check if the buffer belongs to an unlogged relation, and then writes
+		 * the page to disk if it exists, but we might unlink the file in between the mdexists() and mdwrite() calls,
+		 * causing the write to fail.
+		  */
+		{
+			static ForkNumber forks[] = { MAIN_FORKNUM, FSM_FORKNUM, VISIBILITYMAP_FORKNUM };
+			static BlockNumber blocks[] = { 0, 0, 0 };
+#if PG_MAJORVERSION_NUM < 16
+			DropRelFileNodeBuffers(reln, forks, 3, blocks);
+#else
+			DropRelationBuffers(reln, forks, 3, blocks);
+#endif
+		}
+
 		/* Remove local copy */
 		rinfob = InfoBFromSMgrRel(reln);
 		for (int forknum = 0; forknum <= MAX_FORKNUM; forknum++)
