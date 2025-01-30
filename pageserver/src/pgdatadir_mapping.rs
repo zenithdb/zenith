@@ -580,13 +580,13 @@ impl Timeline {
                 assert_eq!(key.field6, 1);
                 assert_eq!(key.field2, spcnode);
                 assert_eq!(key.field3, dbnode);
-                let old = rels.insert(RelTag {
+                let did_not_contain = rels.insert(RelTag {
                     spcnode,
                     dbnode,
                     relnode: key.field4,
                     forknum: key.field5,
                 });
-                debug_assert!(!old, "duplicate reltag in v2");
+                debug_assert!(did_not_contain, "duplicate reltag in v2");
             }
             Ok(rels)
         } else {
@@ -1912,7 +1912,7 @@ impl DatadirModification<'_> {
                 self.put(
                     rel_dir_key,
                     Value::Image(Bytes::from(
-                        RelDirectory::ser(&rel_dir).context("serialize")?,
+                        RelDirectory::ser(&RelDirectory::default()).context("serialize")?,
                     )),
                 );
             }
