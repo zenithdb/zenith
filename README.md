@@ -54,6 +54,11 @@ Building Neon requires 3.15+ version of `protoc` (protobuf-compiler). If your di
 ```
 # recommended approach from https://www.rust-lang.org/tools/install
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# bash-only: add $HOME/.cargo/bin to PATH. The script does this for zsh
+# echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+
+rustup show
 ```
 
 #### Installing dependencies on macOS (12.3.1)
@@ -76,6 +81,11 @@ brew link --force m4
 ```
 # recommended approach from https://www.rust-lang.org/tools/install
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# bash-only: add $HOME/.cargo/bin to PATH. The script does this for zsh
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+
+rustup show
 ```
 
 3. Install PostgreSQL Client
