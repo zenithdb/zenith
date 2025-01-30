@@ -49,15 +49,6 @@ pub const XLOG_SIZE_OF_XLOG_RECORD: usize = size_of::<XLogRecord>();
 #[allow(clippy::identity_op)]
 pub const SIZE_OF_XLOG_RECORD_DATA_HEADER_SHORT: usize = 1 * 2;
 
-/// Interval of checkpointing metadata file. We should store metadata file to enforce
-/// predicate that checkpoint.nextXid is larger than any XID in WAL.
-/// But flushing checkpoint file for each transaction seems to be too expensive,
-/// so XID_CHECKPOINT_INTERVAL is used to forward align nextXid and so perform
-/// metadata checkpoint only once per XID_CHECKPOINT_INTERVAL transactions.
-/// XID_CHECKPOINT_INTERVAL should not be larger than BLCKSZ*CLOG_XACTS_PER_BYTE
-/// in order to let CLOG_TRUNCATE mechanism correctly extend CLOG.
-const XID_CHECKPOINT_INTERVAL: u32 = 1024;
-
 pub fn XLogSegmentsPerXLogId(wal_segsz_bytes: usize) -> XLogSegNo {
     (0x100000000u64 / wal_segsz_bytes as u64) as XLogSegNo
 }
@@ -342,14 +333,10 @@ impl CheckPoint {
     /// Returns 'true' if the XID was updated.
     pub fn update_next_xid(&mut self, xid: u32) -> bool {
         // nextXid should be greater than any XID in WAL, so increment provided XID and check for wraparround.
-        let mut new_xid = std::cmp::max(
+        let new_xid = std::cmp::max(
             xid.wrapping_add(1),
             pg_constants::FIRST_NORMAL_TRANSACTION_ID,
         );
-        // To reduce number of metadata checkpoints, we forward align XID on XID_CHECKPOINT_INTERVAL.
-        // XID_CHECKPOINT_INTERVAL should not be larger than BLCKSZ*CLOG_XACTS_PER_BYTE
-        new_xid =
-            new_xid.wrapping_add(XID_CHECKPOINT_INTERVAL - 1) & !(XID_CHECKPOINT_INTERVAL - 1);
         let full_xid = self.nextXid.value;
         let old_xid = full_xid as u32;
         if new_xid.wrapping_sub(old_xid) as i32 > 0 {
@@ -371,7 +358,7 @@ impl CheckPoint {
     /// Advance next multi-XID/offset to those given in arguments.
     ///
     /// It's important that this handles wraparound correctly. This should match the
-    /// MultiXactAdvanceNextMXact() logic in PostgreSQL's xlog_redo() function.
+    /// MultiXactAdvceNextMXact() logic in PostgreSQL's xlog_redo() function.
     ///
     /// Returns 'true' if the Checkpoint was updated.
     pub fn update_next_multixid(&mut self, multi_xid: u32, multi_offset: u32) -> bool {
