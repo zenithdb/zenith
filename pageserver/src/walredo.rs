@@ -170,6 +170,7 @@ impl PostgresRedoManager {
             if rec_neon != batch_neon {
                 let result = if batch_neon {
                     self.apply_batch_neon(key, lsn, img, &records[batch_start..i])
+                        .await
                 } else {
                     self.apply_batch_postgres(
                         key,
@@ -191,6 +192,7 @@ impl PostgresRedoManager {
         // last batch
         if batch_neon {
             self.apply_batch_neon(key, lsn, img, &records[batch_start..])
+                .await
         } else {
             self.apply_batch_postgres(
                 key,
@@ -494,7 +496,7 @@ impl PostgresRedoManager {
     ///
     /// Process a batch of WAL records using bespoken Neon code.
     ///
-    fn apply_batch_neon(
+    async fn apply_batch_neon(
         &self,
         key: Key,
         lsn: Lsn,
@@ -512,9 +514,17 @@ impl PostgresRedoManager {
             bail!("invalid neon WAL redo request with no base image");
         }
 
-        // Apply all the WAL records in the batch
-        for (record_lsn, record) in records.iter() {
-            self.apply_record_neon(key, &mut page, *record_lsn, record)?;
+        // process the records in batches and yield; this should guard against pathological
+        // situations where we accidentially have a huge number of in-neon applied records.
+        let yield_every = 200;
+
+        for records in records.chunks(yield_every) {
+            // Apply all the WAL records in the batch
+            for (record_lsn, record) in records {
+                self.apply_record_neon(key, &mut page, *record_lsn, record)?;
+            }
+
+            tokio::task::yield_now().await;
         }
         // Success!
         let duration = start_time.elapsed();
