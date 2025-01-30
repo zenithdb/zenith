@@ -2188,6 +2188,14 @@ impl Timeline {
             .unwrap_or(self.conf.default_tenant_conf.compaction_threshold)
     }
 
+    pub(crate) fn get_rel_size_v2_enabled(&self) -> bool {
+        let tenant_conf = self.tenant_conf.load();
+        tenant_conf
+            .tenant_conf
+            .rel_size_v2_enabled
+            .unwrap_or(self.conf.default_tenant_conf.rel_size_v2_enabled)
+    }
+
     fn get_compaction_upper_limit(&self) -> usize {
         let tenant_conf = self.tenant_conf.load();
         tenant_conf
@@ -3397,7 +3405,9 @@ impl Timeline {
             // space. If that's not the case, we had at least one key encounter a gap in the image layer
             // and stop the search as a result of that.
             let mut removed = keyspace.remove_overlapping_with(&image_covered_keyspace);
-            // Do not fire missing key error for sparse keys.
+            // Do not fire missing key error and end early for sparse keys. Note that we hava already removed
+            // non-inherited keyspaces before, so we can safely do a full `SPARSE_RANGE` remove instead of
+            // figuring out what is the inherited key range and do a fine-grained pruning.
             removed.remove_overlapping_with(&KeySpace {
                 ranges: vec![SPARSE_RANGE],
             });

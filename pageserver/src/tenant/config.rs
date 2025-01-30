@@ -465,7 +465,9 @@ impl TenantConfOpt {
             wal_receiver_protocol_override: self
                 .wal_receiver_protocol_override
                 .or(global_conf.wal_receiver_protocol_override),
-            rel_size_v2_enabled: self.rel_size_v2_enabled.or(global_conf.rel_size_v2_enabled),
+            rel_size_v2_enabled: self
+                .rel_size_v2_enabled
+                .unwrap_or(global_conf.rel_size_v2_enabled),
             gc_compaction_enabled: self
                 .gc_compaction_enabled
                 .unwrap_or(global_conf.gc_compaction_enabled),

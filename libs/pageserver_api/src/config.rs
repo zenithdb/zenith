@@ -341,7 +341,7 @@ pub struct TenantConfigToml {
 
     /// Enable rel_size_v2 for this tenant. Once enabled, the tenant will persist this information into
     /// `index_part.json`, and it cannot be reversed.
-    pub rel_size_v2_enabled: Option<bool>,
+    pub rel_size_v2_enabled: bool,
 
     // gc-compaction related configs
     /// Enable automatic gc-compaction trigger on this tenant.
@@ -609,7 +609,7 @@ impl Default for TenantConfigToml {
             lsn_lease_length_for_ts: LsnLease::DEFAULT_LENGTH_FOR_TS,
             timeline_offloading: false,
             wal_receiver_protocol_override: None,
-            rel_size_v2_enabled: None,
+            rel_size_v2_enabled: true, // TODO: before merge the pull request set it to false
             gc_compaction_enabled: DEFAULT_GC_COMPACTION_ENABLED,
             gc_compaction_initial_threshold_kb: DEFAULT_GC_COMPACTION_INITIAL_THRESHOLD_KB,
             gc_compaction_ratio_percent: DEFAULT_GC_COMPACTION_RATIO_PERCENT,

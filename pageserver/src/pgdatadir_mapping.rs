@@ -23,13 +23,14 @@ use anyhow::{ensure, Context};
 use bytes::{Buf, Bytes, BytesMut};
 use enum_map::Enum;
 use itertools::Itertools;
-use pageserver_api::key::Key;
 use pageserver_api::key::{
     dbdir_key_range, rel_block_to_key, rel_dir_to_key, rel_key_range, rel_size_to_key,
-    relmap_file_key, repl_origin_key, repl_origin_key_range, slru_block_to_key, slru_dir_to_key,
-    slru_segment_key_range, slru_segment_size_to_key, twophase_file_key, twophase_key_range,
-    CompactKey, AUX_FILES_KEY, CHECKPOINT_KEY, CONTROLFILE_KEY, DBDIR_KEY, TWOPHASEDIR_KEY,
+    rel_tag_sparse_key_range, relmap_file_key, repl_origin_key, repl_origin_key_range,
+    slru_block_to_key, slru_dir_to_key, slru_segment_key_range, slru_segment_size_to_key,
+    twophase_file_key, twophase_key_range, CompactKey, AUX_FILES_KEY, CHECKPOINT_KEY,
+    CONTROLFILE_KEY, DBDIR_KEY, REL_EXISTS_MARKER, SPARSE_TOMBSTONE_MARKER, TWOPHASEDIR_KEY,
 };
+use pageserver_api::key::{rel_tag_sparse_key, Key};
 use pageserver_api::keyspace::SparseKeySpace;
 use pageserver_api::record::NeonWalRecord;
 use pageserver_api::reltag::{BlockNumber, RelTag, SlruKind};
@@ -490,12 +491,39 @@ impl Timeline {
         if !dbdirs.contains_key(&(tag.spcnode, tag.dbnode)) {
             return Ok(false);
         }
-        // fetch directory listing
+
+        // Read path: first read the old reldir key, and then
+        // merge the result with the new sparse keyspace.
+        // TODO: if IndexPart::rel_size_migration is `Migrated`, we only need to read from v2.
+
+        // fetch directory listing (old)
         let key = rel_dir_to_key(tag.spcnode, tag.dbnode);
         let buf = version.get(self, key, ctx).await?;
 
         let dir = RelDirectory::des(&buf)?;
-        Ok(dir.rels.contains(&(tag.relnode, tag.forknum)))
+        let exists_v1 = dir.rels.contains(&(tag.relnode, tag.forknum));
+
+        if self.get_rel_size_v2_enabled() {
+            // fetch directory listing (new)
+            let key = rel_tag_sparse_key(tag.spcnode, tag.dbnode, tag.relnode, tag.forknum);
+            let buf = version.sparse_get(self, key, ctx).await?;
+            let exists_v2 = buf.is_some();
+            debug_assert!(
+                !(exists_v1 && exists_v2),
+                "a rel exists in both v1 and v2, which indicates a bug"
+            );
+            Ok(exists_v1 || exists_v2)
+        } else {
+            Ok(exists_v1)
+        }
+    }
+
+    fn map_sparse_value(value: Bytes) -> Option<Bytes> {
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
     }
 
     /// Get a list of all existing relations in given tablespace and database.
@@ -513,12 +541,12 @@ impl Timeline {
         version: Version<'_>,
         ctx: &RequestContext,
     ) -> Result<HashSet<RelTag>, PageReconstructError> {
-        // fetch directory listing
+        // fetch directory listing (old)
         let key = rel_dir_to_key(spcnode, dbnode);
         let buf = version.get(self, key, ctx).await?;
 
         let dir = RelDirectory::des(&buf)?;
-        let rels: HashSet<RelTag> =
+        let rels_v1: HashSet<RelTag> =
             HashSet::from_iter(dir.rels.iter().map(|(relnode, forknum)| RelTag {
                 spcnode,
                 dbnode,
@@ -526,7 +554,44 @@ impl Timeline {
                 forknum: *forknum,
             }));
 
-        Ok(rels)
+        if self.get_rel_size_v2_enabled() {
+            // scan directory listing (new), merge with the old results
+            let key_range = rel_tag_sparse_key_range(spcnode, dbnode);
+            let io_concurrency = IoConcurrency::spawn_from_conf(
+                self.conf,
+                self.gate
+                    .enter()
+                    .map_err(|_| PageReconstructError::Cancelled)?,
+            );
+            let results = self
+                .scan(
+                    KeySpace::single(key_range),
+                    version.get_lsn(),
+                    ctx,
+                    io_concurrency,
+                )
+                .await?;
+            let mut rels = rels_v1;
+            for (key, val) in results {
+                let val = Self::map_sparse_value(val?);
+                if val.is_none() {
+                    continue;
+                }
+                assert_eq!(key.field6, 1);
+                assert_eq!(key.field2, spcnode);
+                assert_eq!(key.field3, dbnode);
+                let old = rels.insert(RelTag {
+                    spcnode,
+                    dbnode,
+                    relnode: key.field4,
+                    forknum: key.field5,
+                });
+                debug_assert!(!old, "duplicate reltag in v2");
+            }
+            Ok(rels)
+        } else {
+            Ok(rels_v1)
+        }
     }
 
     /// Get the whole SLRU segment
@@ -1137,7 +1202,11 @@ impl Timeline {
 
         let dense_keyspace = result.to_keyspace();
         let sparse_keyspace = SparseKeySpace(KeySpace {
-            ranges: vec![Key::metadata_aux_key_range(), repl_origin_key_range()],
+            ranges: vec![
+                Key::metadata_aux_key_range(),
+                repl_origin_key_range(),
+                Key::rel_dir_sparse_key_range(),
+            ],
         });
 
         if cfg!(debug_assertions) {
@@ -1631,6 +1700,7 @@ impl DatadirModification<'_> {
         }
         if r.is_none() {
             // Create RelDirectory
+            // TODO: if we have fully migrated to v2, no need to create this directory
             let buf = RelDirectory::ser(&RelDirectory {
                 rels: HashSet::new(),
             })?;
@@ -1751,8 +1821,8 @@ impl DatadirModification<'_> {
         // tablespace.  Create the reldir entry for it if so.
         let mut dbdir = DbDirectory::des(&self.get(DBDIR_KEY, ctx).await.context("read db")?)
             .context("deserialize db")?;
-        let rel_dir_key = rel_dir_to_key(rel.spcnode, rel.dbnode);
-        let mut rel_dir =
+
+        let dbdir_exists =
             if let hash_map::Entry::Vacant(e) = dbdir.dbdirs.entry((rel.spcnode, rel.dbnode)) {
                 // Didn't exist. Update dbdir
                 e.insert(false);
@@ -1760,29 +1830,54 @@ impl DatadirModification<'_> {
                 self.pending_directory_entries
                     .push((DirectoryKind::Db, dbdir.dbdirs.len()));
                 self.put(DBDIR_KEY, Value::Image(buf.into()));
-
-                // and create the RelDirectory
-                RelDirectory::default()
+                false
             } else {
-                // reldir already exists, fetch it
-                RelDirectory::des(&self.get(rel_dir_key, ctx).await.context("read db")?)
-                    .context("deserialize db")?
+                true
             };
+
+        let rel_dir_key = rel_dir_to_key(rel.spcnode, rel.dbnode);
+        let mut rel_dir = if !dbdir_exists {
+            // Create the RelDirectory
+            RelDirectory::default()
+        } else {
+            // reldir already exists, fetch it
+            RelDirectory::des(&self.get(rel_dir_key, ctx).await.context("read db")?)
+                .context("deserialize db")?
+        };
 
         // Add the new relation to the rel directory entry, and write it back
         if !rel_dir.rels.insert((rel.relnode, rel.forknum)) {
             return Err(RelationError::AlreadyExists);
         }
 
-        self.pending_directory_entries
-            .push((DirectoryKind::Rel, rel_dir.rels.len()));
+        if self.tline.get_rel_size_v2_enabled() {
+            let rel_dir_key = rel_tag_sparse_key(rel.spcnode, rel.dbnode, rel.relnode, rel.forknum);
+            // check if the rel_dir_key exists in v2
+            if self
+                .sparse_get(rel_dir_key, ctx)
+                .await
+                .map_err(|e| RelationError::Other(e.into()))?
+                .is_some()
+            {
+                return Err(RelationError::AlreadyExists);
+            }
+            self.put(rel_dir_key, Value::Image(REL_EXISTS_MARKER.clone()));
+            // We don't write `rel_dir.rels` back to the storage in the v2 path unless it's the initial creation.
+        }
 
-        self.put(
-            rel_dir_key,
-            Value::Image(Bytes::from(
-                RelDirectory::ser(&rel_dir).context("serialize")?,
-            )),
-        );
+        if !dbdir_exists || !self.tline.get_rel_size_v2_enabled() {
+            // TODO: if we have fully migrated to v2, no need to create this directory
+
+            self.pending_directory_entries
+                .push((DirectoryKind::Rel, rel_dir.rels.len()));
+
+            self.put(
+                rel_dir_key,
+                Value::Image(Bytes::from(
+                    RelDirectory::ser(&rel_dir).context("serialize")?,
+                )),
+            );
+        }
 
         // Put size
         let size_key = rel_size_to_key(rel);
@@ -1869,9 +1964,26 @@ impl DatadirModification<'_> {
 
             let mut dirty = false;
             for rel_tag in rel_tags {
-                if dir.rels.remove(&(rel_tag.relnode, rel_tag.forknum)) {
+                let found = if dir.rels.remove(&(rel_tag.relnode, rel_tag.forknum)) {
                     dirty = true;
+                    true
+                } else if self.tline.get_rel_size_v2_enabled() {
+                    // The rel is not found in the old reldir key, so we need to check the new sparse keyspace.
+                    // Note that a relation can only exist in one of the two keyspaces (guaranteed by the ingestion
+                    // logic).
+                    let key =
+                        rel_tag_sparse_key(spc_node, db_node, rel_tag.relnode, rel_tag.forknum);
+                    if self.sparse_get(key, ctx).await?.is_some() {
+                        // put tombstone
+                        self.put(key, Value::Image(SPARSE_TOMBSTONE_MARKER.clone()));
+                    }
+                    // no need to set dirty to true
+                    true
+                } else {
+                    false
+                };
 
+                if found {
                     // update logical size
                     let size_key = rel_size_to_key(rel_tag);
                     let old_size = self.get(size_key, ctx).await?.get_u32_le();
@@ -2270,6 +2382,22 @@ impl DatadirModification<'_> {
         self.tline.get(key, lsn, ctx).await
     }
 
+    /// Get a key from the sparse keyspace. Automatically converts the missing key error
+    /// and the empty value into None.
+    async fn sparse_get(
+        &self,
+        key: Key,
+        ctx: &RequestContext,
+    ) -> Result<Option<Bytes>, PageReconstructError> {
+        let val = self.get(key, ctx).await;
+        match val {
+            Ok(val) if val.is_empty() => Ok(None),
+            Ok(val) => Ok(Some(val)),
+            Err(PageReconstructError::MissingKey(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     fn put(&mut self, key: Key, val: Value) {
         if Self::is_data_key(&key) {
             self.put_data(key.to_compact(), val)
@@ -2340,6 +2468,23 @@ impl Version<'_> {
         match self {
             Version::Lsn(lsn) => timeline.get(key, *lsn, ctx).await,
             Version::Modified(modification) => modification.get(key, ctx).await,
+        }
+    }
+
+    /// Get a key from the sparse keyspace. Automatically converts the missing key error
+    /// and the empty value into None.
+    async fn sparse_get(
+        &self,
+        timeline: &Timeline,
+        key: Key,
+        ctx: &RequestContext,
+    ) -> Result<Option<Bytes>, PageReconstructError> {
+        let val = self.get(timeline, key, ctx).await;
+        match val {
+            Ok(val) if val.is_empty() => Ok(None),
+            Ok(val) => Ok(Some(val)),
+            Err(PageReconstructError::MissingKey(_)) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
