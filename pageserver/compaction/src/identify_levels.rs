@@ -82,12 +82,51 @@ where
         return Ok(None);
     }
 
-    // Walk the ranges in LSN order.
+    // Our goal is to find an LSN boundary such that:
     //
-    // ----- end_lsn
-    //  |
-    //  |
-    //  v
+    // - There are no layers that overlap with the LSN. In other words, the LSN neatly
+    //   divides the layers into two sets: those that are above it, and those that are
+    //   below it.
+    //
+    // - All the layers above it have LSN range smaller than lsn_max_size
+    //
+    // Our strategy is to walk through the layers ordered by end LSNs, and maintain two
+    // values:
+    //
+    // - The current best LSN boundary. We have already determined that there are no
+    //   layers that overlap with it.
+    //
+    // - Candidate LSN boundary. We have not found any layers that overlap with this LSN
+    //   yet, but we might still see one later, as we continue iterating.
+    //
+    // Whenever we find that there are no layers that overlap with the current candidate,
+    // we make that the new "current best" and start building a new candidate. We start
+    // with the caller-supplied `end_lsn` as the current best LSN boundary. All the layers
+    // are below that LSN, so that's a valid stopping point. If we see a layer that is too
+    // large, we discard the candidate that we were building and return with the "current
+    // best" that we have seen so far.
+    //
+    // Here's an illustration of the state after processing layers A, B, C, and D:
+    //
+    //            A   B   C   D   E
+    // 10000                           <-- end_lsn passed by caller
+    //  9000      +
+    //  8000      |   +   +
+    //  7000      +   |   |
+    //  6000          |   |
+    //  5000          |   +
+    //  4000          +
+    //  3000                  +          <-- current_best_start_lsn
+    //  3000                  |    +
+    //  2000                  |    |
+    //  2000                  +    |     <--- candidate_start_lsn
+    //  1000                       +
+    //
+    // When we saw layer D with end_lsn==3000, and had not seen any layers that cross that
+    // LSN, we knew that that is a valid stopping point. It became the new
+    // current_best_start_lsn, and the layer's start_lsn (2000) became the new
+    // candidate_start_lsn. Because layer E overlaps with it, it is not a valid return
+    // value, but we will not know that until processing layer E.
     //
     layers.sort_by_key(|l| l.lsn_range().end);
     let mut candidate_start_lsn = end_lsn;
@@ -134,7 +173,8 @@ where
 
             // Is it small enough to be considered part of this level?
             if r.end.0 - r.start.0 > lsn_max_size {
-                // Too large, this layer belongs to next level. Stop.
+                // Too large, this layer belongs to next level. Discard the candidate
+                // we were building and return with `current_best`.
                 trace!(
                     "too large {}, size {} vs {}",
                     l.short_id(),
