@@ -595,6 +595,8 @@ pageserver_connect(shardno_t shard_no, int elevel)
 	/* FALLTHROUGH */
 	case PS_Connecting_PageStream:
 	{
+		PGresult   *result;
+
 		neon_shard_log(shard_no, DEBUG5, "Connection state: Connecting_PageStream");
 
 		if (PQstatus(shard->conn) == CONNECTION_BAD)
@@ -634,6 +636,48 @@ pageserver_connect(shardno_t shard_no, int elevel)
 					return false;
 				}
 			}
+		}
+		result = PQgetResult(shard->conn);
+
+		if (!result)
+		{
+			CLEANUP_AND_DISCONNECT(shard);
+			neon_shard_log(shard_no, elevel,
+						   "could not complete handshake: unexpected end of data");
+			return false;
+		}
+
+		switch (PQresultStatus(result))
+		{
+		/*
+		 * We only expect COPY_BOTH, all other responses are indications of
+		 * problems out of our control
+		 */
+		case PGRES_COPY_BOTH:
+			break;
+		case PGRES_BAD_RESPONSE:
+		case PGRES_NONFATAL_ERROR:
+		case PGRES_FATAL_ERROR:
+			CLEANUP_AND_DISCONNECT(shard);
+			neon_shard_log(shard_no, elevel,
+						   "could not complete handshake: PageServer returned error: %s",
+						   PQresultErrorMessage(result));
+			PQclear(result);
+			return false;
+		case PGRES_EMPTY_QUERY:
+		case PGRES_COMMAND_OK:
+		case PGRES_TUPLES_OK:
+		case PGRES_COPY_OUT:
+		case PGRES_COPY_IN:
+		case PGRES_SINGLE_TUPLE:
+		case PGRES_PIPELINE_SYNC:
+		case PGRES_PIPELINE_ABORTED:
+			CLEANUP_AND_DISCONNECT(shard);
+			neon_shard_log(shard_no, elevel,
+						   "could not complete handshake: unexpected result type: %d",
+						   PQresultStatus(result));
+			PQclear(result);
+			return false;
 		}
 
 		shard->state = PS_Connected;
