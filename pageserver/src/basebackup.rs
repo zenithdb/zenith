@@ -13,7 +13,7 @@
 use anyhow::{anyhow, Context};
 use bytes::{BufMut, Bytes, BytesMut};
 use fail::fail_point;
-use pageserver_api::key::Key;
+use pageserver_api::key::{rel_block_to_key, Key};
 use postgres_ffi::pg_constants;
 use std::fmt::Write as FmtWrite;
 use std::time::{Instant, SystemTime};
@@ -498,13 +498,9 @@ where
             for blknum in startblk..endblk {
                 let img = self
                     .timeline
-                    .get_rel_page_at_lsn(
-                        src,
-                        blknum,
-                        Version::Lsn(self.lsn),
-                        self.ctx,
-                        self.io_concurrency.clone(),
-                    )
+                    // TODO: investigate using get_vectored for the entire startblk..endblk range.
+                    // But this code path is not on the critical path for most basebackups (?).
+                    .get(rel_block_to_key(src, blknum), self.lsn, self.ctx)
                     .await
                     .map_err(|e| BasebackupError::Server(e.into()))?;
                 segment_data.extend_from_slice(&img[..]);
