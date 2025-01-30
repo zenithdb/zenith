@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xl="http://www.w3.org/1999/xlink" xmlns:dc="http://purl.org/dc/elements/1.1/" version="1.1" viewBox="82 284 863 375" width="863" height="375">
+  <defs/>
+  <g id="01-basic-idea" stroke-opacity="1" stroke-dasharray="none" stroke="none" fill="none" fill-opacity="1">
+    <title>01-basic-idea</title>
+    <rect fill="white" x="82" y="284" width="863" height="375"/>
+    <g id="01-basic-idea_Layer_1">
+      <title>Layer 1</title>
+      <g id="Graphic_2">
+        <rect x="234" y="379.5" width="203.5" height="17.5" fill="white"/>
+        <rect x="234" y="379.5" width="203.5" height="17.5" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_3">
+        <rect x="453.5" y="379.5" width="203.5" height="17.5" fill="white"/>
+        <rect x="453.5" y="379.5" width="203.5" height="17.5" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_4">
+        <rect x="672.5" y="379.5" width="203.5" height="17.5" fill="white"/>
+        <rect x="672.5" y="379.5" width="203.5" height="17.5" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_5">
+        <rect x="234" y="288.5" width="127" height="77.5" fill="white"/>
+        <rect x="234" y="288.5" width="127" height="77.5" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_6">
+        <rect x="375" y="288.5" width="127" height="77.5" fill="white"/>
+        <rect x="375" y="288.5" width="127" height="77.5" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_7">
+        <rect x="516" y="288.5" width="127" height="77.5" fill="white"/>
+        <rect x="516" y="288.5" width="127" height="77.5" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_8">
+        <rect x="657" y="288.5" width="127" height="77.5" fill="white"/>
+        <rect x="657" y="288.5" width="127" height="77.5" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_9">
+        <rect x="798" y="288.5" width="78" height="77.5" fill="white"/>
+        <rect x="798" y="288.5" width="78" height="77.5" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Line_11">
+        <line x1="185.5" y1="326.75" x2="943.7734" y2="326.75" stroke="#7f8080" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_12">
+        <text transform="translate(87 318.026)" fill="black">
+          <tspan font-family="Helvetica Neue" font-size="16" fill="black" x="0" y="15" xml:space="preserve">GC Horizon</tspan>
+        </text>
+      </g>
+      <g id="Graphic_13">
+        <text transform="translate(106.41 372.886)" fill="black">
+          <tspan font-family="Helvetica Neue" font-size="16" fill="black" x="8.39" y="15" xml:space="preserve">Images </tspan>
+          <tspan font-family="Helvetica Neue" font-size="10" fill="black" x="29132252e-19" y="28.447998" xml:space="preserve">at earlier LSN</tspan>
+        </text>
+      </g>
+      <g id="Graphic_14">
+        <text transform="translate(121.92 289.578)" fill="black">
+          <tspan font-family="Helvetica Neue" font-size="16" fill="black" x="8739676e-19" y="15" xml:space="preserve">Deltas</tspan>
+        </text>
+      </g>
+      <g id="Graphic_15">
+        <path d="M 517.125 423.5 L 553.375 423.5 L 553.375 482 L 571.5 482 L 535.25 512 L 499 482 L 517.125 482 Z" fill="white"/>
+        <path d="M 517.125 423.5 L 553.375 423.5 L 553.375 482 L 571.5 482 L 535.25 512 L 499 482 L 517.125 482 Z" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_26">
+        <rect x="234" y="599.474" width="203.5" height="17.5" fill="white"/>
+        <rect x="234" y="599.474" width="203.5" height="17.5" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_25">
+        <rect x="453.5" y="599.474" width="203.5" height="17.5" fill="white"/>
+        <rect x="453.5" y="599.474" width="203.5" height="17.5" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_24">
+        <rect x="672.5" y="599.474" width="203.5" height="17.5" fill="white"/>
+        <rect x="672.5" y="599.474" width="203.5" height="17.5" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_23">
+        <rect x="234" y="533" width="127" height="52.974" fill="white"/>
+        <rect x="234" y="533" width="127" height="52.974" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_22">
+        <rect x="375" y="533" width="310.5" height="52.974" fill="white"/>
+        <rect x="375" y="533" width="310.5" height="52.974" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_21">
+        <rect x="702.5" y="533" width="173.5" height="52.974" fill="white"/>
+        <rect x="702.5" y="533" width="173.5" height="52.974" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Line_18">
+        <line x1="185.5" y1="607.724" x2="943.7734" y2="607.724" stroke="#7f8080" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+      </g>
+      <g id="Graphic_16">
+        <text transform="translate(121.92 538)" fill="black">
+          <tspan font-family="Helvetica Neue" font-size="16" fill="black" x="8739676e-19" y="15" xml:space="preserve">Deltas</tspan>
+        </text>
+      </g>
+      <g id="Graphic_27">
+        <text transform="translate(114.8 592.86)" fill="black">
+          <tspan font-family="Helvetica Neue" font-size="16" fill="black" x="3488765e-18" y="15" xml:space="preserve">Images </tspan>
+          <tspan font-family="Helvetica Neue" font-size="10" fill="black" x="4.01" y="28.447998" xml:space="preserve">at GC LSN</tspan>
+        </text>
+      </g>
+      <g id="Graphic_28">
+        <rect x="243.06836" y="300" width="624.3633" height="17.5" fill="#c0ffc0"/>
+        <text transform="translate(248.06836 301.068)" fill="black">
+          <tspan font-family="Helvetica Neue" font-size="13" fill="black" x="233.52364" y="12" xml:space="preserve">Deltas above GC Horizon</tspan>
+        </text>
+      </g>
+      <g id="Graphic_30">
+        <rect x="243.06836" y="335.5" width="624.3633" height="17.5" fill="#c0ffff"/>
+        <text transform="translate(248.06836 336.568)" fill="black">
+          <tspan font-family="Helvetica Neue" font-size="13" fill="black" x="233.89414" y="12" xml:space="preserve">Deltas below GC Horizon</tspan>
+        </text>
+      </g>
+      <g id="Graphic_32">
+        <rect x="243.06836" y="550.737" width="624.3633" height="17.5" fill="#c0ffc0"/>
+        <text transform="translate(248.06836 551.805)" fill="black">
+          <tspan font-family="Helvetica Neue" font-size="13" fill="black" x="233.52364" y="12" xml:space="preserve">Deltas above GC Horizon</tspan>
+        </text>
+      </g>
+      <g id="Graphic_33">
+        <rect x="304" y="630.474" width="485.5" height="28.447998" fill="#c0ffff"/>
+        <text transform="translate(309 637.016)" fill="black">
+          <tspan font-family="Helvetica Neue" font-size="13" fill="black" x="63.095" y="12" xml:space="preserve">Deltas and image below GC Horizon gets garbage-collected</tspan>
+        </text>
+      </g>
+      <g id="Graphic_34">
+        <text transform="translate(576.5 444.0325)" fill="black">
+          <tspan font-family="Helvetica Neue" font-size="12" fill="black" x="0" y="11" xml:space="preserve">WAL replay of deltas+image below GC Horizon</tspan>
+          <tspan font-family="Helvetica Neue" font-size="12" fill="black" x="0" y="25.336" xml:space="preserve">Reshuffle deltas</tspan>
+        </text>
+      </g>
+    </g>
+  </g>
+</svg>
