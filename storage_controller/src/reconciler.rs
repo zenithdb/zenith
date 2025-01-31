@@ -3,7 +3,7 @@ use crate::persistence::Persistence;
 use crate::{compute_hook, service};
 use pageserver_api::controller_api::{AvailabilityZone, PlacementPolicy};
 use pageserver_api::models::{
-    LocationConfig, LocationConfigMode, LocationConfigSecondary, TenantConfig,
+    LocationConfig, LocationConfigMode, LocationConfigSecondary, TenantConfig, TenantWaitLsnRequest,
 };
 use pageserver_api::shard::{ShardIdentity, TenantShardId};
 use pageserver_client::mgmt_api;
@@ -348,6 +348,32 @@ impl Reconciler {
         Ok(())
     }
 
+    async fn wait_lsn(
+        &self,
+        node: &Node,
+        tenant_shard_id: TenantShardId,
+        timelines: HashMap<TimelineId, Lsn>,
+    ) -> Result<StatusCode, ReconcileError> {
+        const TIMEOUT: Duration = Duration::from_secs(10);
+
+        let client = PageserverClient::new(
+            node.get_id(),
+            node.base_url(),
+            self.service_config.jwt_token.as_deref(),
+        );
+
+        client
+            .wait_lsn(
+                tenant_shard_id,
+                TenantWaitLsnRequest {
+                    timelines,
+                    timeout: TIMEOUT,
+                },
+            )
+            .await
+            .map_err(|e| e.into())
+    }
+
     async fn get_lsns(
         &self,
         tenant_shard_id: TenantShardId,
@@ -461,6 +487,39 @@ impl Reconciler {
         node: &Node,
         baseline: HashMap<TimelineId, Lsn>,
     ) -> anyhow::Result<()> {
+        // Signal to the pageserver that it should ingest up to the baseline LSNs.
+        loop {
+            match self.wait_lsn(node, tenant_shard_id, baseline.clone()).await {
+                Ok(StatusCode::OK) => {
+                    // Everything is caught up
+                    return Ok(());
+                }
+                Ok(StatusCode::ACCEPTED) => {
+                    // Some timelines are not caught up yet.
+                    // They'll be polled below.
+                    break;
+                }
+                Ok(StatusCode::NOT_FOUND) => {
+                    // None of the timelines are present on the pageserver.
+                    // This is correct if they've all been deleted, but
+                    // let let the polling loop below cross check.
+                    break;
+                }
+                Ok(status_code) => {
+                    tracing::warn!(
+                        "Unexpected status code ({status_code}) returned by wait_lsn endpoint"
+                    );
+                    break;
+                }
+                Err(e) => {
+                    tracing::info!("🕑 Can't trigger LSN wait on {node} yet, waiting ({e})",);
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+            }
+        }
+
+        // Poll the LSNs until they catch up
         loop {
             let latest = match self.get_lsns(tenant_shard_id, node).await {
                 Ok(l) => l,

@@ -1,9 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
-use axum::{
-    async_trait,
-    extract::{rejection::JsonRejection, FromRequest, Request},
-};
+use axum::extract::{rejection::JsonRejection, FromRequest, Request};
 use compute_api::responses::GenericAPIError;
 use http::StatusCode;
 
@@ -12,7 +9,6 @@ use http::StatusCode;
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Json<T>(pub T);
 
-#[async_trait]
 impl<S, T> FromRequest<S> for Json<T>
 where
     axum::Json<T>: FromRequest<S, Rejection = JsonRejection>,

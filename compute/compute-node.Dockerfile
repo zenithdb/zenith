@@ -5,6 +5,7 @@ ARG TAG=pinned
 ARG BUILD_TAG
 ARG DEBIAN_VERSION=bookworm
 ARG DEBIAN_FLAVOR=${DEBIAN_VERSION}-slim
+ARG ALPINE_CURL_VERSION=8.11.1
 
 #########################################################################################
 #
@@ -16,6 +17,10 @@ ARG DEBIAN_VERSION
 
 # Use strict mode for bash to catch errors early
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries && \
+    echo -e "retry_connrefused = on\ntimeout=15\ntries=5\n" > /root/.wgetrc \
+    echo -e "--retry-connrefused\n--connect-timeout 15\n--retry 5\n--max-time 300\n" > /root/.curlrc
 
 RUN case $DEBIAN_VERSION in \
       # Version-specific installs for Bullseye (PG14-PG16):
@@ -837,6 +842,8 @@ ENV PATH="/home/nonroot/.cargo/bin:$PATH"
 USER nonroot
 WORKDIR /home/nonroot
 
+RUN echo -e "--retry-connrefused\n--connect-timeout 15\n--retry 5\n--max-time 300\n" > /home/nonroot/.curlrc
+
 RUN curl -sSO https://static.rust-lang.org/rustup/dist/$(uname -m)-unknown-linux-gnu/rustup-init && \
     chmod +x rustup-init && \
     ./rustup-init -y --no-modify-path --profile minimal --default-toolchain stable && \
@@ -872,6 +879,8 @@ ENV HOME=/home/nonroot
 ENV PATH="/home/nonroot/.cargo/bin:$PATH"
 USER nonroot
 WORKDIR /home/nonroot
+
+RUN echo -e "--retry-connrefused\n--connect-timeout 15\n--retry 5\n--max-time 300\n" > /home/nonroot/.curlrc
 
 RUN curl -sSO https://static.rust-lang.org/rustup/dist/$(uname -m)-unknown-linux-gnu/rustup-init && \
     chmod +x rustup-init && \
@@ -1131,8 +1140,8 @@ RUN wget https://github.com/pgpartman/pg_partman/archive/refs/tags/v5.1.0.tar.gz
 FROM rust-extensions-build AS pg-mooncake-build
 ARG PG_VERSION
 
-RUN wget https://github.com/Mooncake-Labs/pg_mooncake/releases/download/v0.1.0/pg_mooncake-0.1.0.tar.gz -O pg_mooncake.tar.gz && \
-    echo "eafd059b77f541f11525eb8affcd66a176968cbd8fe7c0d436e733f2aa4da59f pg_mooncake.tar.gz" | sha256sum --check && \
+RUN wget https://github.com/Mooncake-Labs/pg_mooncake/releases/download/v0.1.1/pg_mooncake-0.1.1.tar.gz -O pg_mooncake.tar.gz && \
+    echo "a2d16eff7948dde64f072609ca5d2962d6b4d07cb89d45952add473529c55f55 pg_mooncake.tar.gz" | sha256sum --check && \
     mkdir pg_mooncake-src && cd pg_mooncake-src && tar xzf ../pg_mooncake.tar.gz --strip-components=1 -C . && \
     make release -j $(getconf _NPROCESSORS_ONLN) && \
     make install -j $(getconf _NPROCESSORS_ONLN) && \
@@ -1242,6 +1251,7 @@ RUN mold -run cargo build --locked --profile release-line-debug-size-lto --bin c
 
 FROM debian:$DEBIAN_FLAVOR AS pgbouncer
 RUN set -e \
+    && echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
     && apt update \
     && apt install --no-install-suggests --no-install-recommends -y \
         build-essential \
@@ -1266,15 +1276,31 @@ RUN set -e \
 
 #########################################################################################
 #
-# Layers "postgres-exporter" and "sql-exporter"
+# Layer "exporters"
 #
 #########################################################################################
-
-FROM quay.io/prometheuscommunity/postgres-exporter:v0.16.0 AS postgres-exporter
-
-# Keep the version the same as in build-tools.Dockerfile and
-# test_runner/regress/test_compute_metrics.py.
-FROM burningalchemist/sql_exporter:0.17.0 AS sql-exporter
+FROM alpine/curl:${ALPINE_CURL_VERSION} AS exporters
+ARG TARGETARCH
+# Keep sql_exporter version same as in build-tools.Dockerfile and
+# test_runner/regress/test_compute_metrics.py
+RUN if [ "$TARGETARCH" = "amd64" ]; then\
+        postgres_exporter_sha256='027e75dda7af621237ff8f5ac66b78a40b0093595f06768612b92b1374bd3105';\
+        pgbouncer_exporter_sha256='c9f7cf8dcff44f0472057e9bf52613d93f3ffbc381ad7547a959daa63c5e84ac';\
+        sql_exporter_sha256='38e439732bbf6e28ca4a94d7bc3686d3fa1abdb0050773d5617a9efdb9e64d08';\
+    else\
+        postgres_exporter_sha256='131a376d25778ff9701a4c81f703f179e0b58db5c2c496e66fa43f8179484786';\
+        pgbouncer_exporter_sha256='217c4afd7e6492ae904055bc14fe603552cf9bac458c063407e991d68c519da3';\
+        sql_exporter_sha256='11918b00be6e2c3a67564adfdb2414fdcbb15a5db76ea17d1d1a944237a893c6';\
+    fi\
+    && curl -sL https://github.com/prometheus-community/postgres_exporter/releases/download/v0.16.0/postgres_exporter-0.16.0.linux-${TARGETARCH}.tar.gz\
+     | tar xzf - --strip-components=1 -C.\
+    && curl -sL https://github.com/prometheus-community/pgbouncer_exporter/releases/download/v0.10.2/pgbouncer_exporter-0.10.2.linux-${TARGETARCH}.tar.gz\
+     | tar xzf - --strip-components=1 -C.\
+    && curl -sL https://github.com/burningalchemist/sql_exporter/releases/download/0.17.0/sql_exporter-0.17.0.linux-${TARGETARCH}.tar.gz\
+     | tar xzf - --strip-components=1 -C.\
+    && echo "${postgres_exporter_sha256} postgres_exporter" | sha256sum -c -\
+    && echo "${pgbouncer_exporter_sha256} pgbouncer_exporter" | sha256sum -c -\
+    && echo "${sql_exporter_sha256} sql_exporter" | sha256sum -c -
 
 #########################################################################################
 #
@@ -1319,6 +1345,7 @@ FROM neon-pg-ext-build AS neon-pg-ext-test
 ARG PG_VERSION
 RUN mkdir /ext-src
 
+COPY --from=pg-build /postgres /postgres
 #COPY --from=postgis-build /postgis.tar.gz /ext-src/
 #COPY --from=postgis-build /sfcgal/* /usr
 COPY --from=plv8-build /plv8.tar.gz /ext-src/
@@ -1329,7 +1356,8 @@ COPY --from=vector-pg-build /pgvector.patch /ext-src/
 COPY --from=pgjwt-pg-build /pgjwt.tar.gz /ext-src
 #COPY --from=pgrag-pg-build /usr/local/pgsql/ /usr/local/pgsql/
 #COPY --from=pg-jsonschema-pg-build /home/nonroot/pg_jsonschema.tar.gz /ext-src
-#COPY --from=pg-graphql-pg-build /home/nonroot/pg_graphql.tar.gz /ext-src
+COPY --from=pg-graphql-pg-build /home/nonroot/pg_graphql.tar.gz /ext-src
+COPY compute/patches/pg_graphql.patch /ext-src
 #COPY --from=pg-tiktoken-pg-build /home/nonroot/pg_tiktoken.tar.gz /ext-src
 COPY --from=hypopg-pg-build /hypopg.tar.gz /ext-src
 COPY --from=pg-hashids-pg-build /pg_hashids.tar.gz /ext-src
@@ -1363,6 +1391,7 @@ RUN cd /ext-src/pgvector-src && patch -p1 <../pgvector.patch
 RUN cd /ext-src/pg_hint_plan-src && patch -p1 < /ext-src/pg_hint_plan_${PG_VERSION}.patch
 COPY --chmod=755 docker-compose/run-tests.sh /run-tests.sh
 RUN patch -p1 </ext-src/pg_cron.patch
+RUN cd /ext-src/pg_graphql-src && patch -p1 </ext-src/pg_graphql.patch
 ENV PATH=/usr/local/pgsql/bin:$PATH
 ENV PGHOST=compute
 ENV PGPORT=55433
@@ -1400,9 +1429,10 @@ COPY --chmod=0666 --chown=postgres compute/etc/pgbouncer.ini /etc/pgbouncer.ini
 COPY --from=compute-tools --chown=postgres /home/nonroot/target/release-line-debug-size-lto/local_proxy /usr/local/bin/local_proxy
 RUN mkdir -p /etc/local_proxy && chown postgres:postgres /etc/local_proxy
 
-# Metrics exporter binaries and  configuration files
-COPY --from=postgres-exporter /bin/postgres_exporter /bin/postgres_exporter
-COPY --from=sql-exporter      /bin/sql_exporter      /bin/sql_exporter
+# Metrics exporter binaries and configuration files
+COPY --from=exporters ./postgres_exporter /bin/postgres_exporter
+COPY --from=exporters ./pgbouncer_exporter /bin/pgbouncer_exporter
+COPY --from=exporters ./sql_exporter /bin/sql_exporter
 
 COPY --chown=postgres compute/etc/postgres_exporter.yml /etc/postgres_exporter.yml
 
@@ -1424,6 +1454,8 @@ RUN mkdir /usr/local/download_extensions && chown -R postgres:postgres /usr/loca
 # libboost* for rdkit
 # ca-certificates for communicating with s3 by compute_ctl
 
+RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries && \
+    echo -e "retry_connrefused = on\ntimeout=15\ntries=5\n" > /root/.wgetrc
 
 RUN apt update && \
     case $DEBIAN_VERSION in \
@@ -1480,7 +1512,7 @@ RUN set -ex; \
     else \
         echo "Unsupported architecture: ${TARGETARCH}"; exit 1; \
     fi; \
-    curl -L "https://awscli.amazonaws.com/awscli-exe-linux-${TARGETARCH_ALT}-2.17.5.zip" -o /tmp/awscliv2.zip; \
+    curl --retry 5 -L "https://awscli.amazonaws.com/awscli-exe-linux-${TARGETARCH_ALT}-2.17.5.zip" -o /tmp/awscliv2.zip; \
     echo "${CHECKSUM}  /tmp/awscliv2.zip" | sha256sum -c -; \
     unzip /tmp/awscliv2.zip -d /tmp/awscliv2; \
     /tmp/awscliv2/aws/install; \

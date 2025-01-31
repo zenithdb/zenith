@@ -28,11 +28,6 @@ class EndpointHttpClient(requests.Session):
         res.raise_for_status()
         return res.text
 
-    def installed_extensions(self):
-        res = self.get(f"http://localhost:{self.port}/installed_extensions")
-        res.raise_for_status()
-        return res.json()
-
     def extensions(self, extension: str, version: str, database: str):
         body = {
             "extension": extension,

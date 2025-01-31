@@ -37,6 +37,8 @@ use remote_timeline_client::manifest::{
     OffloadedTimelineManifest, TenantManifest, LATEST_TENANT_MANIFEST_VERSION,
 };
 use remote_timeline_client::UploadQueueNotReadyError;
+use remote_timeline_client::FAILED_REMOTE_OP_RETRIES;
+use remote_timeline_client::FAILED_UPLOAD_WARN_THRESHOLD;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
@@ -2424,7 +2426,7 @@ impl Tenant {
         // Make sure the freeze_and_flush reaches remote storage.
         tline.remote_client.wait_completion().await.unwrap();
 
-        let tl = uninit_tl.finish_creation()?;
+        let tl = uninit_tl.finish_creation().await?;
         // The non-test code would call tl.activate() here.
         tl.set_state(TimelineState::Active);
         Ok(tl)
@@ -2558,7 +2560,12 @@ impl Tenant {
                     // sizes etc. and that would get confused if the previous page versions
                     // are not in the repository yet.
                     ancestor_timeline
-                        .wait_lsn(*lsn, timeline::WaitLsnWaiter::Tenant, ctx)
+                        .wait_lsn(
+                            *lsn,
+                            timeline::WaitLsnWaiter::Tenant,
+                            timeline::WaitLsnTimeout::Default,
+                            ctx,
+                        )
                         .await
                         .map_err(|e| match e {
                             e @ (WaitLsnError::Timeout(_) | WaitLsnError::BadState { .. }) => {
@@ -3809,6 +3816,13 @@ impl Tenant {
             .unwrap_or(self.conf.default_tenant_conf.compaction_threshold)
     }
 
+    pub fn get_compaction_upper_limit(&self) -> usize {
+        let tenant_conf = self.tenant_conf.load().tenant_conf.clone();
+        tenant_conf
+            .compaction_upper_limit
+            .unwrap_or(self.conf.default_tenant_conf.compaction_upper_limit)
+    }
+
     pub fn get_gc_horizon(&self) -> u64 {
         let tenant_conf = self.tenant_conf.load().tenant_conf.clone();
         tenant_conf
@@ -4688,7 +4702,7 @@ impl Tenant {
             )
             .await?;
 
-        let new_timeline = uninitialized_timeline.finish_creation()?;
+        let new_timeline = uninitialized_timeline.finish_creation().await?;
 
         // Root timeline gets its layers during creation and uploads them along with the metadata.
         // A branch timeline though, when created, can get no writes for some time, hence won't get any layers created.
@@ -4878,10 +4892,11 @@ impl Tenant {
         }
 
         // this new directory is very temporary, set to remove it immediately after bootstrap, we don't need it
+        let pgdata_path_deferred = pgdata_path.clone();
         scopeguard::defer! {
-            if let Err(e) = fs::remove_dir_all(&pgdata_path) {
+            if let Err(e) = fs::remove_dir_all(&pgdata_path_deferred) {
                 // this is unlikely, but we will remove the directory on pageserver restart or another bootstrap call
-                error!("Failed to remove temporary initdb directory '{pgdata_path}': {e}");
+                error!("Failed to remove temporary initdb directory '{pgdata_path_deferred}': {e}");
             }
         }
         if let Some(existing_initdb_timeline_id) = load_existing_initdb {
@@ -4948,7 +4963,7 @@ impl Tenant {
             pgdata_lsn,
             pg_version,
         );
-        let raw_timeline = self
+        let mut raw_timeline = self
             .prepare_new_timeline(
                 timeline_id,
                 &new_metadata,
@@ -4959,42 +4974,33 @@ impl Tenant {
             .await?;
 
         let tenant_shard_id = raw_timeline.owning_tenant.tenant_shard_id;
-        let unfinished_timeline = raw_timeline.raw_timeline()?;
-
-        // Flush the new layer files to disk, before we make the timeline as available to
-        // the outside world.
-        //
-        // Flush loop needs to be spawned in order to be able to flush.
-        unfinished_timeline.maybe_spawn_flush_loop();
-
-        import_datadir::import_timeline_from_postgres_datadir(
-            unfinished_timeline,
-            &pgdata_path,
-            pgdata_lsn,
-            ctx,
-        )
-        .await
-        .with_context(|| {
-            format!("Failed to import pgdatadir for timeline {tenant_shard_id}/{timeline_id}")
-        })?;
-
-        fail::fail_point!("before-checkpoint-new-timeline", |_| {
-            Err(CreateTimelineError::Other(anyhow::anyhow!(
-                "failpoint before-checkpoint-new-timeline"
-            )))
-        });
-
-        unfinished_timeline
-            .freeze_and_flush()
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to flush after pgdatadir import for timeline {tenant_shard_id}/{timeline_id}"
+        raw_timeline
+            .write(|unfinished_timeline| async move {
+                import_datadir::import_timeline_from_postgres_datadir(
+                    &unfinished_timeline,
+                    &pgdata_path,
+                    pgdata_lsn,
+                    ctx,
                 )
-            })?;
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to import pgdatadir for timeline {tenant_shard_id}/{timeline_id}"
+                    )
+                })?;
+
+                fail::fail_point!("before-checkpoint-new-timeline", |_| {
+                    Err(CreateTimelineError::Other(anyhow::anyhow!(
+                        "failpoint before-checkpoint-new-timeline"
+                    )))
+                });
+
+                Ok(())
+            })
+            .await?;
 
         // All done!
-        let timeline = raw_timeline.finish_creation()?;
+        let timeline = raw_timeline.finish_creation().await?;
 
         // Callers are responsible to wait for uploads to complete and for activating the timeline.
 
@@ -5308,27 +5314,37 @@ impl Tenant {
             return Ok(());
         }
 
-        upload_tenant_manifest(
-            &self.remote_storage,
-            &self.tenant_shard_id,
-            self.generation,
-            &manifest,
+        // Remote storage does no retries internally, so wrap it
+        match backoff::retry(
+            || async {
+                upload_tenant_manifest(
+                    &self.remote_storage,
+                    &self.tenant_shard_id,
+                    self.generation,
+                    &manifest,
+                    &self.cancel,
+                )
+                .await
+            },
+            |_e| self.cancel.is_cancelled(),
+            FAILED_UPLOAD_WARN_THRESHOLD,
+            FAILED_REMOTE_OP_RETRIES,
+            "uploading tenant manifest",
             &self.cancel,
         )
         .await
-        .map_err(|e| {
-            if self.cancel.is_cancelled() {
-                TenantManifestError::Cancelled
-            } else {
-                TenantManifestError::RemoteStorage(e)
+        {
+            None => Err(TenantManifestError::Cancelled),
+            Some(Err(_)) if self.cancel.is_cancelled() => Err(TenantManifestError::Cancelled),
+            Some(Err(e)) => Err(TenantManifestError::RemoteStorage(e)),
+            Some(Ok(_)) => {
+                // Store the successfully uploaded manifest, so that future callers can avoid
+                // re-uploading the same thing.
+                *guard = Some(manifest);
+
+                Ok(())
             }
-        })?;
-
-        // Store the successfully uploaded manifest, so that future callers can avoid
-        // re-uploading the same thing.
-        *guard = Some(manifest);
-
-        Ok(())
+        }
     }
 }
 
@@ -5452,7 +5468,11 @@ pub(crate) mod harness {
                 compaction_target_size: Some(tenant_conf.compaction_target_size),
                 compaction_period: Some(tenant_conf.compaction_period),
                 compaction_threshold: Some(tenant_conf.compaction_threshold),
+                compaction_upper_limit: Some(tenant_conf.compaction_upper_limit),
                 compaction_algorithm: Some(tenant_conf.compaction_algorithm),
+                l0_flush_delay_threshold: tenant_conf.l0_flush_delay_threshold,
+                l0_flush_stall_threshold: tenant_conf.l0_flush_stall_threshold,
+                l0_flush_wait_upload: Some(tenant_conf.l0_flush_wait_upload),
                 gc_horizon: Some(tenant_conf.gc_horizon),
                 gc_period: Some(tenant_conf.gc_period),
                 image_creation_threshold: Some(tenant_conf.image_creation_threshold),

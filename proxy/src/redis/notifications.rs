@@ -6,18 +6,14 @@ use pq_proto::CancelKeyData;
 use redis::aio::PubSub;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
-use tracing::Instrument;
 use uuid::Uuid;
 
 use super::connection_with_credentials_provider::ConnectionWithCredentialsProvider;
 use crate::cache::project_info::ProjectInfoCache;
-use crate::cancellation::{CancelMap, CancellationHandler};
-use crate::config::ProxyConfig;
 use crate::intern::{ProjectIdInt, RoleNameInt};
 use crate::metrics::{Metrics, RedisErrors, RedisEventsCount};
 
 const CPLANE_CHANNEL_NAME: &str = "neondb-proxy-ws-updates";
-pub(crate) const PROXY_CHANNEL_NAME: &str = "neondb-proxy-to-proxy-updates";
 const RECONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const INVALIDATION_LAG: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -25,8 +21,6 @@ async fn try_connect(client: &ConnectionWithCredentialsProvider) -> anyhow::Resu
     let mut conn = client.get_async_pubsub().await?;
     tracing::info!("subscribing to a channel `{CPLANE_CHANNEL_NAME}`");
     conn.subscribe(CPLANE_CHANNEL_NAME).await?;
-    tracing::info!("subscribing to a channel `{PROXY_CHANNEL_NAME}`");
-    conn.subscribe(PROXY_CHANNEL_NAME).await?;
     Ok(conn)
 }
 
@@ -71,8 +65,6 @@ pub(crate) enum Notification {
         deserialize_with = "deserialize_json_string"
     )]
     PasswordUpdate { password_update: PasswordUpdate },
-    #[serde(rename = "/cancel_session")]
-    Cancel(CancelSession),
 
     #[serde(
         other,
@@ -138,7 +130,6 @@ where
 
 struct MessageHandler<C: ProjectInfoCache + Send + Sync + 'static> {
     cache: Arc<C>,
-    cancellation_handler: Arc<CancellationHandler<()>>,
     region_id: String,
 }
 
@@ -146,23 +137,14 @@ impl<C: ProjectInfoCache + Send + Sync + 'static> Clone for MessageHandler<C> {
     fn clone(&self) -> Self {
         Self {
             cache: self.cache.clone(),
-            cancellation_handler: self.cancellation_handler.clone(),
             region_id: self.region_id.clone(),
         }
     }
 }
 
 impl<C: ProjectInfoCache + Send + Sync + 'static> MessageHandler<C> {
-    pub(crate) fn new(
-        cache: Arc<C>,
-        cancellation_handler: Arc<CancellationHandler<()>>,
-        region_id: String,
-    ) -> Self {
-        Self {
-            cache,
-            cancellation_handler,
-            region_id,
-        }
+    pub(crate) fn new(cache: Arc<C>, region_id: String) -> Self {
+        Self { cache, region_id }
     }
 
     pub(crate) async fn increment_active_listeners(&self) {
@@ -207,46 +189,6 @@ impl<C: ProjectInfoCache + Send + Sync + 'static> MessageHandler<C> {
 
         tracing::debug!(?msg, "received a message");
         match msg {
-            Notification::Cancel(cancel_session) => {
-                tracing::Span::current().record(
-                    "session_id",
-                    tracing::field::display(cancel_session.session_id),
-                );
-                Metrics::get()
-                    .proxy
-                    .redis_events_count
-                    .inc(RedisEventsCount::CancelSession);
-                if let Some(cancel_region) = cancel_session.region_id {
-                    // If the message is not for this region, ignore it.
-                    if cancel_region != self.region_id {
-                        return Ok(());
-                    }
-                }
-
-                // TODO: Remove unspecified peer_addr after the complete migration to the new format
-                let peer_addr = cancel_session
-                    .peer_addr
-                    .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
-                let cancel_span = tracing::span!(parent: None, tracing::Level::INFO, "cancel_session", session_id = ?cancel_session.session_id);
-                cancel_span.follows_from(tracing::Span::current());
-                // This instance of cancellation_handler doesn't have a RedisPublisherClient so it can't publish the message.
-                match self
-                    .cancellation_handler
-                    .cancel_session(
-                        cancel_session.cancel_key_data,
-                        uuid::Uuid::nil(),
-                        peer_addr,
-                        cancel_session.peer_addr.is_some(),
-                    )
-                    .instrument(cancel_span)
-                    .await
-                {
-                    Ok(()) => {}
-                    Err(e) => {
-                        tracing::warn!("failed to cancel session: {e}");
-                    }
-                }
-            }
             Notification::AllowedIpsUpdate { .. }
             | Notification::PasswordUpdate { .. }
             | Notification::BlockPublicOrVpcAccessUpdated { .. }
@@ -293,7 +235,6 @@ fn invalidate_cache<C: ProjectInfoCache>(cache: Arc<C>, msg: Notification) {
                 password_update.project_id,
                 password_update.role_name,
             ),
-        Notification::Cancel(_) => unreachable!("cancel message should be handled separately"),
         Notification::BlockPublicOrVpcAccessUpdated { .. } => {
             // https://github.com/neondatabase/neon/pull/10073
         }
@@ -323,8 +264,8 @@ async fn handle_messages<C: ProjectInfoCache + Send + Sync + 'static>(
             }
             Err(e) => {
                 tracing::error!(
-            "failed to connect to redis: {e}, will try to reconnect in {RECONNECT_TIMEOUT:#?}"
-        );
+                    "failed to connect to redis: {e}, will try to reconnect in {RECONNECT_TIMEOUT:#?}"
+                );
                 tokio::time::sleep(RECONNECT_TIMEOUT).await;
                 continue;
             }
@@ -350,21 +291,14 @@ async fn handle_messages<C: ProjectInfoCache + Send + Sync + 'static>(
 /// Handle console's invalidation messages.
 #[tracing::instrument(name = "redis_notifications", skip_all)]
 pub async fn task_main<C>(
-    config: &'static ProxyConfig,
     redis: ConnectionWithCredentialsProvider,
     cache: Arc<C>,
-    cancel_map: CancelMap,
     region_id: String,
 ) -> anyhow::Result<Infallible>
 where
     C: ProjectInfoCache + Send + Sync + 'static,
 {
-    let cancellation_handler = Arc::new(CancellationHandler::<()>::new(
-        &config.connect_to_compute,
-        cancel_map,
-        crate::metrics::CancellationSource::FromRedis,
-    ));
-    let handler = MessageHandler::new(cache, cancellation_handler, region_id);
+    let handler = MessageHandler::new(cache, region_id);
     // 6h - 1m.
     // There will be 1 minute overlap between two tasks. But at least we can be sure that no message is lost.
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 60 * 60 - 60));
@@ -439,35 +373,6 @@ mod tests {
                 }
             }
         );
-
-        Ok(())
-    }
-    #[test]
-    fn parse_cancel_session() -> anyhow::Result<()> {
-        let cancel_key_data = CancelKeyData {
-            backend_pid: 42,
-            cancel_key: 41,
-        };
-        let uuid = uuid::Uuid::new_v4();
-        let msg = Notification::Cancel(CancelSession {
-            cancel_key_data,
-            region_id: None,
-            session_id: uuid,
-            peer_addr: None,
-        });
-        let text = serde_json::to_string(&msg)?;
-        let result: Notification = serde_json::from_str(&text)?;
-        assert_eq!(msg, result);
-
-        let msg = Notification::Cancel(CancelSession {
-            cancel_key_data,
-            region_id: Some("region".to_string()),
-            session_id: uuid,
-            peer_addr: None,
-        });
-        let text = serde_json::to_string(&msg)?;
-        let result: Notification = serde_json::from_str(&text)?;
-        assert_eq!(msg, result,);
 
         Ok(())
     }

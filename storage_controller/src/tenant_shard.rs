@@ -1806,7 +1806,7 @@ impl TenantShard {
                         .get(&node_id)
                         .expect("referenced node exists")
                         .get_availability_zone_id(),
-                ) == self.intent.preferred_az_id.as_ref()
+                ) != self.intent.preferred_az_id.as_ref()
             })
             .unwrap_or(false)
     }

@@ -33,6 +33,7 @@ use utils::sync::gate::GateGuard;
 
 use utils::lsn::Lsn;
 
+pub use batch_split_writer::{BatchLayerWriter, SplitDeltaLayerWriter, SplitImageLayerWriter};
 pub use delta_layer::{DeltaLayer, DeltaLayerWriter, ValueRef};
 pub use image_layer::{ImageLayer, ImageLayerWriter};
 pub use inmemory_layer::InMemoryLayer;
@@ -77,6 +78,16 @@ where
 pub(crate) struct ValueReconstructState {
     pub(crate) records: Vec<(Lsn, NeonWalRecord)>,
     pub(crate) img: Option<(Lsn, Bytes)>,
+}
+
+impl ValueReconstructState {
+    /// Returns the number of page deltas applied to the page image.
+    pub fn num_deltas(&self) -> usize {
+        match self.img {
+            Some(_) => self.records.len(),
+            None => self.records.len() - 1, // omit will_init record
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

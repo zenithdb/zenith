@@ -29,6 +29,7 @@ impl Clone for Credentials {
 /// Provides PubSub connection without credentials refresh.
 pub struct ConnectionWithCredentialsProvider {
     credentials: Credentials,
+    // TODO: with more load on the connection, we should consider using a connection pool
     con: Option<MultiplexedConnection>,
     refresh_token_task: Option<JoinHandle<()>>,
     mutex: tokio::sync::Mutex<()>,

@@ -763,4 +763,19 @@ impl Client {
             .await
             .map_err(Error::ReceiveBody)
     }
+
+    pub async fn wait_lsn(
+        &self,
+        tenant_shard_id: TenantShardId,
+        request: TenantWaitLsnRequest,
+    ) -> Result<StatusCode> {
+        let uri = format!(
+            "{}/v1/tenant/{tenant_shard_id}/wait_lsn",
+            self.mgmt_api_endpoint,
+        );
+
+        self.request_noerror(Method::POST, uri, request)
+            .await
+            .map(|resp| resp.status())
+    }
 }

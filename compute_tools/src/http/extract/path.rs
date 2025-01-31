@@ -1,9 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
-use axum::{
-    async_trait,
-    extract::{rejection::PathRejection, FromRequestParts},
-};
+use axum::extract::{rejection::PathRejection, FromRequestParts};
 use compute_api::responses::GenericAPIError;
 use http::{request::Parts, StatusCode};
 
@@ -12,7 +9,6 @@ use http::{request::Parts, StatusCode};
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Path<T>(pub T);
 
-#[async_trait]
 impl<S, T> FromRequestParts<S> for Path<T>
 where
     axum::extract::Path<T>: FromRequestParts<S, Rejection = PathRejection>,

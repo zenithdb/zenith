@@ -3,6 +3,10 @@ ARG DEBIAN_VERSION=bookworm
 FROM debian:bookworm-slim AS pgcopydb_builder
 ARG DEBIAN_VERSION
 
+RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries && \
+    echo -e "retry_connrefused = on\ntimeout=15\ntries=5\n" > /root/.wgetrc \
+    echo -e "--retry-connrefused\n--connect-timeout 15\n--retry 5\n--max-time 300\n" > /root/.curlrc
+
 RUN if [ "${DEBIAN_VERSION}" = "bookworm" ]; then \
         set -e && \
         apt update && \
@@ -60,6 +64,10 @@ RUN mkdir -p /pgcopydb/bin && \
 
 COPY --from=pgcopydb_builder /usr/lib/postgresql/16/bin/pgcopydb /pgcopydb/bin/pgcopydb
 COPY --from=pgcopydb_builder /pgcopydb/lib/libpq.so.5 /pgcopydb/lib/libpq.so.5
+
+RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries && \
+    echo -e "retry_connrefused = on\ntimeout=15\ntries=5\n" > /root/.wgetrc \
+    echo -e "--retry-connrefused\n--connect-timeout 15\n--retry 5\n--max-time 300\n" > /root/.curlrc
 
 # System deps
 #
@@ -217,6 +225,8 @@ RUN wget -O /tmp/libicu-${ICU_VERSION}.tgz https://github.com/unicode-org/icu/re
 # Switch to nonroot user
 USER nonroot:nonroot
 WORKDIR /home/nonroot
+
+RUN echo -e "--retry-connrefused\n--connect-timeout 15\n--retry 5\n--max-time 300\n" > /home/nonroot/.curlrc
 
 # Python
 ENV PYTHON_VERSION=3.11.10 \

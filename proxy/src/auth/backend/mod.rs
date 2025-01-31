@@ -12,6 +12,7 @@ pub(crate) use console_redirect::ConsoleRedirectError;
 use ipnet::{Ipv4Net, Ipv6Net};
 use local::LocalBackend;
 use postgres_client::config::AuthKeys;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, info, warn};
 
@@ -133,7 +134,7 @@ pub(crate) struct ComputeUserInfoNoEndpoint {
     pub(crate) options: NeonOptions,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct ComputeUserInfo {
     pub(crate) endpoint: EndpointId,
     pub(crate) user: RoleName,

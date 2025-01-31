@@ -2,8 +2,9 @@ use pageserver_api::{
     models::{
         detach_ancestor::AncestorDetached, LocationConfig, LocationConfigListResponse,
         PageserverUtilization, SecondaryProgress, TenantScanRemoteStorageResponse,
-        TenantShardSplitRequest, TenantShardSplitResponse, TimelineArchivalConfigRequest,
-        TimelineCreateRequest, TimelineInfo, TopTenantShardsRequest, TopTenantShardsResponse,
+        TenantShardSplitRequest, TenantShardSplitResponse, TenantWaitLsnRequest,
+        TimelineArchivalConfigRequest, TimelineCreateRequest, TimelineInfo, TopTenantShardsRequest,
+        TopTenantShardsResponse,
     },
     shard::TenantShardId,
 };
@@ -297,6 +298,19 @@ impl PageserverClient {
             crate::metrics::Method::Post,
             &self.node_id_label,
             self.inner.top_tenant_shards(request).await
+        )
+    }
+
+    pub(crate) async fn wait_lsn(
+        &self,
+        tenant_shard_id: TenantShardId,
+        request: TenantWaitLsnRequest,
+    ) -> Result<StatusCode> {
+        measured_request!(
+            "wait_lsn",
+            crate::metrics::Method::Post,
+            &self.node_id_label,
+            self.inner.wait_lsn(tenant_shard_id, request).await
         )
     }
 }

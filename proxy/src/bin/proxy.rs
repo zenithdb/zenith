@@ -7,7 +7,7 @@ use anyhow::bail;
 use futures::future::Either;
 use proxy::auth::backend::jwt::JwkCache;
 use proxy::auth::backend::{AuthRateLimiter, ConsoleRedirectBackend, MaybeOwned};
-use proxy::cancellation::{CancelMap, CancellationHandler};
+use proxy::cancellation::{handle_cancel_messages, CancellationHandler};
 use proxy::config::{
     self, remote_storage_from_toml, AuthenticationConfig, CacheOptions, ComputeConfig, HttpConfig,
     ProjectInfoCacheOptions, ProxyConfig, ProxyProtocolV2,
@@ -18,8 +18,8 @@ use proxy::metrics::Metrics;
 use proxy::rate_limiter::{
     EndpointRateLimiter, LeakyBucketConfig, RateBucketInfo, WakeComputeRateLimiter,
 };
-use proxy::redis::cancellation_publisher::RedisPublisherClient;
 use proxy::redis::connection_with_credentials_provider::ConnectionWithCredentialsProvider;
+use proxy::redis::kv_ops::RedisKVClient;
 use proxy::redis::{elasticache, notifications};
 use proxy::scram::threadpool::ThreadPool;
 use proxy::serverless::cancel_set::CancelSet;
@@ -28,7 +28,6 @@ use proxy::tls::client_config::compute_client_config_with_root_certs;
 use proxy::{auth, control_plane, http, serverless, usage_metrics};
 use remote_storage::RemoteStorageConfig;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn, Instrument};
@@ -158,8 +157,11 @@ struct ProxyCliArgs {
     #[clap(long, default_value_t = 64)]
     auth_rate_limit_ip_subnet: u8,
     /// Redis rate limiter max number of requests per second.
-    #[clap(long, default_values_t = RateBucketInfo::DEFAULT_SET)]
+    #[clap(long, default_values_t = RateBucketInfo::DEFAULT_REDIS_SET)]
     redis_rps_limit: Vec<RateBucketInfo>,
+    /// Cancellation channel size (max queue size for redis kv client)
+    #[clap(long, default_value = "1024")]
+    cancellation_ch_size: usize,
     /// cache for `allowed_ips` (use `size=0` to disable)
     #[clap(long, default_value = config::CacheOptions::CACHE_DEFAULT_OPTIONS)]
     allowed_ips_cache: String,
@@ -382,27 +384,19 @@ async fn main() -> anyhow::Result<()> {
 
     let cancellation_token = CancellationToken::new();
 
-    let cancel_map = CancelMap::default();
-
     let redis_rps_limit = Vec::leak(args.redis_rps_limit.clone());
     RateBucketInfo::validate(redis_rps_limit)?;
 
-    let redis_publisher = match &regional_redis_client {
-        Some(redis_publisher) => Some(Arc::new(Mutex::new(RedisPublisherClient::new(
-            redis_publisher.clone(),
-            args.region.clone(),
-            redis_rps_limit,
-        )?))),
-        None => None,
-    };
+    let redis_kv_client = regional_redis_client
+        .as_ref()
+        .map(|redis_publisher| RedisKVClient::new(redis_publisher.clone(), redis_rps_limit));
 
-    let cancellation_handler = Arc::new(CancellationHandler::<
-        Option<Arc<Mutex<RedisPublisherClient>>>,
-    >::new(
+    // channel size should be higher than redis client limit to avoid blocking
+    let cancel_ch_size = args.cancellation_ch_size;
+    let (tx_cancel, rx_cancel) = tokio::sync::mpsc::channel(cancel_ch_size);
+    let cancellation_handler = Arc::new(CancellationHandler::new(
         &config.connect_to_compute,
-        cancel_map.clone(),
-        redis_publisher,
-        proxy::metrics::CancellationSource::FromClient,
+        Some(tx_cancel),
     ));
 
     // bit of a hack - find the min rps and max rps supported and turn it into
@@ -495,25 +489,29 @@ async fn main() -> anyhow::Result<()> {
                     let cache = api.caches.project_info.clone();
                     if let Some(client) = client1 {
                         maintenance_tasks.spawn(notifications::task_main(
-                            config,
                             client,
                             cache.clone(),
-                            cancel_map.clone(),
                             args.region.clone(),
                         ));
                     }
                     if let Some(client) = client2 {
                         maintenance_tasks.spawn(notifications::task_main(
-                            config,
                             client,
                             cache.clone(),
-                            cancel_map.clone(),
                             args.region.clone(),
                         ));
                     }
                     maintenance_tasks.spawn(async move { cache.clone().gc_worker().await });
                 }
             }
+
+            if let Some(mut redis_kv_client) = redis_kv_client {
+                maintenance_tasks.spawn(async move {
+                    redis_kv_client.try_connect().await?;
+                    handle_cancel_messages(&mut redis_kv_client, rx_cancel).await
+                });
+            }
+
             if let Some(regional_redis_client) = regional_redis_client {
                 let cache = api.caches.endpoints_cache.clone();
                 let con = regional_redis_client;

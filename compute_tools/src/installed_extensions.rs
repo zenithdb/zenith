@@ -1,13 +1,10 @@
 use compute_api::responses::{InstalledExtension, InstalledExtensions};
-use metrics::proto::MetricFamily;
 use std::collections::HashMap;
 
 use anyhow::Result;
 use postgres::{Client, NoTls};
 
-use metrics::core::Collector;
-use metrics::{register_uint_gauge_vec, UIntGaugeVec};
-use once_cell::sync::Lazy;
+use crate::metrics::INSTALLED_EXTENSIONS;
 
 /// We don't reuse get_existing_dbs() just for code clarity
 /// and to make database listing query here more explicit.
@@ -101,17 +98,4 @@ pub fn get_installed_extensions(mut conf: postgres::config::Config) -> Result<In
     Ok(InstalledExtensions {
         extensions: extensions_map.into_values().collect(),
     })
-}
-
-static INSTALLED_EXTENSIONS: Lazy<UIntGaugeVec> = Lazy::new(|| {
-    register_uint_gauge_vec!(
-        "compute_installed_extensions",
-        "Number of databases where the version of extension is installed",
-        &["extension_name", "version", "owned_by_superuser"]
-    )
-    .expect("failed to define a metric")
-});
-
-pub fn collect() -> Vec<MetricFamily> {
-    INSTALLED_EXTENSIONS.collect()
 }

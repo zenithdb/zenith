@@ -164,9 +164,10 @@ pub(super) async fn connection_manager_loop_step(
                     Ok(Some(broker_update)) => connection_manager_state.register_timeline_update(broker_update),
                     Err(status) => {
                         match status.code() {
-                            Code::Unknown if status.message().contains("stream closed because of a broken pipe") || status.message().contains("connection reset") => {
+                            Code::Unknown if status.message().contains("stream closed because of a broken pipe") || status.message().contains("connection reset") || status.message().contains("error reading a body from connection") => {
                                 // tonic's error handling doesn't provide a clear code for disconnections: we get
                                 // "h2 protocol error: error reading a body from connection: stream closed because of a broken pipe"
+                                // => https://github.com/neondatabase/neon/issues/9562
                                 info!("broker disconnected: {status}");
                             },
                             _ => {
@@ -273,7 +274,7 @@ pub(super) async fn connection_manager_loop_step(
                     };
 
                 last_discovery_ts = Some(std::time::Instant::now());
-                debug!("No active connection and no candidates, sending discovery request to the broker");
+                info!("No active connection and no candidates, sending discovery request to the broker");
 
                 // Cancellation safety: we want to send a message to the broker, but publish_one()
                 // function can get cancelled by the other select! arm. This is absolutely fine, because

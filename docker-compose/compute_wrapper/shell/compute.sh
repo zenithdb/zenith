@@ -20,30 +20,55 @@ while ! nc -z pageserver 6400; do
 done
 echo "Page server is ready."
 
-echo "Create a tenant and timeline"
-generate_id tenant_id
-PARAMS=(
-     -X PUT
-     -H "Content-Type: application/json"
-     -d "{\"mode\": \"AttachedSingle\", \"generation\": 1, \"tenant_conf\": {}}"
-     "http://pageserver:9898/v1/tenant/${tenant_id}/location_config"
-)
-result=$(curl "${PARAMS[@]}")
-echo $result | jq .
+cp ${SPEC_FILE_ORG} ${SPEC_FILE}
 
-generate_id timeline_id
-PARAMS=(
-     -sbf
-     -X POST
-     -H "Content-Type: application/json"
-     -d "{\"new_timeline_id\": \"${timeline_id}\", \"pg_version\": ${PG_VERSION}}"
-     "http://pageserver:9898/v1/tenant/${tenant_id}/timeline/"
-)
-result=$(curl "${PARAMS[@]}")
-echo $result | jq .
+ if [ -n "${TENANT_ID:-}" ] && [ -n "${TIMELINE_ID:-}" ]; then
+   tenant_id=${TENANT_ID}
+   timeline_id=${TIMELINE_ID}
+else
+  echo "Check if a tenant present"
+  PARAMS=(
+       -X GET
+       -H "Content-Type: application/json"
+       "http://pageserver:9898/v1/tenant"
+  )
+  tenant_id=$(curl "${PARAMS[@]}" | jq -r .[0].id)
+  if [ -z "${tenant_id}" ] || [ "${tenant_id}" = null ]; then
+    echo "Create a tenant"
+    generate_id tenant_id
+    PARAMS=(
+         -X PUT
+         -H "Content-Type: application/json"
+         -d "{\"mode\": \"AttachedSingle\", \"generation\": 1, \"tenant_conf\": {}}"
+        "http://pageserver:9898/v1/tenant/${tenant_id}/location_config"
+    )
+    result=$(curl "${PARAMS[@]}")
+    echo $result | jq .
+  fi
+
+  echo "Check if a timeline present"
+  PARAMS=(
+       -X GET
+       -H "Content-Type: application/json"
+       "http://pageserver:9898/v1/tenant/${tenant_id}/timeline"
+  )
+  timeline_id=$(curl "${PARAMS[@]}" | jq -r .[0].timeline_id)
+  if [ -z "${timeline_id}" ] || [ "${timeline_id}" = null ]; then
+    generate_id timeline_id
+    PARAMS=(
+        -sbf
+        -X POST
+        -H "Content-Type: application/json"
+        -d "{\"new_timeline_id\": \"${timeline_id}\", \"pg_version\": ${PG_VERSION}}"
+        "http://pageserver:9898/v1/tenant/${tenant_id}/timeline/"
+    )
+    result=$(curl "${PARAMS[@]}")
+    echo $result | jq .
+  fi
+fi
 
 echo "Overwrite tenant id and timeline id in spec file"
-sed "s/TENANT_ID/${tenant_id}/" ${SPEC_FILE_ORG} > ${SPEC_FILE}
+sed -i "s/TENANT_ID/${tenant_id}/" ${SPEC_FILE}
 sed -i "s/TIMELINE_ID/${timeline_id}/" ${SPEC_FILE}
 
 cat ${SPEC_FILE}

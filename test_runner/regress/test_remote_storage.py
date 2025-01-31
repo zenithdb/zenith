@@ -539,6 +539,8 @@ def test_timeline_deletion_with_files_stuck_in_upload_queue(
             # small checkpointing and compaction targets to ensure we generate many operations
             "checkpoint_distance": f"{64 * 1024}",
             "compaction_threshold": "1",
+            "l0_flush_delay_threshold": "0",
+            "l0_flush_stall_threshold": "0",
             "compaction_target_size": f"{64 * 1024}",
             # large horizon to avoid automatic GC (our assert on gc_result below relies on that)
             "gc_horizon": f"{1024 ** 4}",

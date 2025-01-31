@@ -56,6 +56,8 @@ pub struct ProxyMetrics {
     pub connection_requests: CounterPairVec<NumConnectionRequestsGauge>,
     #[metric(flatten)]
     pub http_endpoint_pools: HttpEndpointPools,
+    #[metric(flatten)]
+    pub cancel_channel_size: CounterPairVec<CancelChannelSizeGauge>,
 
     /// Time it took for proxy to establish a connection to the compute endpoint.
     // largest bucket = 2^16 * 0.5ms = 32s
@@ -294,6 +296,16 @@ impl CounterPairAssoc for NumConnectionRequestsGauge {
 pub type NumConnectionRequestsGuard<'a> =
     metrics::MeasuredCounterPairGuard<'a, NumConnectionRequestsGauge>;
 
+pub struct CancelChannelSizeGauge;
+impl CounterPairAssoc for CancelChannelSizeGauge {
+    const INC_NAME: &'static MetricName = MetricName::from_str("opened_msgs_cancel_channel_total");
+    const DEC_NAME: &'static MetricName = MetricName::from_str("closed_msgs_cancel_channel_total");
+    const INC_HELP: &'static str = "Number of processing messages in the cancellation channel.";
+    const DEC_HELP: &'static str = "Number of closed messages in the cancellation channel.";
+    type LabelGroupSet = StaticLabelSet<RedisMsgKind>;
+}
+pub type CancelChannelSizeGuard<'a> = metrics::MeasuredCounterPairGuard<'a, CancelChannelSizeGauge>;
+
 #[derive(LabelGroup)]
 #[label(set = ComputeConnectionLatencySet)]
 pub struct ComputeConnectionLatencyGroup {
@@ -341,13 +353,6 @@ pub struct RedisErrors<'a> {
 }
 
 #[derive(FixedCardinalityLabel, Copy, Clone)]
-pub enum CancellationSource {
-    FromClient,
-    FromRedis,
-    Local,
-}
-
-#[derive(FixedCardinalityLabel, Copy, Clone)]
 pub enum CancellationOutcome {
     NotFound,
     Found,
@@ -357,7 +362,6 @@ pub enum CancellationOutcome {
 #[derive(LabelGroup)]
 #[label(set = CancellationRequestSet)]
 pub struct CancellationRequest {
-    pub source: CancellationSource,
     pub kind: CancellationOutcome,
 }
 
@@ -367,6 +371,16 @@ pub enum Waiting {
     Client,
     Compute,
     RetryTimeout,
+}
+
+#[derive(FixedCardinalityLabel, Copy, Clone)]
+#[label(singleton = "kind")]
+pub enum RedisMsgKind {
+    HSet,
+    HSetMultiple,
+    HGet,
+    HGetAll,
+    HDel,
 }
 
 #[derive(Default)]

@@ -254,9 +254,26 @@ pub struct TenantConfigToml {
     // Duration::ZERO means automatic compaction is disabled.
     #[serde(with = "humantime_serde")]
     pub compaction_period: Duration,
-    // Level0 delta layer threshold for compaction.
+    /// Level0 delta layer threshold for compaction.
     pub compaction_threshold: usize,
+    /// Controls the amount of L0 included in a single compaction iteration.
+    /// The unit is `checkpoint_distance`, i.e., a size.
+    /// We add L0s to the set of layers to compact until their cumulative
+    /// size exceeds `compaction_upper_limit * checkpoint_distance`.
+    pub compaction_upper_limit: usize,
     pub compaction_algorithm: crate::models::CompactionAlgorithmSettings,
+    /// Level0 delta layer threshold at which to delay layer flushes for compaction backpressure,
+    /// such that they take 2x as long, and start waiting for layer flushes during ephemeral layer
+    /// rolls. This helps compaction keep up with WAL ingestion, and avoids read amplification
+    /// blowing up. Should be >compaction_threshold. 0 to disable. Disabled by default.
+    pub l0_flush_delay_threshold: Option<usize>,
+    /// Level0 delta layer threshold at which to stall layer flushes. Must be >compaction_threshold
+    /// to avoid deadlock. 0 to disable. Disabled by default.
+    pub l0_flush_stall_threshold: Option<usize>,
+    /// If true, Level0 delta layer flushes will wait for S3 upload before flushing the next
+    /// layer. This is a temporary backpressure mechanism which should be removed once
+    /// l0_flush_{delay,stall}_threshold is fully enabled.
+    pub l0_flush_wait_upload: bool,
     // Determines how much history is retained, to allow
     // branching and read replicas at an older point in time.
     // The unit is #of bytes of WAL.
@@ -511,8 +528,16 @@ pub mod tenant_conf_defaults {
 
     pub const DEFAULT_COMPACTION_PERIOD: &str = "20 s";
     pub const DEFAULT_COMPACTION_THRESHOLD: usize = 10;
+
+    // This value needs to be tuned to avoid OOM. We have 3/4 of the total CPU threads to do background works, that's 16*3/4=9 on
+    // most of our pageservers. Compaction ~50 layers requires about 2GB memory (could be reduced later by optimizing L0 hole
+    // calculation to avoid loading all keys into the memory). So with this config, we can get a maximum peak compaction usage of 18GB.
+    pub const DEFAULT_COMPACTION_UPPER_LIMIT: usize = 50;
+
     pub const DEFAULT_COMPACTION_ALGORITHM: crate::models::CompactionAlgorithm =
         crate::models::CompactionAlgorithm::Legacy;
+
+    pub const DEFAULT_L0_FLUSH_WAIT_UPLOAD: bool = true;
 
     pub const DEFAULT_GC_HORIZON: u64 = 64 * 1024 * 1024;
 
@@ -549,9 +574,13 @@ impl Default for TenantConfigToml {
             compaction_period: humantime::parse_duration(DEFAULT_COMPACTION_PERIOD)
                 .expect("cannot parse default compaction period"),
             compaction_threshold: DEFAULT_COMPACTION_THRESHOLD,
+            compaction_upper_limit: DEFAULT_COMPACTION_UPPER_LIMIT,
             compaction_algorithm: crate::models::CompactionAlgorithmSettings {
                 kind: DEFAULT_COMPACTION_ALGORITHM,
             },
+            l0_flush_delay_threshold: None,
+            l0_flush_stall_threshold: None,
+            l0_flush_wait_upload: DEFAULT_L0_FLUSH_WAIT_UPLOAD,
             gc_horizon: DEFAULT_GC_HORIZON,
             gc_period: humantime::parse_duration(DEFAULT_GC_PERIOD)
                 .expect("cannot parse default gc period"),

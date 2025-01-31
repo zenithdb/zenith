@@ -28,7 +28,24 @@ jobs:
     strategy:
       fail-fast: false # allow other variants to continue even if one fails
       matrix:
-        target_project: [new_empty_project, large_existing_project]
+        include:
+          - target_project: new_empty_project_stripe_size_2048 
+            stripe_size: 2048 # 16 MiB
+            postgres_version: 16
+          - target_project: new_empty_project_stripe_size_32768
+            stripe_size: 32768 # 256 MiB # note that this is different from null because using null will shard_split the project only if it reaches the threshold
+                               # while here it is sharded from the beginning with a shard size of 256 MiB
+            postgres_version: 16
+          - target_project: new_empty_project
+            stripe_size: null # run with neon defaults which will shard split only when reaching the threshold
+            postgres_version: 16
+          - target_project: new_empty_project
+            stripe_size: null # run with neon defaults which will shard split only when reaching the threshold
+            postgres_version: 17
+          - target_project: large_existing_project
+            stripe_size: null # cannot re-shared or choose different stripe size for existing, already sharded project
+            postgres_version: 16
+      max-parallel: 1 # we want to run each stripe size sequentially to be able to compare the results
     permissions:
       contents: write
       statuses: write
@@ -67,17 +84,21 @@ jobs:
         aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
 
     - name: Create Neon Project
-      if: ${{ matrix.target_project == 'new_empty_project' }}
+      if: ${{ startsWith(matrix.target_project, 'new_empty_project') }}
       id: create-neon-project-ingest-target
       uses: ./.github/actions/neon-project-create
       with:
         region_id: aws-us-east-2
-        postgres_version: 16
+        postgres_version: ${{ matrix.postgres_version }}
         compute_units: '[7, 7]' # we want to test large compute here to avoid compute-side bottleneck
         api_key: ${{ secrets.NEON_STAGING_API_KEY }}
+        shard_split_project: ${{ matrix.stripe_size != null && 'true' || 'false' }}
+        admin_api_key: ${{ secrets.NEON_STAGING_ADMIN_API_KEY }} 
+        shard_count: 8
+        stripe_size: ${{ matrix.stripe_size }}
 
     - name: Initialize Neon project
-      if: ${{ matrix.target_project == 'new_empty_project' }}
+      if: ${{ startsWith(matrix.target_project, 'new_empty_project') }}
       env:
           BENCHMARK_INGEST_TARGET_CONNSTR: ${{ steps.create-neon-project-ingest-target.outputs.dsn }}
           NEW_PROJECT_ID: ${{ steps.create-neon-project-ingest-target.outputs.project_id }}
@@ -130,7 +151,7 @@ jobs:
         test_selection: performance/test_perf_ingest_using_pgcopydb.py
         run_in_parallel: false
         extra_params: -s -m remote_cluster --timeout 86400 -k test_ingest_performance_using_pgcopydb
-        pg_version: v16
+        pg_version: v${{ matrix.postgres_version }}
         save_perf_report: true
         aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
       env:
@@ -146,7 +167,7 @@ jobs:
         ${PSQL} "${BENCHMARK_INGEST_TARGET_CONNSTR}" -c "\dt+"
 
     - name: Delete Neon Project
-      if: ${{ always() && matrix.target_project == 'new_empty_project' }}
+      if: ${{ always() && startsWith(matrix.target_project, 'new_empty_project') }}
       uses: ./.github/actions/neon-project-delete
       with:
         project_id: ${{ steps.create-neon-project-ingest-target.outputs.project_id }}

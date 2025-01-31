@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use fail::fail_point;
 use postgres::{Client, Transaction};
-use tracing::info;
+use tracing::{error, info};
+
+use crate::metrics::DB_MIGRATION_FAILED;
 
 /// Runs a series of migrations on a target database
 pub(crate) struct MigrationRunner<'m> {
@@ -78,23 +80,30 @@ impl<'m> MigrationRunner<'m> {
         Ok(())
     }
 
-    /// Run an individual migration
-    fn run_migration(txn: &mut Transaction, migration_id: i64, migration: &str) -> Result<()> {
+    /// Run an individual migration in a separate transaction block.
+    fn run_migration(client: &mut Client, migration_id: i64, migration: &str) -> Result<()> {
+        let mut txn = client
+            .transaction()
+            .with_context(|| format!("begin transaction for migration {migration_id}"))?;
+
         if migration.starts_with("-- SKIP") {
             info!("Skipping migration id={}", migration_id);
 
             // Even though we are skipping the migration, updating the
             // migration ID should help keep logic easy to understand when
             // trying to understand the state of a cluster.
-            Self::update_migration_id(txn, migration_id)?;
+            Self::update_migration_id(&mut txn, migration_id)?;
         } else {
             info!("Running migration id={}:\n{}\n", migration_id, migration);
 
             txn.simple_query(migration)
                 .with_context(|| format!("apply migration {migration_id}"))?;
 
-            Self::update_migration_id(txn, migration_id)?;
+            Self::update_migration_id(&mut txn, migration_id)?;
         }
+
+        txn.commit()
+            .with_context(|| format!("commit transaction for migration {migration_id}"))?;
 
         Ok(())
     }
@@ -109,19 +118,20 @@ impl<'m> MigrationRunner<'m> {
             // The index lags the migration ID by 1, so the current migration
             // ID is also the next index
             let migration_id = (current_migration + 1) as i64;
+            let migration = self.migrations[current_migration];
 
-            let mut txn = self
-                .client
-                .transaction()
-                .with_context(|| format!("begin transaction for migration {migration_id}"))?;
-
-            Self::run_migration(&mut txn, migration_id, self.migrations[current_migration])
-                .with_context(|| format!("running migration {migration_id}"))?;
-
-            txn.commit()
-                .with_context(|| format!("commit transaction for migration {migration_id}"))?;
-
-            info!("Finished migration id={}", migration_id);
+            match Self::run_migration(self.client, migration_id, migration) {
+                Ok(_) => {
+                    info!("Finished migration id={}", migration_id);
+                }
+                Err(e) => {
+                    error!("Failed to run migration id={}: {:?}", migration_id, e);
+                    DB_MIGRATION_FAILED
+                        .with_label_values(&[migration_id.to_string().as_str()])
+                        .inc();
+                    return Err(e);
+                }
+            }
 
             current_migration += 1;
         }

@@ -1,9 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
-use axum::{
-    async_trait,
-    extract::{rejection::QueryRejection, FromRequestParts},
-};
+use axum::extract::{rejection::QueryRejection, FromRequestParts};
 use compute_api::responses::GenericAPIError;
 use http::{request::Parts, StatusCode};
 
@@ -12,7 +9,6 @@ use http::{request::Parts, StatusCode};
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Query<T>(pub T);
 
-#[async_trait]
 impl<S, T> FromRequestParts<S> for Query<T>
 where
     axum::extract::Query<T>: FromRequestParts<S, Rejection = QueryRejection>,

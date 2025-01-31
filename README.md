@@ -21,8 +21,10 @@ The Neon storage engine consists of two major components:
 
 See developer documentation in [SUMMARY.md](/docs/SUMMARY.md) for more information.
 
-## Running local installation
+## Running a local development environment
 
+Neon can be run on a workstation for small experiments and to test code changes, by
+following these instructions.
 
 #### Installing dependencies on Linux
 1. Install build dependencies and other applicable packages
@@ -238,7 +240,7 @@ postgres=# select * from t;
 > cargo neon stop
 ```
 
-More advanced usages can be found at [Control Plane and Neon Local](./control_plane/README.md).
+More advanced usages can be found at [Local Development Control Plane (`neon_local`))](./control_plane/README.md).
 
 #### Handling build failures
 

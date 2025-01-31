@@ -377,7 +377,8 @@ impl RemoteStorage for AzureBlobStorage {
 
                 let next_item = next_item?;
 
-                if timeout_try_cnt >= 2 {
+                // Log a warning if we saw two timeouts in a row before a successful request
+                if timeout_try_cnt > 2 {
                     tracing::warn!("Azure Blob Storage list timed out and succeeded after {} tries", timeout_try_cnt);
                 }
                 timeout_try_cnt = 1;

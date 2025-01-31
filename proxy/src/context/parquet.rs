@@ -423,11 +423,11 @@ async fn upload_parquet(
     .await
     .ok_or_else(|| anyhow::Error::new(TimeoutOrCancel::Cancel))
     .and_then(|x| x)
-    .context("request_data_upload")
+    .with_context(|| format!("request_data_upload: path={path}"))
     .err();
 
     if let Some(err) = maybe_err {
-        tracing::error!(%id, error = ?err, "failed to upload request data");
+        tracing::error!(%id, %path, error = ?err, "failed to upload request data");
     }
 
     Ok(buffer.writer())

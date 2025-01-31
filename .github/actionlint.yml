@@ -4,6 +4,7 @@ self-hosted-runner:
     - large
     - large-arm64
     - small
+    - small-metal
     - small-arm64
     - us-east-2
 config-variables:

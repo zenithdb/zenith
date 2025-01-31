@@ -63,11 +63,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - DEFAULT_PG_VERSION: 16
+          - PG_VERSION: 16
             PLATFORM: "neon-staging"
             region_id: ${{ github.event.inputs.region_id || 'aws-us-east-2' }}
             RUNNER: [ self-hosted, us-east-2, x64 ]
-          - DEFAULT_PG_VERSION: 16
+          - PG_VERSION: 17
+            PLATFORM: "neon-staging"
+            region_id: ${{ github.event.inputs.region_id || 'aws-us-east-2' }}
+            RUNNER: [ self-hosted, us-east-2, x64 ]
+          - PG_VERSION: 16
             PLATFORM: "azure-staging"
             region_id: 'azure-eastus2'
             RUNNER: [ self-hosted, eastus2, x64 ]
@@ -75,7 +79,7 @@ jobs:
       TEST_PG_BENCH_DURATIONS_MATRIX: "300"
       TEST_PG_BENCH_SCALES_MATRIX: "10,100"
       POSTGRES_DISTRIB_DIR: /tmp/neon/pg_install
-      DEFAULT_PG_VERSION: ${{ matrix.DEFAULT_PG_VERSION }}
+      PG_VERSION: ${{ matrix.PG_VERSION }}
       TEST_OUTPUT: /tmp/test_output
       BUILD_TYPE: remote
       SAVE_PERF_REPORT: ${{ github.event.inputs.save_perf_report || ( github.ref_name == 'main' ) }}
@@ -112,7 +116,7 @@ jobs:
       uses: ./.github/actions/neon-project-create
       with:
         region_id: ${{ matrix.region_id }}
-        postgres_version: ${{ env.DEFAULT_PG_VERSION }}
+        postgres_version: ${{ env.PG_VERSION }}
         api_key: ${{ secrets.NEON_STAGING_API_KEY }}
 
     - name: Run benchmark
@@ -122,7 +126,7 @@ jobs:
         test_selection: performance
         run_in_parallel: false
         save_perf_report: ${{ env.SAVE_PERF_REPORT }}
-        pg_version: ${{ env.DEFAULT_PG_VERSION }}
+        pg_version: ${{ env.PG_VERSION }}
         aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
         # Set --sparse-ordering option of pytest-order plugin
         # to ensure tests are running in order of appears in the file.
@@ -313,7 +317,11 @@ jobs:
                       { "pg_version": 16, "region_id": "azure-eastus2",          "platform": "neonvm-azure-captest-freetier", "db_size": "3gb" ,"runner": '"$runner_azure"',   "image": "neondatabase/build-tools:pinned-bookworm" },
                       { "pg_version": 16, "region_id": "azure-eastus2",          "platform": "neonvm-azure-captest-new",      "db_size": "10gb","runner": '"$runner_azure"',   "image": "neondatabase/build-tools:pinned-bookworm" },
                       { "pg_version": 16, "region_id": "azure-eastus2",          "platform": "neonvm-azure-captest-new",      "db_size": "50gb","runner": '"$runner_azure"',   "image": "neondatabase/build-tools:pinned-bookworm" },
-                      { "pg_version": 16, "region_id": "'"$region_id_default"'", "platform": "neonvm-captest-sharding-reuse", "db_size": "50gb","runner": '"$runner_default"', "image": "'"$image_default"'" }]
+                      { "pg_version": 16, "region_id": "'"$region_id_default"'", "platform": "neonvm-captest-sharding-reuse", "db_size": "50gb","runner": '"$runner_default"', "image": "'"$image_default"'" },
+                      { "pg_version": 17, "region_id": "'"$region_id_default"'", "platform": "neonvm-captest-freetier",       "db_size": "3gb" ,"runner": '"$runner_default"', "image": "'"$image_default"'" },
+                      { "pg_version": 17, "region_id": "'"$region_id_default"'", "platform": "neonvm-captest-new",            "db_size": "10gb","runner": '"$runner_default"', "image": "'"$image_default"'" },
+                      { "pg_version": 17, "region_id": "'"$region_id_default"'", "platform": "neonvm-captest-new-many-tables","db_size": "10gb","runner": '"$runner_default"', "image": "'"$image_default"'" },
+                      { "pg_version": 17, "region_id": "'"$region_id_default"'", "platform": "neonvm-captest-new",            "db_size": "50gb","runner": '"$runner_default"', "image": "'"$image_default"'" }]
         }'
 
         if [ "$(date +%A)" = "Saturday" ] || [ ${RUN_AWS_RDS_AND_AURORA} = "true" ]; then
@@ -329,12 +337,15 @@ jobs:
         matrix='{
           "platform": [
             "neonvm-captest-reuse"
-          ]
+          ],
+          "pg_version" : [
+            16,17
+          ],
         }'
 
         if [ "$(date +%A)" = "Saturday" ] || [ ${RUN_AWS_RDS_AND_AURORA} = "true" ]; then
-          matrix=$(echo "$matrix" | jq '.include += [{ "platform": "rds-postgres" },
-                                                     { "platform": "rds-aurora"   }]')
+          matrix=$(echo "$matrix" | jq '.include += [{ "pg_version": 16, "platform": "rds-postgres" },
+                                                     { "pg_version": 16, "platform": "rds-aurora"   }]')
         fi
 
         echo "matrix=$(echo "$matrix" | jq --compact-output '.')" >> $GITHUB_OUTPUT
@@ -346,14 +357,14 @@ jobs:
           "platform": [
             "neonvm-captest-reuse"
           ],
-          "scale": [
-            "10"
+          "pg_version" : [
+            16,17
           ]
         }'
 
         if [ "$(date +%A)" = "Saturday" ] || [ ${RUN_AWS_RDS_AND_AURORA} = "true" ]; then
-          matrix=$(echo "$matrix" | jq '.include += [{ "platform": "rds-postgres", "scale": "10" },
-                                                     { "platform": "rds-aurora",   "scale": "10" }]')
+          matrix=$(echo "$matrix" | jq '.include += [{ "pg_version": 16, "platform": "rds-postgres" },
+                                                     { "pg_version": 16, "platform": "rds-aurora"   }]')
         fi
 
         echo "matrix=$(echo "$matrix" | jq --compact-output '.')" >> $GITHUB_OUTPUT
@@ -378,7 +389,7 @@ jobs:
       TEST_PG_BENCH_DURATIONS_MATRIX: "60m"
       TEST_PG_BENCH_SCALES_MATRIX: ${{ matrix.db_size }}
       POSTGRES_DISTRIB_DIR: /tmp/neon/pg_install
-      DEFAULT_PG_VERSION: ${{ matrix.pg_version }}
+      PG_VERSION: ${{ matrix.pg_version }}
       TEST_OUTPUT: /tmp/test_output
       BUILD_TYPE: remote
       SAVE_PERF_REPORT: ${{ github.event.inputs.save_perf_report || ( github.ref_name == 'main' ) }}
@@ -416,7 +427,7 @@ jobs:
       uses: ./.github/actions/neon-project-create
       with:
         region_id: ${{ matrix.region_id }}
-        postgres_version: ${{ env.DEFAULT_PG_VERSION }}
+        postgres_version: ${{ env.PG_VERSION }}
         api_key: ${{ secrets.NEON_STAGING_API_KEY }}
         compute_units: ${{ (contains(matrix.platform, 'captest-freetier') && '[0.25, 0.25]') || '[1, 1]' }}
 
@@ -447,7 +458,7 @@ jobs:
 
         echo "connstr=${CONNSTR}" >> $GITHUB_OUTPUT
 
-    # we want to compare Neon project OLTP throughput and latency at scale factor 10 GB 
+    # we want to compare Neon project OLTP throughput and latency at scale factor 10 GB
     # without (neonvm-captest-new)
     # and with (neonvm-captest-new-many-tables) many relations in the database
     - name: Create many relations before the run
@@ -459,7 +470,7 @@ jobs:
         run_in_parallel: false
         save_perf_report: ${{ env.SAVE_PERF_REPORT }}
         extra_params: -m remote_cluster --timeout 21600 -k test_perf_many_relations
-        pg_version: ${{ env.DEFAULT_PG_VERSION }}
+        pg_version: ${{ env.PG_VERSION }}
         aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
       env:
         BENCHMARK_CONNSTR: ${{ steps.set-up-connstr.outputs.connstr }}
@@ -475,7 +486,7 @@ jobs:
         run_in_parallel: false
         save_perf_report: ${{ env.SAVE_PERF_REPORT }}
         extra_params: -m remote_cluster --timeout 21600 -k test_pgbench_remote_init
-        pg_version: ${{ env.DEFAULT_PG_VERSION }}
+        pg_version: ${{ env.PG_VERSION }}
         aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
       env:
         BENCHMARK_CONNSTR: ${{ steps.set-up-connstr.outputs.connstr }}
@@ -490,7 +501,7 @@ jobs:
         run_in_parallel: false
         save_perf_report: ${{ env.SAVE_PERF_REPORT }}
         extra_params: -m remote_cluster --timeout 21600 -k test_pgbench_remote_simple_update
-        pg_version: ${{ env.DEFAULT_PG_VERSION }}
+        pg_version: ${{ env.PG_VERSION }}
         aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
       env:
         BENCHMARK_CONNSTR: ${{ steps.set-up-connstr.outputs.connstr }}
@@ -505,7 +516,7 @@ jobs:
         run_in_parallel: false
         save_perf_report: ${{ env.SAVE_PERF_REPORT }}
         extra_params: -m remote_cluster --timeout 21600 -k test_pgbench_remote_select_only
-        pg_version: ${{ env.DEFAULT_PG_VERSION }}
+        pg_version: ${{ env.PG_VERSION }}
         aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
       env:
         BENCHMARK_CONNSTR: ${{ steps.set-up-connstr.outputs.connstr }}
@@ -549,14 +560,19 @@ jobs:
         include:
           - PLATFORM: "neonvm-captest-pgvector"
             RUNNER: [ self-hosted, us-east-2, x64 ]
+            postgres_version: 16
+          - PLATFORM: "neonvm-captest-pgvector-pg17"
+            RUNNER: [ self-hosted, us-east-2, x64 ]
+            postgres_version: 17
           - PLATFORM: "azure-captest-pgvector"
             RUNNER: [ self-hosted, eastus2, x64 ]
+            postgres_version: 16
 
     env:
       TEST_PG_BENCH_DURATIONS_MATRIX: "15m"
       TEST_PG_BENCH_SCALES_MATRIX: "1"
       POSTGRES_DISTRIB_DIR: /tmp/neon/pg_install
-      DEFAULT_PG_VERSION: 16
+      PG_VERSION: ${{ matrix.postgres_version }}
       TEST_OUTPUT: /tmp/test_output
       BUILD_TYPE: remote
 
@@ -574,32 +590,20 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # until https://github.com/neondatabase/neon/issues/8275 is fixed we temporarily install postgresql-16
-    # instead of using Neon artifacts containing pgbench
-    - name: Install postgresql-16 where pytest expects it
-      run: |
-        # Just to make it easier to test things locally on macOS (with arm64)
-        arch=$(uname -m | sed 's/x86_64/amd64/g' | sed 's/aarch64/arm64/g')
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: eu-central-1
+        role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
+        role-duration-seconds: 18000 # 5 hours
 
-        cd /home/nonroot
-        wget -q "https://apt.postgresql.org/pub/repos/apt/pool/main/p/postgresql-17/libpq5_17.2-1.pgdg120+1_${arch}.deb"
-        wget -q "https://apt.postgresql.org/pub/repos/apt/pool/main/p/postgresql-16/postgresql-client-16_16.6-1.pgdg120+1_${arch}.deb"
-        wget -q "https://apt.postgresql.org/pub/repos/apt/pool/main/p/postgresql-16/postgresql-16_16.6-1.pgdg120+1_${arch}.deb"
-        dpkg -x libpq5_17.2-1.pgdg120+1_${arch}.deb pg
-        dpkg -x postgresql-16_16.6-1.pgdg120+1_${arch}.deb pg
-        dpkg -x postgresql-client-16_16.6-1.pgdg120+1_${arch}.deb pg
-
-        mkdir -p /tmp/neon/pg_install/v16/bin
-        ln -s /home/nonroot/pg/usr/lib/postgresql/16/bin/pgbench /tmp/neon/pg_install/v16/bin/pgbench
-        ln -s /home/nonroot/pg/usr/lib/postgresql/16/bin/psql    /tmp/neon/pg_install/v16/bin/psql
-        ln -s /home/nonroot/pg/usr/lib/$(uname -m)-linux-gnu     /tmp/neon/pg_install/v16/lib
-
-        LD_LIBRARY_PATH="/home/nonroot/pg/usr/lib/$(uname -m)-linux-gnu:${LD_LIBRARY_PATH:-}"
-        export LD_LIBRARY_PATH
-        echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH}" >> ${GITHUB_ENV}
-
-        /tmp/neon/pg_install/v16/bin/pgbench --version
-        /tmp/neon/pg_install/v16/bin/psql --version
+    - name: Download Neon artifact
+      uses: ./.github/actions/download
+      with:
+        name: neon-${{ runner.os }}-${{ runner.arch }}-release-artifact
+        path: /tmp/neon/
+        prefix: latest
+        aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
 
     - name: Set up Connection String
       id: set-up-connstr
@@ -607,6 +611,9 @@ jobs:
         case "${PLATFORM}" in
           neonvm-captest-pgvector)
             CONNSTR=${{ secrets.BENCHMARK_PGVECTOR_CONNSTR }}
+            ;;
+          neonvm-captest-pgvector-pg17)
+            CONNSTR=${{ secrets.BENCHMARK_PGVECTOR_CONNSTR_PG17 }}
             ;;
           azure-captest-pgvector)
             CONNSTR=${{ secrets.BENCHMARK_PGVECTOR_CONNSTR_AZURE }}
@@ -619,13 +626,6 @@ jobs:
 
         echo "connstr=${CONNSTR}" >> $GITHUB_OUTPUT
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-region: eu-central-1
-        role-to-assume: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
-        role-duration-seconds: 18000 # 5 hours
-
     - name: Benchmark pgvector hnsw indexing
       uses: ./.github/actions/run-python-test-set
       with:
@@ -634,7 +634,7 @@ jobs:
         run_in_parallel: false
         save_perf_report: ${{ env.SAVE_PERF_REPORT }}
         extra_params: -m remote_cluster --timeout 21600 -k test_pgvector_indexing
-        pg_version: ${{ env.DEFAULT_PG_VERSION }}
+        pg_version: ${{ env.PG_VERSION }}
         aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
       env:
         VIP_VAP_ACCESS_TOKEN: "${{ secrets.VIP_VAP_ACCESS_TOKEN }}"
@@ -649,7 +649,7 @@ jobs:
         run_in_parallel: false
         save_perf_report: ${{ env.SAVE_PERF_REPORT }}
         extra_params: -m remote_cluster --timeout 21600
-        pg_version: ${{ env.DEFAULT_PG_VERSION }}
+        pg_version: ${{ env.PG_VERSION }}
         aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
       env:
         BENCHMARK_CONNSTR: ${{ steps.set-up-connstr.outputs.connstr }}
@@ -696,7 +696,7 @@ jobs:
 
     env:
       POSTGRES_DISTRIB_DIR: /tmp/neon/pg_install
-      DEFAULT_PG_VERSION: 16
+      PG_VERSION: ${{ matrix.pg_version }}
       TEST_OUTPUT: /tmp/test_output
       TEST_OLAP_COLLECT_EXPLAIN: ${{ github.event.inputs.collect_olap_explain }}
       TEST_OLAP_COLLECT_PG_STAT_STATEMENTS: ${{ github.event.inputs.collect_pg_stat_statements }}
@@ -739,7 +739,18 @@ jobs:
       run: |
         case "${PLATFORM}" in
           neonvm-captest-reuse)
-            CONNSTR=${{ secrets.BENCHMARK_CAPTEST_CLICKBENCH_10M_CONNSTR }}
+            case "${PG_VERSION}" in
+              16)
+                CONNSTR=${{ secrets.BENCHMARK_CAPTEST_CLICKBENCH_10M_CONNSTR }}
+                ;;
+              17)
+                CONNSTR=${{ secrets.BENCHMARK_CAPTEST_CLICKBENCH_CONNSTR_PG17 }}
+                ;;
+              *)
+                echo >&2 "Unsupported PG_VERSION=${PG_VERSION} for PLATFORM=${PLATFORM}"
+                exit 1
+                ;;
+            esac
             ;;
           rds-aurora)
             CONNSTR=${{ secrets.BENCHMARK_RDS_AURORA_CLICKBENCH_10M_CONNSTR }}
@@ -763,7 +774,7 @@ jobs:
         run_in_parallel: false
         save_perf_report: ${{ env.SAVE_PERF_REPORT }}
         extra_params: -m remote_cluster --timeout 43200 -k test_clickbench
-        pg_version: ${{ env.DEFAULT_PG_VERSION }}
+        pg_version: ${{ env.PG_VERSION }}
         aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
       env:
         VIP_VAP_ACCESS_TOKEN: "${{ secrets.VIP_VAP_ACCESS_TOKEN }}"
@@ -812,12 +823,11 @@ jobs:
 
     env:
       POSTGRES_DISTRIB_DIR: /tmp/neon/pg_install
-      DEFAULT_PG_VERSION: 16
+      PG_VERSION: ${{ matrix.pg_version }}
       TEST_OUTPUT: /tmp/test_output
       BUILD_TYPE: remote
       SAVE_PERF_REPORT: ${{ github.event.inputs.save_perf_report || ( github.ref_name == 'main' ) }}
       PLATFORM: ${{ matrix.platform }}
-      TEST_OLAP_SCALE: ${{ matrix.scale }}
 
     runs-on: [ self-hosted, us-east-2, x64 ]
     container:
@@ -849,13 +859,24 @@ jobs:
       run: |
         case "${PLATFORM}" in
           neonvm-captest-reuse)
-            ENV_PLATFORM=CAPTEST_TPCH
+            case "${PG_VERSION}" in
+              16)
+                CONNSTR_SECRET_NAME="BENCHMARK_CAPTEST_TPCH_S10_CONNSTR"
+                ;;
+              17)
+                CONNSTR_SECRET_NAME="BENCHMARK_CAPTEST_TPCH_CONNSTR_PG17"
+                ;;
+              *)
+                echo >&2 "Unsupported PG_VERSION=${PG_VERSION} for PLATFORM=${PLATFORM}"
+                exit 1
+                ;;
+            esac
             ;;
           rds-aurora)
-            ENV_PLATFORM=RDS_AURORA_TPCH
+            CONNSTR_SECRET_NAME="BENCHMARK_RDS_AURORA_TPCH_S10_CONNSTR"
             ;;
           rds-postgres)
-            ENV_PLATFORM=RDS_POSTGRES_TPCH
+            CONNSTR_SECRET_NAME="BENCHMARK_RDS_POSTGRES_TPCH_S10_CONNSTR"
             ;;
           *)
             echo >&2 "Unknown PLATFORM=${PLATFORM}. Allowed only 'neonvm-captest-reuse', 'rds-aurora', or 'rds-postgres'"
@@ -863,7 +884,6 @@ jobs:
             ;;
         esac
 
-        CONNSTR_SECRET_NAME="BENCHMARK_${ENV_PLATFORM}_S${TEST_OLAP_SCALE}_CONNSTR"
         echo "CONNSTR_SECRET_NAME=${CONNSTR_SECRET_NAME}" >> $GITHUB_ENV
 
     - name: Set up Connection String
@@ -881,13 +901,13 @@ jobs:
         run_in_parallel: false
         save_perf_report: ${{ env.SAVE_PERF_REPORT }}
         extra_params: -m remote_cluster --timeout 21600 -k test_tpch
-        pg_version: ${{ env.DEFAULT_PG_VERSION }}
+        pg_version: ${{ env.PG_VERSION }}
         aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
       env:
         VIP_VAP_ACCESS_TOKEN: "${{ secrets.VIP_VAP_ACCESS_TOKEN }}"
         PERF_TEST_RESULT_CONNSTR: "${{ secrets.PERF_TEST_RESULT_CONNSTR }}"
         BENCHMARK_CONNSTR: ${{ steps.set-up-connstr.outputs.connstr }}
-        TEST_OLAP_SCALE: ${{ matrix.scale }}
+        TEST_OLAP_SCALE: 10
 
     - name: Create Allure report
       id: create-allure-report
@@ -922,7 +942,7 @@ jobs:
 
     env:
       POSTGRES_DISTRIB_DIR: /tmp/neon/pg_install
-      DEFAULT_PG_VERSION: 16
+      PG_VERSION: ${{ matrix.pg_version }}
       TEST_OUTPUT: /tmp/test_output
       BUILD_TYPE: remote
       SAVE_PERF_REPORT: ${{ github.event.inputs.save_perf_report || ( github.ref_name == 'main' ) }}
@@ -959,7 +979,18 @@ jobs:
       run: |
         case "${PLATFORM}" in
           neonvm-captest-reuse)
-            CONNSTR=${{ secrets.BENCHMARK_USER_EXAMPLE_CAPTEST_CONNSTR }}
+            case "${PG_VERSION}" in
+              16)
+                CONNSTR=${{ secrets.BENCHMARK_USER_EXAMPLE_CAPTEST_CONNSTR }}
+                ;;
+              17)
+                CONNSTR=${{ secrets.BENCHMARK_CAPTEST_USER_EXAMPLE_CONNSTR_PG17 }}
+                ;;
+              *)
+                echo >&2 "Unsupported PG_VERSION=${PG_VERSION} for PLATFORM=${PLATFORM}"
+                exit 1
+                ;;
+            esac
             ;;
           rds-aurora)
             CONNSTR=${{ secrets.BENCHMARK_USER_EXAMPLE_RDS_AURORA_CONNSTR }}
@@ -983,7 +1014,7 @@ jobs:
         run_in_parallel: false
         save_perf_report: ${{ env.SAVE_PERF_REPORT }}
         extra_params: -m remote_cluster --timeout 21600 -k test_user_examples
-        pg_version: ${{ env.DEFAULT_PG_VERSION }}
+        pg_version: ${{ env.PG_VERSION }}
         aws-oicd-role-arn: ${{ vars.DEV_AWS_OIDC_ROLE_ARN }}
       env:
         VIP_VAP_ACCESS_TOKEN: "${{ secrets.VIP_VAP_ACCESS_TOKEN }}"

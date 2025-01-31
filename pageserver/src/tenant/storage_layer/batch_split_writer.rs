@@ -87,6 +87,23 @@ impl BatchLayerWriter {
         ));
     }
 
+    pub(crate) async fn finish(
+        self,
+        tline: &Arc<Timeline>,
+        ctx: &RequestContext,
+    ) -> anyhow::Result<Vec<ResidentLayer>> {
+        let res = self
+            .finish_with_discard_fn(tline, ctx, |_| async { false })
+            .await?;
+        let mut output = Vec::new();
+        for r in res {
+            if let BatchWriterResult::Produced(layer) = r {
+                output.push(layer);
+            }
+        }
+        Ok(output)
+    }
+
     pub(crate) async fn finish_with_discard_fn<D, F>(
         self,
         tline: &Arc<Timeline>,

@@ -64,6 +64,8 @@ def test_branch_and_gc(neon_simple_env: NeonEnv):
             # tweak the default settings to allow quickly create image layers and L1 layers
             "compaction_period": "1 s",
             "compaction_threshold": "2",
+            "l0_flush_delay_threshold": "20",
+            "l0_flush_stall_threshold": "40",
             "image_creation_threshold": "1",
             # Disable PITR, this test will set an explicit space-based GC limit
             "pitr_interval": "0 s",
