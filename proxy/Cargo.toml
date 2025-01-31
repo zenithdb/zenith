@@ -42,6 +42,7 @@ hyper0.workspace = true
 hyper = { workspace = true, features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server", "http1", "http2", "tokio"] }
 http-body-util = { version = "0.1" }
+gettid = "0.1.3"
 indexmap = { workspace = true, features = ["serde"] }
 ipnet.workspace = true
 itertools.workspace = true
@@ -50,6 +51,7 @@ lasso = { workspace = true, features = ["multi-threaded"] }
 measured = { workspace = true, features = ["lasso"] }
 metrics.workspace = true
 once_cell.workspace = true
+opentelemetry = { workspace = true, features = ["trace"] }
 parking_lot.workspace = true
 parquet.workspace = true
 parquet_derive.workspace = true
@@ -89,6 +91,8 @@ tokio = { workspace = true, features = ["signal"] }
 tracing-subscriber.workspace = true
 tracing-utils.workspace = true
 tracing.workspace = true
+tracing-serde.workspace = true
+tracing-opentelemetry.workspace = true
 try-lock.workspace = true
 typed-json.workspace = true
 url.workspace = true
@@ -112,6 +116,7 @@ rsa = "0.9"
 workspace_hack.workspace = true
 
 [dev-dependencies]
+assert-json-diff.workspace = true
 camino-tempfile.workspace = true
 fallible-iterator.workspace = true
 flate2.workspace = true
@@ -122,3 +127,6 @@ rstest.workspace = true
 walkdir.workspace = true
 rand_distr = "0.4"
 tokio-postgres.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "deny", check-cfg = ['cfg(tokio_unstable)'] }

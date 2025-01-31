@@ -3,15 +3,17 @@
 # by the RUSTDOCFLAGS env var in CI.
 rustdocflags = ["-Arustdoc::private_intra_doc_links"]
 
-# Enable frame pointers. This may have a minor performance overhead, but makes it easier and more
-# efficient to obtain stack traces (and thus CPU/heap profiles). It may also avoid seg faults that
-# we've seen with libunwind-based profiling. See also:
-#
-# * <https://www.brendangregg.com/blog/2024-03-17/the-return-of-the-frame-pointers.html>
-# * <https://github.com/rust-lang/rust/pull/122646>
-#
-# NB: the RUSTFLAGS envvar will replace this. Make sure to update e.g. Dockerfile as well.
-rustflags = ["-Cforce-frame-pointers=yes"]
+rustflags = [
+  # Enable frame pointers. This may have a minor performance overhead, but makes it easier and more
+  # efficient to obtain stack traces (and thus CPU/heap profiles). It may also avoid seg faults that
+  # we've seen with libunwind-based profiling. See also:
+  #
+  # * <https://www.brendangregg.com/blog/2024-03-17/the-return-of-the-frame-pointers.html>
+  # * <https://github.com/rust-lang/rust/pull/122646>
+  #
+  # NB: the RUSTFLAGS envvar will replace this. Make sure to update e.g. Dockerfile as well.
+  "-Cforce-frame-pointers=yes",
+]
 
 [alias]
 build_testing = ["build", "--features", "testing"]
