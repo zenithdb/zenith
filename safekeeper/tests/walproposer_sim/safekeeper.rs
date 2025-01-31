@@ -188,7 +188,7 @@ pub fn run_server(os: NodeOs, disk: Arc<SafekeeperDisk>) -> Result<()> {
     let mut conns: HashMap<usize, ConnState> = HashMap::new();
 
     for (&_ttid, shared_state) in global.timelines.iter_mut() {
-        let flush_lsn = shared_state.sk.wal_store.flush_lsn();
+        let flush_lsn = shared_state.sk.wal_store.flush_record_lsn();
         let commit_lsn = shared_state.sk.state.commit_lsn;
         os.log_event(format!("tli_loaded;{};{}", flush_lsn.0, commit_lsn.0));
     }

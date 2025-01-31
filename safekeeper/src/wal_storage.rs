@@ -35,10 +35,10 @@ use pq_proto::SystemId;
 use utils::{id::TenantTimelineId, lsn::Lsn};
 
 pub trait Storage {
-    // Last written LSN.
+    /// Last written LSN.
     fn write_lsn(&self) -> Lsn;
-    /// LSN of last durably stored WAL record.
-    fn flush_lsn(&self) -> Lsn;
+    /// End LSN of last durably stored WAL record.
+    fn flush_record_lsn(&self) -> Lsn;
 
     /// Initialize segment by creating proper long header at the beginning of
     /// the segment and short header at the page of given LSN. This is only used
@@ -116,11 +116,13 @@ pub struct PhysicalStorage {
     /// The last LSN flushed to disk. May be in the middle of a record.
     ///
     /// NB: when the rest of the system refers to `flush_lsn`, it usually
-    /// actually refers to `flush_record_lsn`. This ambiguity can be dangerous
-    /// and should be resolved.
+    /// means `flush_record_lsn`. This `flush_lsn` is only used internally.
     flush_lsn: Lsn,
 
     /// The LSN of the last WAL record flushed to disk.
+    ///
+    /// NB: when the rest of the system refers to `flush_lsn`, it usually
+    /// means `flush_record_lsn`.
     flush_record_lsn: Lsn,
 
     /// Decoder is required for detecting boundaries of WAL records.
@@ -387,11 +389,8 @@ impl Storage for PhysicalStorage {
     fn write_lsn(&self) -> Lsn {
         self.write_lsn
     }
-    /// flush_lsn returns LSN of last durably stored WAL record.
-    ///
-    /// TODO: flush_lsn() returns flush_record_lsn, but write_lsn() returns write_lsn: confusing.
-    #[allow(clippy::misnamed_getters)]
-    fn flush_lsn(&self) -> Lsn {
+    /// End LSN of the last durably stored WAL record.
+    fn flush_record_lsn(&self) -> Lsn {
         self.flush_record_lsn
     }
 

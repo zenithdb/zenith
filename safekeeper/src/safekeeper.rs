@@ -564,7 +564,10 @@ where
 
     /// wal_store wrapper avoiding commit_lsn <= flush_lsn violation when we don't have WAL yet.
     pub fn flush_lsn(&self) -> Lsn {
-        max(self.wal_store.flush_lsn(), self.state.timeline_start_lsn)
+        max(
+            self.wal_store.flush_record_lsn(),
+            self.state.timeline_start_lsn,
+        )
     }
 
     /// Process message from proposer and possibly form reply. Concurrent
@@ -789,7 +792,7 @@ where
         //
         // If we fail before first WAL write flush this action would be
         // repeated, that's ok because it is idempotent.
-        if self.wal_store.flush_lsn() == Lsn::INVALID {
+        if self.wal_store.flush_record_lsn() == Lsn::INVALID {
             self.wal_store
                 .initialize_first_segment(msg.start_streaming_at)
                 .await?;
@@ -908,7 +911,7 @@ where
         // while first connection still gets some packets later. It might be
         // better to not log this as error! above.
         let write_lsn = self.wal_store.write_lsn();
-        let flush_lsn = self.wal_store.flush_lsn();
+        let flush_lsn = self.wal_store.flush_record_lsn();
         if write_lsn > msg.h.begin_lsn {
             bail!(
                 "append request rewrites WAL written before, write_lsn={}, msg lsn={}",
@@ -1057,7 +1060,7 @@ mod tests {
             self.lsn
         }
 
-        fn flush_lsn(&self) -> Lsn {
+        fn flush_record_lsn(&self) -> Lsn {
             self.lsn
         }
 

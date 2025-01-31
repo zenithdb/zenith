@@ -155,7 +155,7 @@ pub enum StateSK {
 impl StateSK {
     pub fn flush_lsn(&self) -> Lsn {
         match self {
-            StateSK::Loaded(sk) => sk.wal_store.flush_lsn(),
+            StateSK::Loaded(sk) => sk.wal_store.flush_record_lsn(),
             StateSK::Offloaded(state) => match state.eviction_state {
                 EvictionState::Offloaded(flush_lsn) => flush_lsn,
                 _ => panic!("StateSK::Offloaded mismatches with eviction_state from control_file"),
@@ -1086,11 +1086,11 @@ impl ManagerTimeline {
             );
         }
 
-        if wal_store.flush_lsn() != shared.sk.flush_lsn() {
+        if wal_store.flush_record_lsn() != shared.sk.flush_lsn() {
             bail!(
                 "flush_lsn mismatch in restored WAL, expected {}, got {}",
                 shared.sk.flush_lsn(),
-                wal_store.flush_lsn()
+                wal_store.flush_record_lsn()
             );
         }
 

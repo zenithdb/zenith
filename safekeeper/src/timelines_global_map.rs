@@ -617,7 +617,7 @@ pub async fn validate_temp_timeline(
     let wal_store = wal_storage::PhysicalStorage::new(&ttid, path, &control_store, conf.no_sync)?;
 
     let commit_lsn = control_store.commit_lsn;
-    let flush_lsn = wal_store.flush_lsn();
+    let flush_lsn = wal_store.flush_record_lsn();
 
     Ok((commit_lsn, flush_lsn))
 }
