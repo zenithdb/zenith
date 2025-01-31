@@ -61,6 +61,16 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
         docker cp $TEST_CONTAINER_NAME:/ext-src/pg_hint_plan-src/data $TMPDIR/data
         docker cp $TMPDIR/data $COMPUTE_CONTAINER_NAME:/ext-src/pg_hint_plan-src/
         rm -rf $TMPDIR
+        # Prepare for the PostGIS test
+        docker exec $COMPUTE_CONTAINER_NAME mkdir -p /tmp/pgis_reg/pgis_reg_tmp
+        TMPDIR=$(mktemp -d)
+        docker cp $TEST_CONTAINER_NAME:/ext-src/postgis-src/raster/test $TMPDIR
+        docker cp $TEST_CONTAINER_NAME:/ext-src/postgis-src/regress/00-regress-install $TMPDIR
+        docker exec $COMPUTE_CONTAINER_NAME mkdir -p /ext-src/postgis-src/raster /ext-src/postgis-src/regress /ext-src/postgis-src/regress/00-regress-install
+        docker cp $TMPDIR/test $COMPUTE_CONTAINER_NAME:/ext-src/postgis-src/raster/test
+        docker cp $TMPDIR/00-regress-install $COMPUTE_CONTAINER_NAME:/ext-src/postgis-src/regress
+        rm -rf $TMPDIR
+
         # The following block does the same for the contrib/file_fdw test
         TMPDIR=$(mktemp -d)
         docker cp $TEST_CONTAINER_NAME:/postgres/contrib/file_fdw/data $TMPDIR/data
@@ -70,7 +80,7 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
         cat ../compute/patches/contrib_pg${pg_version}.patch | docker exec -i $TEST_CONTAINER_NAME bash -c "(cd /postgres && patch -p1)"
         # We are running tests now
         rm -f testout.txt testout_contrib.txt
-        docker exec -e USE_PGXS=1 -e SKIP=timescaledb-src,rdkit-src,postgis-src,pgx_ulid-src,pgtap-src,pg_tiktoken-src,pg_jsonschema-src,kq_imcx-src,wal2json_2_5-src \
+        docker exec -e USE_PGXS=1 -e SKIP=timescaledb-src,rdkit-src,pgx_ulid-src,pgtap-src,pg_tiktoken-src,pg_jsonschema-src,kq_imcx-src,wal2json_2_5-src \
         $TEST_CONTAINER_NAME /run-tests.sh /ext-src | tee testout.txt && EXT_SUCCESS=1 || EXT_SUCCESS=0
         docker exec -e SKIP=start-scripts,postgres_fdw,ltree_plpython,jsonb_plpython,jsonb_plperl,hstore_plpython,hstore_plperl,dblink,bool_plperl \
         $TEST_CONTAINER_NAME /run-tests.sh /postgres/contrib | tee testout_contrib.txt && CONTRIB_SUCCESS=1 || CONTRIB_SUCCESS=0
@@ -88,6 +98,9 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
                 cat $dn/regression.out $dn/regression.diffs || true
                 rm -rf $dn
             done
+            if echo $FAILED | grep -q postgis-src; then
+              docker exec $TEST_CONTAINER_NAME cat /tmp/pgis_reg/regress_log || true
+            fi
         rm -rf $FAILED
         exit 1
         fi

@@ -13,9 +13,9 @@ for d in ${LIST}; do
       break
     fi
     if [ -f "${d}/neon-test.sh" ]; then
-       "${d}/neon-test.sh" || FAILED="${d} ${FAILED}"
+       "time ${d}/neon-test.sh" || FAILED="${d} ${FAILED}"
     else
-       USE_PGXS=1 make -C "${d}" installcheck || FAILED="${d} ${FAILED}"
+       USE_PGXS=1 time make -C "${d}" installcheck || FAILED="${d} ${FAILED}"
     fi
 done
 [ -z "${FAILED}" ] && exit 0

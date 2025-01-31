@@ -850,7 +850,7 @@ jobs:
           fi
 
       - name: Verify docker-compose example and test extensions
-        timeout-minutes: 20
+        timeout-minutes: 120
         env:
           TAG: ${{needs.tag.outputs.build-tag}}
           TEST_VERSION_ONLY: ${{ matrix.pg_version }}
