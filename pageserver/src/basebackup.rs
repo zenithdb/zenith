@@ -264,6 +264,31 @@ where
     async fn send_tarball(mut self) -> Result<(), BasebackupError> {
         // TODO include checksum
 
+        // Construct the pg_control file from the persisted checkpoint and pg_control
+        // information. But we only add this to the tarball at the end, so that if the
+        // writing is interrupted half-way through, the resulting incomplete tarball will
+        // be missing the pg_control file, which prevents PostgreSQL from starting up on
+        // it. With proper error handling, you should never try to start up from an
+        // incomplete basebackup in the first place, of course, but this is a nice little
+        // extra safety measure.
+        let checkpoint_bytes = self
+            .timeline
+            .get_checkpoint(self.lsn, self.ctx)
+            .await
+            .context("failed to get checkpoint bytes")?;
+        let pg_control_bytes = self
+            .timeline
+            .get_control_file(self.lsn, self.ctx)
+            .await
+            .context("failed to get control bytes")?;
+        let (pg_control_bytes, system_identifier, was_shutdown) =
+            postgres_ffi::generate_pg_control(
+                &pg_control_bytes,
+                &checkpoint_bytes,
+                self.lsn,
+                self.timeline.pg_version,
+            )?;
+
         let lazy_slru_download = self.timeline.get_lazy_slru_download() && !self.full_backup;
 
         let pgversion = self.timeline.pg_version;
@@ -401,6 +426,10 @@ where
                 // In future we will not generate AUX record for "pg_logical/replorigin_checkpoint" at all,
                 // but now we should handle (skip) it for backward compatibility.
                 continue;
+            } else if path == "pg_stat/pgstat.stat" && !was_shutdown {
+                // Drop statistic in case of abnormal termination, i.e. if we're not starting from the exact LSN
+                // of a shutdown checkpoint.
+                continue;
             }
             let header = new_tar_header(&path, content.len() as u64)?;
             self.ar
@@ -462,8 +491,9 @@ where
             )))
         });
 
-        // Generate pg_control and bootstrap WAL segment.
-        self.add_pgcontrol_file().await?;
+        // Last, add the pg_control file and bootstrap WAL segment.
+        self.add_pgcontrol_file(pg_control_bytes, system_identifier)
+            .await?;
         self.ar.finish().await.map_err(BasebackupError::Client)?;
         debug!("all tarred up!");
         Ok(())
@@ -672,7 +702,11 @@ where
     // Add generated pg_control file and bootstrap WAL segment.
     // Also send zenith.signal file with extra bootstrap data.
     //
-    async fn add_pgcontrol_file(&mut self) -> Result<(), BasebackupError> {
+    async fn add_pgcontrol_file(
+        &mut self,
+        pg_control_bytes: Bytes,
+        system_identifier: u64,
+    ) -> Result<(), BasebackupError> {
         // add zenith.signal file
         let mut zenith_signal = String::new();
         if self.prev_record_lsn == Lsn(0) {
@@ -694,24 +728,6 @@ where
             )
             .await
             .map_err(BasebackupError::Client)?;
-
-        let checkpoint_bytes = self
-            .timeline
-            .get_checkpoint(self.lsn, self.ctx)
-            .await
-            .context("failed to get checkpoint bytes")?;
-        let pg_control_bytes = self
-            .timeline
-            .get_control_file(self.lsn, self.ctx)
-            .await
-            .context("failed get control bytes")?;
-
-        let (pg_control_bytes, system_identifier) = postgres_ffi::generate_pg_control(
-            &pg_control_bytes,
-            &checkpoint_bytes,
-            self.lsn,
-            self.timeline.pg_version,
-        )?;
 
         //send pg_control
         let header = new_tar_header("global/pg_control", pg_control_bytes.len() as u64)?;

@@ -800,6 +800,8 @@ def test_timeline_retain_lsn(
             [
                 ".*initial size calculation failed: PageRead.MissingKey.could not find data for key.*",
                 ".*page_service_conn_main.*could not find data for key.*",
+                ".*failed to get checkpoint bytes.*",
+                ".*failed get control bytes.*",
             ]
         )
     if offload_child is None or "no-restart" not in offload_child:

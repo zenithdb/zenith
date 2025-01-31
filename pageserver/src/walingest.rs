@@ -1199,6 +1199,50 @@ impl WalIngest {
                 } else {
                     cp.oldestActiveXid = xlog_checkpoint.oldestActiveXid;
                 }
+                // NB: We abuse the Checkpoint.redo field:
+                //
+                // - In PostgreSQL, the Checkpoint struct doesn't store the information
+                //   of whether this is an online checkpoint or a shutdown checkpoint. It's
+                //   stored in the XLOG info field of the WAL record, shutdown checkpoints
+                //   use record type XLOG_CHECKPOINT_SHUTDOWN and online checkpoints use
+                //   XLOG_CHECKPOINT_ONLINE. We don't store the original WAL record headers
+                //   in the pageserver, however.
+                //
+                // - In PostgreSQL, the Checkpoint.redo field stores the *start* of the
+                //   checkpoint record, if it's a shutdown checkpoint. But when we are
+                //   starting from a shutdown checkpoint, the basebackup LSN is the *end*
+                //   of the shutdown checkpoint WAL record. That makes it difficult to
+                //   correctly detect whether we're starting from a shutdown record or
+                //   not.
+                //
+                // To address both of those issues, we store 0 in the redo field if it's
+                // an online checkpoint record, and the record's *end* LSN if it's a
+                // shutdown checkpoint. We don't need the original redo pointer in neon,
+                // because we don't perform WAL replay at startup anyway, so we can get
+                // away with abusing the redo field like this.
+                //
+                // XXX: Ideally, we would persist the extra information in a more
+                // explicit format, rather than repurpose the fields of the Postgres
+                // struct like this. However, we already have persisted data like this,
+                // so we need to maintain backwards compatibility.
+                //
+                // NB: We didn't originally have this convention, so there are still old
+                // persisted records that didn't do this. Before, we didn't update the
+                // persisted redo field at all. That means that old records have a bogus
+                // redo pointer that points to some old value, from the checkpoint record
+                // that was originally imported from the data directory. If it was a
+                // project created in Neon, that means it points to the first checkpoint
+                // after initdb. That's OK for our purposes: all such old checkpoints are
+                // treated as old online checkpoints when the basebackup is created.
+                cp.redo = if info == pg_constants::XLOG_CHECKPOINT_SHUTDOWN {
+                    // Store the *end* LSN of the checkpoint record. Or to be precise,
+                    // the start LSN of the *next* record, i.e. if the record ends
+                    // exactly at page boundary, the redo LSN points to just after the
+                    // page header on the next page.
+                    lsn.into()
+                } else {
+                    Lsn::INVALID.into()
+                };
 
                 // Write a new checkpoint key-value pair on every checkpoint record, even
                 // if nothing really changed. Not strictly required, but it seems nice to
