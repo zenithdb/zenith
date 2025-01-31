@@ -10,14 +10,18 @@ from typing import TYPE_CHECKING
 import pytest
 from fixtures.common_types import TenantId, TenantShardId, TimelineId
 from fixtures.log_helper import log
-from fixtures.neon_fixtures import NeonEnvBuilder, NeonPageserver
+from fixtures.neon_fixtures import (
+    NeonEnvBuilder,
+    NeonPageserver,
+    StorageControllerMigrationConfig,
+)
 from fixtures.pageserver.common_types import parse_layer_file_name
 from fixtures.pageserver.utils import (
     assert_prefix_empty,
     wait_for_upload_queue_empty,
 )
 from fixtures.remote_storage import LocalFsStorage, RemoteStorageKind, S3Storage, s3_storage
-from fixtures.utils import skip_in_debug_build, wait_until
+from fixtures.utils import run_only_on_default_postgres, skip_in_debug_build, wait_until
 from fixtures.workload import Workload
 from werkzeug.wrappers.request import Request
 from werkzeug.wrappers.response import Response
@@ -885,3 +889,93 @@ def test_slow_secondary_downloads(neon_env_builder: NeonEnvBuilder, via_controll
     assert progress_3["heatmap_mtime"] is not None
     assert progress_3["layers_total"] == progress_3["layers_downloaded"]
     assert progress_3["bytes_total"] == progress_3["bytes_downloaded"]
+
+
+@skip_in_debug_build("only run with release build")
+@run_only_on_default_postgres("PG version is not interesting here")
+def test_migration_to_cold_secondary(neon_env_builder: NeonEnvBuilder):
+    neon_env_builder.num_pageservers = 2
+    neon_env_builder.enable_pageserver_remote_storage(
+        remote_storage_kind=RemoteStorageKind.MOCK_S3,
+    )
+
+    env = neon_env_builder.init_configs()
+    env.start()
+
+    assert isinstance(env.pageserver_remote_storage, S3Storage)  # Satisfy linter
+
+    tenant_id = TenantId.generate()
+    timeline_id = TimelineId.generate()
+    env.create_tenant(tenant_id, timeline_id, conf=TENANT_CONF, placement_policy='{"Attached":1}')
+
+    env.storage_controller.reconcile_until_idle()
+
+    attached_to_id = env.storage_controller.locate(tenant_id)[0]["node_id"]
+    ps_attached = env.get_pageserver(attached_to_id)
+    ps_secondary = next(p for p in env.pageservers if p != ps_attached)
+
+    # Generate a bunch of small layers (we will apply a slowdown failpoint that works on a per-layer basis)
+    workload = Workload(env, tenant_id, timeline_id)
+    workload.init()
+    workload.write_rows(128)
+    ps_attached.http_client().timeline_checkpoint(tenant_id, timeline_id)
+    workload.write_rows(128)
+    ps_attached.http_client().timeline_checkpoint(tenant_id, timeline_id)
+    workload.write_rows(128)
+    ps_attached.http_client().timeline_checkpoint(tenant_id, timeline_id)
+    workload.write_rows(128)
+    ps_attached.http_client().timeline_checkpoint(tenant_id, timeline_id)
+
+    # Expect lots of layers
+    assert len(ps_attached.list_layers(tenant_id, timeline_id)) > 10
+
+    # Simulate large data by making layer downloads artifically slow
+    for ps in env.pageservers:
+        ps.http_client().configure_failpoints([("secondary-layer-download-sleep", "return(1000)")])
+
+    # Upload a heatmap, so that secondaries have something to download
+    ps_attached.http_client().tenant_heatmap_upload(tenant_id)
+    heatmap_before_migration = env.pageserver_remote_storage.heatmap_content(tenant_id)
+
+    # This has no chance to succeed: we have lots of layers and each one takes at least 1000ms.
+    # However, it pulls the heatmap, which will be important later.
+    http_client = env.storage_controller.pageserver_api()
+    (status, progress) = http_client.tenant_secondary_download(tenant_id, wait_ms=4000)
+    assert status == 202
+    assert progress["heatmap_mtime"] is not None
+    assert progress["layers_downloaded"] > 0
+    assert progress["bytes_downloaded"] > 0
+    assert progress["layers_total"] > progress["layers_downloaded"]
+    assert progress["bytes_total"] > progress["bytes_downloaded"]
+
+    env.storage_controller.allowed_errors.extend(
+        [
+            ".*Timed out.*downloading layers.*",
+        ]
+    )
+
+    # Use a custom configuration that gives up earlier than usual.
+    # We can't hydrate everything anyway because of the failpoints.
+    config = StorageControllerMigrationConfig(
+        secondary_warmup_timeout="5s", secondary_download_request_timeout="2s"
+    )
+    env.storage_controller.tenant_shard_migrate(
+        TenantShardId(tenant_id, shard_number=0, shard_count=0), ps_secondary.id, config
+    )
+
+    env.storage_controller.reconcile_until_idle()
+    assert env.storage_controller.locate(tenant_id)[0]["node_id"] == ps_secondary.id
+
+    ps_secondary.http_client().tenant_heatmap_upload(tenant_id)
+    heatmap_after_migration = env.pageserver_remote_storage.heatmap_content(tenant_id)
+
+    assert len(heatmap_before_migration["timelines"][0]["layers"]) > 0
+    assert len(heatmap_before_migration["timelines"][0]["layers"]) == len(
+        heatmap_after_migration["timelines"][0]["layers"]
+    )
+
+    log.info(
+        f'Heatmap size after cold migration is {len(heatmap_after_migration["timelines"][0]["layers"])}'
+    )
+
+    # TODO: Once we have an endpoint for rescuing the cold location, exercise it here.

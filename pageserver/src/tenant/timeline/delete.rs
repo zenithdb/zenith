@@ -296,6 +296,7 @@ impl DeleteTimelineFlow {
                 timeline_id,
                 local_metadata,
                 None, // Ancestor is not needed for deletion.
+                None, // Original heatmap is not needed for deletion
                 TimelineResources {
                     remote_client,
                     pagestream_throttle: tenant.pagestream_throttle.clone(),

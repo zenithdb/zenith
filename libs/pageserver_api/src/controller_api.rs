@@ -182,6 +182,18 @@ pub struct TenantDescribeResponseShard {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TenantShardMigrateRequest {
     pub node_id: NodeId,
+    #[serde(default)]
+    pub migration_config: Option<MigrationConfig>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct MigrationConfig {
+    #[serde(default)]
+    #[serde(with = "humantime_serde")]
+    pub secondary_warmup_timeout: Option<Duration>,
+    #[serde(default)]
+    #[serde(with = "humantime_serde")]
+    pub secondary_download_request_timeout: Option<Duration>,
 }
 
 #[derive(Serialize, Clone, Debug)]

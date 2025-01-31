@@ -609,7 +609,10 @@ async fn main() -> anyhow::Result<()> {
             tenant_shard_id,
             node,
         } => {
-            let req = TenantShardMigrateRequest { node_id: node };
+            let req = TenantShardMigrateRequest {
+                node_id: node,
+                migration_config: None,
+            };
 
             storcon_client
                 .dispatch::<TenantShardMigrateRequest, TenantShardMigrateResponse>(
@@ -623,7 +626,10 @@ async fn main() -> anyhow::Result<()> {
             tenant_shard_id,
             node,
         } => {
-            let req = TenantShardMigrateRequest { node_id: node };
+            let req = TenantShardMigrateRequest {
+                node_id: node,
+                migration_config: None,
+            };
 
             storcon_client
                 .dispatch::<TenantShardMigrateRequest, TenantShardMigrateResponse>(
@@ -1082,7 +1088,10 @@ async fn main() -> anyhow::Result<()> {
                             .dispatch::<TenantShardMigrateRequest, TenantShardMigrateResponse>(
                                 Method::PUT,
                                 format!("control/v1/tenant/{}/migrate", mv.tenant_shard_id),
-                                Some(TenantShardMigrateRequest { node_id: mv.to }),
+                                Some(TenantShardMigrateRequest {
+                                    node_id: mv.to,
+                                    migration_config: None,
+                                }),
                             )
                             .await
                             .map_err(|e| (mv.tenant_shard_id, mv.from, mv.to, e))

@@ -1,7 +1,7 @@
 use crate::pageserver_client::PageserverClient;
 use crate::persistence::Persistence;
 use crate::{compute_hook, service};
-use pageserver_api::controller_api::{AvailabilityZone, PlacementPolicy};
+use pageserver_api::controller_api::{AvailabilityZone, MigrationConfig, PlacementPolicy};
 use pageserver_api::models::{
     LocationConfig, LocationConfigMode, LocationConfigSecondary, TenantConfig, TenantWaitLsnRequest,
 };
@@ -142,6 +142,22 @@ impl ReconcilerConfig {
         const SECONDARY_DOWNLOAD_REQUEST_TIMEOUT_DEFAULT: Duration = Duration::from_secs(20);
         self.secondary_download_request_timeout
             .unwrap_or(SECONDARY_DOWNLOAD_REQUEST_TIMEOUT_DEFAULT)
+    }
+}
+
+impl From<&MigrationConfig> for ReconcilerConfig {
+    fn from(value: &MigrationConfig) -> Self {
+        let mut builder = ReconcilerConfigBuilder::new();
+
+        if let Some(timeout) = value.secondary_warmup_timeout {
+            builder = builder.secondary_warmup_timeout(timeout)
+        }
+
+        if let Some(timeout) = value.secondary_download_request_timeout {
+            builder = builder.secondary_download_request_timeout(timeout)
+        }
+
+        builder.build()
     }
 }
 

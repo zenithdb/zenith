@@ -5109,7 +5109,12 @@ impl Service {
                 shard.sequence = shard.sequence.next();
             }
 
-            self.maybe_reconcile_shard(shard, nodes)
+            let reconciler_config = match migrate_req.migration_config {
+                Some(cfg) => (&cfg).into(),
+                None => ReconcilerConfig::default(),
+            };
+
+            self.maybe_configured_reconcile_shard(shard, nodes, reconciler_config)
         };
 
         if let Some(waiter) = waiter {
