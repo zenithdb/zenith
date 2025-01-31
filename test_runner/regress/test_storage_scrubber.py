@@ -71,6 +71,10 @@ def test_scrubber_tenant_snapshot(neon_env_builder: NeonEnvBuilder, shard_count:
     else:
         tenant_shard_ids = [TenantShardId(tenant_id, 0, 0)]
 
+    # Let shards finish rescheduling to other pageservers: this makes the rest of the test more stable
+    # is it won't overlap with migrations
+    env.storage_controller.reconcile_until_idle(max_interval=0.1, timeout_secs=120)
+
     output_path = neon_env_builder.test_output_dir / "snapshot"
     os.makedirs(output_path)
 
