@@ -358,6 +358,9 @@ pub struct TenantConfOpt {
     pub image_layer_creation_check_threshold: Option<u8>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_creation_preempt_threshold: Option<usize>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(with = "humantime_serde")]
     #[serde(default)]
     pub lsn_lease_length: Option<Duration>,
@@ -453,6 +456,9 @@ impl TenantConfOpt {
             image_layer_creation_check_threshold: self
                 .image_layer_creation_check_threshold
                 .unwrap_or(global_conf.image_layer_creation_check_threshold),
+            image_creation_preempt_threshold: self
+                .image_creation_preempt_threshold
+                .unwrap_or(global_conf.image_creation_preempt_threshold),
             lsn_lease_length: self
                 .lsn_lease_length
                 .unwrap_or(global_conf.lsn_lease_length),
@@ -504,6 +510,7 @@ impl TenantConfOpt {
             mut lazy_slru_download,
             mut timeline_get_throttle,
             mut image_layer_creation_check_threshold,
+            mut image_creation_preempt_threshold,
             mut lsn_lease_length,
             mut lsn_lease_length_for_ts,
             mut timeline_offloading,
@@ -579,6 +586,9 @@ impl TenantConfOpt {
             .image_layer_creation_check_threshold
             .apply(&mut image_layer_creation_check_threshold);
         patch
+            .image_creation_preempt_threshold
+            .apply(&mut image_creation_preempt_threshold);
+        patch
             .lsn_lease_length
             .map(|v| humantime::parse_duration(&v))?
             .apply(&mut lsn_lease_length);
@@ -626,6 +636,7 @@ impl TenantConfOpt {
             lazy_slru_download,
             timeline_get_throttle,
             image_layer_creation_check_threshold,
+            image_creation_preempt_threshold,
             lsn_lease_length,
             lsn_lease_length_for_ts,
             timeline_offloading,
@@ -689,6 +700,7 @@ impl From<TenantConfOpt> for models::TenantConfig {
             lazy_slru_download: value.lazy_slru_download,
             timeline_get_throttle: value.timeline_get_throttle,
             image_layer_creation_check_threshold: value.image_layer_creation_check_threshold,
+            image_creation_preempt_threshold: value.image_creation_preempt_threshold,
             lsn_lease_length: value.lsn_lease_length.map(humantime),
             lsn_lease_length_for_ts: value.lsn_lease_length_for_ts.map(humantime),
             timeline_offloading: value.timeline_offloading,

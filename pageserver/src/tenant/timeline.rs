@@ -189,6 +189,14 @@ pub enum ImageLayerCreationMode {
     Initial,
 }
 
+#[derive(Clone, Debug, Default)]
+pub enum LastImageLayerCreationStatus {
+    Incomplete, // TODO: record the last key being processed
+    Complete,
+    #[default]
+    Initial,
+}
+
 impl std::fmt::Display for ImageLayerCreationMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self)
@@ -346,6 +354,8 @@ pub struct Timeline {
     // List of child timelines and their branch points. This is needed to avoid
     // garbage collecting data that is still needed by the child timelines.
     pub(crate) gc_info: std::sync::RwLock<GcInfo>,
+
+    pub(crate) last_image_layer_creation_status: ArcSwap<LastImageLayerCreationStatus>,
 
     // It may change across major versions so for simplicity
     // keep it after running initdb for a timeline.
@@ -936,9 +946,16 @@ pub(crate) enum ShutdownMode {
     Hard,
 }
 
-struct ImageLayerCreationOutcome {
-    unfinished_image_layer: Option<ImageLayerWriter>,
-    next_start_key: Key,
+enum ImageLayerCreationOutcome {
+    /// We generated an image layer
+    Generated {
+        unfinished_image_layer: ImageLayerWriter,
+    },
+    /// The key range is empty
+    Empty,
+    /// (Only used in metadata image layer creation), after reading the metadata keys, we decide to skip
+    /// the image layer creation.
+    Skip,
 }
 
 /// Public interface functions
@@ -2349,6 +2366,18 @@ impl Timeline {
             )
     }
 
+    fn get_image_creation_preempt_threshold(&self) -> usize {
+        let tenant_conf = self.tenant_conf.load();
+        tenant_conf
+            .tenant_conf
+            .image_creation_preempt_threshold
+            .unwrap_or(
+                self.conf
+                    .default_tenant_conf
+                    .image_creation_preempt_threshold,
+            )
+    }
+
     /// Resolve the effective WAL receiver protocol to use for this tenant.
     ///
     /// Priority order is:
@@ -2498,6 +2527,10 @@ impl Timeline {
                 write_lock: tokio::sync::Mutex::new(None),
 
                 gc_info: std::sync::RwLock::new(GcInfo::default()),
+
+                last_image_layer_creation_status: ArcSwap::new(Arc::new(
+                    LastImageLayerCreationStatus::default(),
+                )),
 
                 latest_gc_cutoff_lsn: Rcu::new(metadata.latest_gc_cutoff_lsn()),
                 initdb_lsn: metadata.initdb_lsn(),
@@ -4042,15 +4075,20 @@ impl Timeline {
             }
 
             let mut layers_to_upload = Vec::new();
-            layers_to_upload.extend(
-                self.create_image_layers(
+            let (generated_image_layers, is_complete) = self
+                .create_image_layers(
                     &partitions,
                     self.initdb_lsn,
                     ImageLayerCreationMode::Initial,
                     ctx,
+                    LastImageLayerCreationStatus::Initial,
                 )
-                .await?,
+                .await?;
+            debug_assert!(
+                matches!(is_complete, LastImageLayerCreationStatus::Complete),
+                "init image generation mode must fully cover the keyspace"
             );
+            layers_to_upload.extend(generated_image_layers);
 
             (layers_to_upload, None)
         } else {
@@ -4370,7 +4408,6 @@ impl Timeline {
         lsn: Lsn,
         ctx: &RequestContext,
         img_range: Range<Key>,
-        start: Key,
         io_concurrency: IoConcurrency,
     ) -> Result<ImageLayerCreationOutcome, CreateImageLayersError> {
         let mut wrote_keys = false;
@@ -4458,26 +4495,23 @@ impl Timeline {
                     lsn
                 },
             );
-            Ok(ImageLayerCreationOutcome {
-                unfinished_image_layer: Some(image_layer_writer),
-                next_start_key: img_range.end,
+            Ok(ImageLayerCreationOutcome::Generated {
+                unfinished_image_layer: image_layer_writer,
             })
         } else {
-            // Special case: the image layer may be empty if this is a sharded tenant and the
-            // partition does not cover any keys owned by this shard.  In this case, to ensure
-            // we don't leave gaps between image layers, leave `start` where it is, so that the next
-            // layer we write will cover the key range that we just scanned.
             tracing::debug!("no data in range {}-{}", img_range.start, img_range.end);
-            Ok(ImageLayerCreationOutcome {
-                unfinished_image_layer: None,
-                next_start_key: start,
-            })
+            Ok(ImageLayerCreationOutcome::Empty)
         }
     }
 
     /// Create an image layer for metadata keys. This function produces one image layer for all metadata
     /// keys for now. Because metadata keys cannot exceed basebackup size limit, the image layer for it
     /// would not be too large to fit in a single image layer.
+    ///
+    /// Creating image layers for metadata keys are different from relational keys. Firstly, instead of
+    /// iterating each key and get an image for each of them, we do a `vectored_get` scan over the sparse
+    /// keyspace to get all images in one run. Secondly, we use a different image layer generation metrics
+    /// for metadata keys than relational keys, which is the number of delta files visited during the scan.
     #[allow(clippy::too_many_arguments)]
     async fn create_image_layer_for_metadata_keys(
         self: &Arc<Self>,
@@ -4487,12 +4521,13 @@ impl Timeline {
         ctx: &RequestContext,
         img_range: Range<Key>,
         mode: ImageLayerCreationMode,
-        start: Key,
         io_concurrency: IoConcurrency,
     ) -> Result<ImageLayerCreationOutcome, CreateImageLayersError> {
         // Metadata keys image layer creation.
         let mut reconstruct_state = ValuesReconstructState::new(io_concurrency);
         let begin = Instant::now();
+        // Directly use `get_vectored_impl` to skip the max_vectored_read_key limit check. Note that the keyspace should
+        // not contain too many keys, otherwise this takes a lot of memory.
         let data = self
             .get_vectored_impl(partition.clone(), lsn, &mut reconstruct_state, ctx)
             .await?;
@@ -4517,10 +4552,7 @@ impl Timeline {
         );
 
         if !trigger_generation && mode == ImageLayerCreationMode::Try {
-            return Ok(ImageLayerCreationOutcome {
-                unfinished_image_layer: None,
-                next_start_key: img_range.end,
-            });
+            return Ok(ImageLayerCreationOutcome::Skip);
         }
         if self.cancel.is_cancelled() {
             return Err(CreateImageLayersError::Cancelled);
@@ -4551,20 +4583,12 @@ impl Timeline {
                     lsn
                 }
             );
-            Ok(ImageLayerCreationOutcome {
-                unfinished_image_layer: Some(image_layer_writer),
-                next_start_key: img_range.end,
+            Ok(ImageLayerCreationOutcome::Generated {
+                unfinished_image_layer: image_layer_writer,
             })
         } else {
-            // Special case: the image layer may be empty if this is a sharded tenant and the
-            // partition does not cover any keys owned by this shard. In this case, to ensure
-            // we don't leave gaps between image layers, leave `start` where it is, so that the next
-            // layer we write will cover the key range that we just scanned.
             tracing::debug!("no data in range {}-{}", img_range.start, img_range.end);
-            Ok(ImageLayerCreationOutcome {
-                unfinished_image_layer: None,
-                next_start_key: start,
-            })
+            Ok(ImageLayerCreationOutcome::Empty)
         }
     }
 
@@ -4620,6 +4644,8 @@ impl Timeline {
         decision
     }
 
+    /// Returns the image layers generated and a boolean indicating whether the process is fully completed.
+    /// true = we have generate all image layers, false = we preempt the process for L0 compaction.
     #[tracing::instrument(skip_all, fields(%lsn, %mode))]
     async fn create_image_layers(
         self: &Arc<Timeline>,
@@ -4627,7 +4653,8 @@ impl Timeline {
         lsn: Lsn,
         mode: ImageLayerCreationMode,
         ctx: &RequestContext,
-    ) -> Result<Vec<ResidentLayer>, CreateImageLayersError> {
+        last_status: LastImageLayerCreationStatus,
+    ) -> Result<(Vec<ResidentLayer>, LastImageLayerCreationStatus), CreateImageLayersError> {
         let timer = self.metrics.create_images_time_histo.start_timer();
 
         // We need to avoid holes between generated image layers.
@@ -4641,9 +4668,22 @@ impl Timeline {
         // image layers  <100000000..100000099> and <200000000..200000199> are not completely covering it.
         let mut start = Key::MIN;
 
-        let check_for_image_layers = self.should_check_if_image_layers_required(lsn);
+        let check_for_image_layers = if let LastImageLayerCreationStatus::Incomplete = last_status {
+            info!(
+                "resuming image layer creation: last_status={:?}",
+                last_status
+            );
+            true
+        } else {
+            self.should_check_if_image_layers_required(lsn)
+        };
 
         let mut batch_image_writer = BatchLayerWriter::new(self.conf).await?;
+
+        let mut all_generated = true;
+
+        let mut partition_processed = 0;
+        let total_partitions = partitioning.parts.len();
 
         for partition in partitioning.parts.iter() {
             if self.cancel.is_cancelled() {
@@ -4717,17 +4757,13 @@ impl Timeline {
                     .map_err(|_| CreateImageLayersError::Cancelled)?,
             );
 
-            let ImageLayerCreationOutcome {
-                unfinished_image_layer,
-                next_start_key,
-            } = if !compact_metadata {
+            let outcome = if !compact_metadata {
                 self.create_image_layer_for_rel_blocks(
                     partition,
                     image_layer_writer,
                     lsn,
                     ctx,
                     img_range.clone(),
-                    start,
                     io_concurrency,
                 )
                 .await?
@@ -4739,18 +4775,58 @@ impl Timeline {
                     ctx,
                     img_range.clone(),
                     mode,
-                    start,
                     io_concurrency,
                 )
                 .await?
             };
-            start = next_start_key;
-            if let Some(unfinished_image_layer) = unfinished_image_layer {
-                batch_image_writer.add_unfinished_image_writer(
+            match outcome {
+                ImageLayerCreationOutcome::Empty => {
+                    // No data in this partition, so we don't need to create an image layer (for now).
+                    // The next image layer should cover this key range, so we don't advance the `start`
+                    // key.
+                }
+                ImageLayerCreationOutcome::Generated {
                     unfinished_image_layer,
-                    img_range,
-                    lsn,
-                );
+                } => {
+                    batch_image_writer.add_unfinished_image_writer(
+                        unfinished_image_layer,
+                        img_range.clone(),
+                        lsn,
+                    );
+                    // The next image layer should be generated right after this one.
+                    start = img_range.end;
+                }
+                ImageLayerCreationOutcome::Skip => {
+                    // We don't need to create an image layer for this partition.
+                    // The next image layer should NOT cover this range, otherwise
+                    // the keyspace becomes empty (reads don't go past image layers).
+                    start = img_range.end;
+                }
+            }
+
+            partition_processed += 1;
+
+            if let ImageLayerCreationMode::Try = mode {
+                // We have at least made some progress
+                if batch_image_writer.pending_layer_num() >= 1 {
+                    // The `Try` mode is currently only used on the compaction path. We want to avoid
+                    // image layer generation taking too long time and blocking L0 compaction. So in this
+                    // mode, we also inspect the current number of L0 layers and skip image layer generation
+                    // if there are too many of them.
+                    let num_of_l0_layers = {
+                        let layers = self.layers.read().await;
+                        layers.layer_map()?.level0_deltas().len()
+                    };
+                    let image_preempt_threshold = self.get_image_creation_preempt_threshold()
+                        * self.get_compaction_threshold();
+                    if image_preempt_threshold != 0 && num_of_l0_layers >= image_preempt_threshold {
+                        tracing::info!(
+                        "preempt image layer generation at {start} at {lsn}: too many L0 layers {num_of_l0_layers}",
+                    );
+                        all_generated = false;
+                        break;
+                    }
+                }
             }
         }
 
@@ -4765,14 +4841,35 @@ impl Timeline {
             .open_mut()?
             .track_new_image_layers(&image_layers, &self.metrics);
         drop_wlock(guard);
-        timer.stop_and_record();
+        let duration = timer.stop_and_record();
 
         // Creating image layers may have caused some previously visible layers to be covered
         if !image_layers.is_empty() {
             self.update_layer_visibility().await?;
         }
 
-        Ok(image_layers)
+        let total_layer_size = image_layers
+            .iter()
+            .map(|l| l.metadata().file_size)
+            .sum::<u64>();
+
+        info!(
+            "created {} image layers ({} bytes) in {}s, processed {} out of {} partitions",
+            image_layers.len(),
+            total_layer_size,
+            duration.as_secs_f64(),
+            partition_processed,
+            total_partitions
+        );
+
+        Ok((
+            image_layers,
+            if all_generated {
+                LastImageLayerCreationStatus::Complete
+            } else {
+                LastImageLayerCreationStatus::Incomplete
+            },
+        ))
     }
 
     /// Wait until the background initial logical size calculation is complete, or

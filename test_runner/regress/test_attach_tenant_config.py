@@ -184,6 +184,7 @@ def test_fully_custom_config(positive_env: NeonEnv):
         "gc_compaction_enabled": True,
         "gc_compaction_initial_threshold_kb": 1024000,
         "gc_compaction_ratio_percent": 200,
+        "image_creation_preempt_threshold": 5,
     }
 
     vps_http = env.storage_controller.pageserver_api()

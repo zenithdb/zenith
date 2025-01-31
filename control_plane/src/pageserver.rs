@@ -388,6 +388,11 @@ impl PageServerNode {
                 .map(|x| x.parse::<u8>())
                 .transpose()
                 .context("Failed to parse 'image_creation_check_threshold' as integer")?,
+            image_creation_preempt_threshold: settings
+                .remove("image_creation_preempt_threshold")
+                .map(|x| x.parse::<usize>())
+                .transpose()
+                .context("Failed to parse 'image_creation_preempt_threshold' as integer")?,
             pitr_interval: settings.remove("pitr_interval").map(|x| x.to_string()),
             walreceiver_connect_timeout: settings
                 .remove("walreceiver_connect_timeout")

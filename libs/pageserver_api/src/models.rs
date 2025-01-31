@@ -498,6 +498,8 @@ pub struct TenantConfigPatch {
     #[serde(skip_serializing_if = "FieldPatch::is_noop")]
     pub image_layer_creation_check_threshold: FieldPatch<u8>,
     #[serde(skip_serializing_if = "FieldPatch::is_noop")]
+    pub image_creation_preempt_threshold: FieldPatch<usize>,
+    #[serde(skip_serializing_if = "FieldPatch::is_noop")]
     pub lsn_lease_length: FieldPatch<String>,
     #[serde(skip_serializing_if = "FieldPatch::is_noop")]
     pub lsn_lease_length_for_ts: FieldPatch<String>,
@@ -544,6 +546,7 @@ pub struct TenantConfig {
     pub lazy_slru_download: Option<bool>,
     pub timeline_get_throttle: Option<ThrottleConfig>,
     pub image_layer_creation_check_threshold: Option<u8>,
+    pub image_creation_preempt_threshold: Option<usize>,
     pub lsn_lease_length: Option<String>,
     pub lsn_lease_length_for_ts: Option<String>,
     pub timeline_offloading: Option<bool>,
@@ -581,6 +584,7 @@ impl TenantConfig {
             mut lazy_slru_download,
             mut timeline_get_throttle,
             mut image_layer_creation_check_threshold,
+            mut image_creation_preempt_threshold,
             mut lsn_lease_length,
             mut lsn_lease_length_for_ts,
             mut timeline_offloading,
@@ -635,6 +639,9 @@ impl TenantConfig {
         patch
             .image_layer_creation_check_threshold
             .apply(&mut image_layer_creation_check_threshold);
+        patch
+            .image_creation_preempt_threshold
+            .apply(&mut image_creation_preempt_threshold);
         patch.lsn_lease_length.apply(&mut lsn_lease_length);
         patch
             .lsn_lease_length_for_ts
@@ -679,6 +686,7 @@ impl TenantConfig {
             lazy_slru_download,
             timeline_get_throttle,
             image_layer_creation_check_threshold,
+            image_creation_preempt_threshold,
             lsn_lease_length,
             lsn_lease_length_for_ts,
             timeline_offloading,

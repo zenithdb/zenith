@@ -323,6 +323,10 @@ pub struct TenantConfigToml {
     // Expresed in multiples of checkpoint distance.
     pub image_layer_creation_check_threshold: u8,
 
+    // How many multiple of l0 threshold will preempt image layer creation and do L0 compaction.
+    // Set to 0 to disable preemption.
+    pub image_creation_preempt_threshold: usize,
+
     /// The length for an explicit LSN lease request.
     /// Layers needed to reconstruct pages at LSN will not be GC-ed during this interval.
     #[serde(with = "humantime_serde")]
@@ -547,6 +551,9 @@ pub mod tenant_conf_defaults {
     // Relevant: https://github.com/neondatabase/neon/issues/3394
     pub const DEFAULT_GC_PERIOD: &str = "1 hr";
     pub const DEFAULT_IMAGE_CREATION_THRESHOLD: usize = 3;
+    // If there are more than threshold * compaction_threshold (that is 3 * 10 in the default config) L0 layers, image
+    // layer creation will end immediately. Set to 0 to disable.
+    pub const DEFAULT_IMAGE_CREATION_PREEMPT_THRESHOLD: usize = 3;
     pub const DEFAULT_PITR_INTERVAL: &str = "7 days";
     pub const DEFAULT_WALRECEIVER_CONNECT_TIMEOUT: &str = "10 seconds";
     pub const DEFAULT_WALRECEIVER_LAGGING_WAL_TIMEOUT: &str = "10 seconds";
@@ -605,6 +612,7 @@ impl Default for TenantConfigToml {
             lazy_slru_download: false,
             timeline_get_throttle: crate::models::ThrottleConfig::disabled(),
             image_layer_creation_check_threshold: DEFAULT_IMAGE_LAYER_CREATION_CHECK_THRESHOLD,
+            image_creation_preempt_threshold: DEFAULT_IMAGE_CREATION_PREEMPT_THRESHOLD,
             lsn_lease_length: LsnLease::DEFAULT_LENGTH,
             lsn_lease_length_for_ts: LsnLease::DEFAULT_LENGTH_FOR_TS,
             timeline_offloading: false,

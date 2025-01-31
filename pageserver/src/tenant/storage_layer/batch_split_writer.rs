@@ -166,6 +166,10 @@ impl BatchLayerWriter {
         // END: catch every error and do the recovery in the above section
         Ok(generated_layers)
     }
+
+    pub fn pending_layer_num(&self) -> usize {
+        self.generated_layer_writers.len()
+    }
 }
 
 /// An image writer that takes images and produces multiple image layers.
