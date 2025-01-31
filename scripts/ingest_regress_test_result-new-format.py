@@ -120,7 +120,38 @@ def ingest_test_result(
 ):
     rows = []
     for f in test_cases_dir.glob("*.json"):
-        test = json.loads(f.read_text())
+        # 1. Validate JSON
+        try:
+            print(f"---> Ingesting ${f.name}...")
+            test = json.loads(f.read_text())
+        except json.JSONDecodeError:
+            print(f"Error parsing JSON. Skipping '{f.name}'..")
+            continue
+
+        # 2. Validate required keys
+        required_keys = ["name", "status", "parameters", "labels", "time", "flaky", "retriesStatusChange"]
+        missing_keys = [key for key in required_keys if key not in test]
+        if missing_keys:
+            print(f"Missing keys: {', '.join(missing_keys)}. Skipping '{f.name}'..")
+            continue
+
+        # 3. Validate parameters
+        parameters = test.get("parameters", [])
+        if not parameters:
+            print(f"Missing or empty parameters. Skipping '{f.name}'..")
+            continue
+
+        # 4. Validate time-related keys
+        if not all(k in test.get("time", {}) for k in ["start", "stop", "duration"]):
+            print(f"Missing time-related keys. Skipping '{f.name}'..")
+            continue
+
+        # 5. Validate labels
+        labels = {label["name"]: label["value"] for label in test.get("labels", [])}
+        if not all(k in labels for k in ["suite", "parentSuite"]):
+            print(f"Missing labels. Skipping '{f.name}'..")
+            continue
+
         # Drop unneded fields from raw data
         raw = test.copy()
         raw.pop("parameterValues")
@@ -137,7 +168,7 @@ def ingest_test_result(
         lfc = parameters.get("lfc", "without-lfc").strip("'") == "with-lfc"
 
         build_type, pg_version, unparametrized_name = parse_test_name(test["name"])
-        labels = {label["name"]: label["value"] for label in test["labels"]}
+
         row = Row(
             parent_suite=labels["parentSuite"],
             suite=labels["suite"],
