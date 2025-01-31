@@ -2,12 +2,12 @@ use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use postgres_client::tls::MakeTlsConnect;
 use postgres_client::CancelToken;
 use pq_proto::CancelKeyData;
-use redis::{Cmd, FromRedisValue};
+use redis::{pipe, Cmd, FromRedisValue, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::net::TcpStream;
@@ -138,8 +138,16 @@ pub async fn handle_cancel_messages(
     client: &mut RedisKVClient,
     mut rx: mpsc::Receiver<CancelKeyOp>,
 ) -> anyhow::Result<Infallible> {
+    let mut buffer = Vec::new();
+    let mut replies = vec![];
+
     loop {
-        if let Some(msg) = rx.recv().await {
+        if rx.recv_many(&mut buffer, 8).await == 0 {
+            break std::future::pending().await;
+        }
+
+        let mut pipe = pipe();
+        for msg in buffer.drain(..) {
             #[allow(clippy::used_underscore_binding)]
             let (cmd, reply) = match msg {
                 CancelKeyOp::StoreCancelKey {
@@ -172,11 +180,29 @@ pub async fn handle_cancel_messages(
                 ),
             };
 
-            match client.query(cmd).await {
-                Ok(v) => reply.send_value(v),
-                Err(e) => reply.send_err(e),
-            };
+            pipe.add_command(cmd);
+            replies.push(reply);
         }
+
+        match client.query(pipe).await {
+            Ok(Value::Bulk(values)) if values.len() == buffer.len() => {
+                for (value, reply) in std::iter::zip(values, replies.drain(..)) {
+                    reply.send_value(value);
+                }
+            }
+            Ok(_) => {
+                for reply in replies.drain(..) {
+                    reply.send_err(anyhow!(
+                        "could not send cmd to redis: incorrect response type"
+                    ));
+                }
+            }
+            Err(e) => {
+                for reply in replies.drain(..) {
+                    reply.send_err(anyhow!("could not send cmd to redis: {e}"));
+                }
+            }
+        };
     }
 }
 
