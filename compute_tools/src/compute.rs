@@ -1486,6 +1486,7 @@ impl ComputeNode {
             // First, create control files for all availale extensions
             extension_server::create_control_files(remote_extensions, &self.pgbin);
 
+            // Second, preload all remote extensions specified in the shared_preload_libraries
             let library_load_start_time = Utc::now();
             let remote_ext_metrics = self.prepare_preload_libraries(&pspec.spec)?;
 
@@ -1908,8 +1909,9 @@ LIMIT 100",
             .as_ref()
             .ok_or(anyhow::anyhow!("Remote extensions are not configured"))?;
 
-        info!("parse shared_preload_libraries from spec.cluster.settings");
         let mut libs_vec = Vec::new();
+
+        info!("parse shared_preload_libraries from spec.cluster.settings");
         if let Some(libs) = spec.cluster.settings.find("shared_preload_libraries") {
             libs_vec = libs
                 .split(&[',', '\'', ' '])
@@ -1917,9 +1919,9 @@ LIMIT 100",
                 .map(str::to_string)
                 .collect();
         }
-        info!("parse shared_preload_libraries from provided postgresql.conf");
 
-        // that is used in neon_local and python tests
+        // This is used in neon_local and python tests
+        info!("parse shared_preload_libraries from provided postgresql.conf");
         if let Some(conf) = &spec.cluster.postgresql_conf {
             let conf_lines = conf.split('\n').collect::<Vec<&str>>();
             let mut shared_preload_libraries_line = "";
@@ -1943,7 +1945,10 @@ LIMIT 100",
         // Assume that they are already present locally.
         libs_vec.retain(|lib| remote_extensions.library_index.contains_key(lib));
 
-        info!("Downloading to shared preload libraries: {:?}", &libs_vec);
+        info!(
+            "Downloading extensions specified in shared_preload_libraries: {:?}",
+            &libs_vec
+        );
 
         let mut download_tasks = Vec::new();
         for library in &libs_vec {
