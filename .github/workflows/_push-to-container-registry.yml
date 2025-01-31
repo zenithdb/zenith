@@ -1,0 +1,93 @@
+name: Push images to Container Registry
+on:
+  workflow_call:
+    inputs:
+      image-map:
+        description: JSON map of images, mapping from a source image to an array of target images that should be pushed.
+        required: true
+        type: string
+      aws-region:
+        description: AWS region to log in to. Required when pushing to ECR.
+        required: false
+        type: string
+      aws-account-ids:
+        description: Comma separated AWS account IDs to log in to for pushing to ECR. Required when pushing to ECR.
+        required: false
+        type: string
+      aws-role-to-assume:
+        description: AWS role to assume. Required when pushing to ECR.
+        required: false
+        type: string
+      azure-client-id:
+        description: Client ID of Azure managed identity or Entra app. Required when pushing to ACR.
+        required: false
+        type: string
+      azure-subscription-id:
+        description: Azure subscription ID. Required when pushing to ACR.
+        required: false
+        type: string
+      azure-tenant-id:
+        description: Azure tenant ID. Required when pushing to ACR.
+        required: false
+        type: string
+      acr-registry-names:
+        description: ACR registry name. Required when pushing to ACR.
+        required: false
+        type: string
+      docker-hub-username:
+        description: Docker Hub username. Required when pushing to Docker Hub.
+        required: false
+        type: string
+    secrets:
+      docker-hub-password:
+        description: Docker Hub password. Required when pushing to Docker Hub.
+        required: false
+        type: string
+
+permissions:
+  id-token: write  # Required for aws/azure login
+
+jobs:
+  push-to-container-registry:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: "${{ inputs.aws-region }}"
+          role-to-assume: "${{ inputs.aws-role-to-assume }}"
+          role-duration-seconds: 3600
+        if: contains(inputs.image_map, 'amazonaws.com/')
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: "${{ inputs.aws-account-ids }}"
+        if: contains(inputs.image_map, 'amazonaws.com/')
+
+      - name: Configure Azure credentials
+        uses: azure/login@6c251865b4e6290e7b78be643ea2d005bc51f69a  # @v2.1.1
+        with:
+          client-id: ${{ inputs.azure-client-id }}
+          subscription-id: ${{ inputs.azure-subscription-id }}
+          tenant-id: ${{ inputs.azure-tenant-id }}
+        if: contains(inputs.image_map, 'azurecr.io/')
+
+      - name: Login to ACR
+        run: |
+          az acr login --name=${{ inputs.acr-registry-name }}
+        if: contains(inputs.image_map, 'azurecr.io/')
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ inputs.docker-hub-username }}
+          password: ${{ secrets.docker-hub-password }}
+
+      - name: Copy docker images to target registries
+        run: |
+          for source in $(echo '${{ inputs.image_map }}' | jq -r 'keys.[]'); do
+            for target in $(echo '${{ inputs.image_map }}' | jq --arg source $source -r '.[$source].[]'); do              
+              docker buildx imagetools create -t ${target} ${source}
+            done
+          done
