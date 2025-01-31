@@ -185,7 +185,7 @@ services:
       - compute
 
   neon-test-extensions:
-    profiles: ["test-extensions"]
+    profiles: ["test-extensions", "parallel-test-extensions"]
     image: ${REPOSITORY:-neondatabase}/neon-test-extensions-v${PG_TEST_VERSION:-16}:${TAG:-latest}
     environment:
       - PGPASSWORD=cloud_admin
@@ -196,3 +196,78 @@ services:
       - sleep 1800
     depends_on:
       - compute
+
+  pcompute1:
+    profiles: ["parallel-test-extensions"]
+    restart: always
+    image: docker-compose-compute
+    environment:
+      - PG_VERSION=${PG_VERSION:-16}
+      #- RUST_BACKTRACE=1
+    # Mount the test files directly, for faster editing cycle.
+    volumes:
+      - ./compute_wrapper/var/db/postgres/specs/:/var/db/postgres/specs/
+      - ./compute_wrapper/shell/:/shell/
+    entrypoint:
+      - "/shell/pcompute.sh"
+    depends_on:
+      - safekeeper1
+      - safekeeper2
+      - safekeeper3
+      - pageserver
+
+  pcompute2:
+    profiles: ["parallel-test-extensions"]
+    restart: always
+    image: docker-compose-compute
+    environment:
+      - PG_VERSION=${PG_VERSION:-16}
+      #- RUST_BACKTRACE=1
+    # Mount the test files directly, for faster editing cycle.
+    volumes:
+      - ./compute_wrapper/var/db/postgres/specs/:/var/db/postgres/specs/
+      - ./compute_wrapper/shell/:/shell/
+    entrypoint:
+      - "/shell/pcompute.sh"
+    depends_on:
+      - safekeeper1
+      - safekeeper2
+      - safekeeper3
+      - pageserver
+
+  pcompute3:
+    profiles: ["parallel-test-extensions"]
+    restart: always
+    image: docker-compose-compute
+    environment:
+      - PG_VERSION=${PG_VERSION:-16}
+      #- RUST_BACKTRACE=1
+    # Mount the test files directly, for faster editing cycle.
+    volumes:
+      - ./compute_wrapper/var/db/postgres/specs/:/var/db/postgres/specs/
+      - ./compute_wrapper/shell/:/shell/
+    entrypoint:
+      - "/shell/pcompute.sh"
+    depends_on:
+      - safekeeper1
+      - safekeeper2
+      - safekeeper3
+      - pageserver
+
+  pcomputes_are_ready:
+    profiles: ["parallel-test-extensions"]
+    image: postgres:latest
+    entrypoint:
+      - "/bin/bash"
+      - "-c"
+    command:
+      - "for i in {1..3}; do
+           until pg_isready -h pcompute$$i -p 55433 -U cloud_admin ; do
+             sleep 1;
+           done;
+         done;
+         echo All pcomputes are started"
+    depends_on:
+      - pcompute1
+      - pcompute2
+      - pcompute3

@@ -4,20 +4,10 @@ set -x
 extdir=${1}
 
 cd "${extdir}" || exit 2
-FAILED=
+export FAILED_FILE=/tmp/failed
+touch ${FAILED_FILE}
 LIST=$( (echo -e "${SKIP//","/"\n"}"; ls) | sort | uniq -u)
-for d in ${LIST}; do
-    [ -d "${d}" ] || continue
-    if ! psql -w -c "select 1" >/dev/null; then
-      FAILED="${d} ${FAILED}"
-      break
-    fi
-    if [ -f "${d}/neon-test.sh" ]; then
-       "${d}/neon-test.sh" || FAILED="${d} ${FAILED}"
-    else
-       USE_PGXS=1 make -C "${d}" installcheck || FAILED="${d} ${FAILED}"
-    fi
-done
+parallel -j3 "[ -d {} ] || exit 0; if ! psql -c "select 1" >/dev/null; then {echo {} >> ${FAILED_FILE}; exit 1; fi ; if [ -f $extdir/{}/neon-test.sh ]; then echo Running from script; PGHOST=pcompute{%} time ${extdir}/{}/neon-test.sh || echo {} >> ${FAILED_FILE}; else echo Running using make; time USE_PGXS=1 PGHOST=pcompute{%} make -C {} installcheck || echo {} >> ${FAILED_FILE}; fi;" ::: ${LIST}
 [ -z "${FAILED}" ] && exit 0
 echo "${FAILED}"
 exit 1
