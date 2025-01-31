@@ -63,7 +63,7 @@ def test_layer_bloating(neon_env_builder: NeonEnvBuilder, vanilla_pg):
     cur.execute("set statement_timeout=0")
     cur.execute("select create_snapshots(10000)")
     # Wait logical replication to sync
-    logical_replication_sync(vanilla_pg, endpoint)
+    logical_replication_sync(vanilla_pg, endpoint, "sub1")
     wait_for_last_flush_lsn(env, endpoint, env.initial_tenant, timeline)
     env.pageserver.http_client().timeline_checkpoint(env.initial_tenant, timeline, compact=False)
 

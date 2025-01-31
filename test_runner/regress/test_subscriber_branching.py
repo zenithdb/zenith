@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 
 from fixtures.log_helper import log
-from fixtures.neon_fixtures import NeonEnv, logical_replication_sync
+from fixtures.neon_fixtures import NeonEnv
 from fixtures.utils import query_scalar, wait_until
 
 
@@ -208,7 +208,6 @@ def test_subscriber_branching(neon_simple_env: NeonEnv):
         # wake the sub and ensure that it catches up with the new data
         sub.start(create_test_user=True)
         with sub.cursor(dbname="neondb", user="test", password="testpwd") as scur:
-            logical_replication_sync(sub, pub)
             wait_until(check_that_changes_propagated)
             scur.execute("SELECT count(*) FROM t")
             res = scur.fetchall()

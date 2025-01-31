@@ -44,13 +44,13 @@ def test_logical_replication(neon_simple_env: NeonEnv, pg_bin: PgBin, vanilla_pg
     vanilla_pg.safe_psql(f"create subscription sub1 connection '{connstr}' publication pub1")
 
     # Wait logical replication channel to be established
-    logical_replication_sync(vanilla_pg, endpoint)
+    logical_replication_sync(vanilla_pg, endpoint, "sub1")
 
     pg_bin.run_capture(["pgbench", "-c10", "-T100", "-Mprepared", endpoint.connstr()])
 
     # Wait logical replication to sync
     start = time.time()
-    logical_replication_sync(vanilla_pg, endpoint)
+    logical_replication_sync(vanilla_pg, endpoint, "sub1")
     log.info(f"Sync with master took {time.time() - start} seconds")
 
     sum_master = cast("int", endpoint.safe_psql("select sum(abalance) from pgbench_accounts")[0][0])

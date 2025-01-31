@@ -43,7 +43,7 @@ def test_physical_and_logical_replication_slot_not_copied(neon_simple_env: NeonE
     s_cur.execute("select count(*) from t")
     assert s_cur.fetchall()[0][0] == n_records
 
-    logical_replication_sync(vanilla_pg, primary)
+    logical_replication_sync(vanilla_pg, primary, "sub1")
     assert vanilla_pg.safe_psql("select count(*) from t")[0][0] == n_records
 
     # Check that LR slot is not copied to replica
@@ -87,7 +87,7 @@ def test_aux_not_logged_at_replica(neon_simple_env: NeonEnv, vanilla_pg):
     s_con = secondary.connect()
     s_cur = s_con.cursor()
 
-    logical_replication_sync(vanilla_pg, primary)
+    logical_replication_sync(vanilla_pg, primary, "sub1")
 
     assert vanilla_pg.safe_psql("select count(*) from t")[0][0] == n_records
     s_cur.execute("select count(*) from t")
