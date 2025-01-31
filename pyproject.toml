@@ -17,7 +17,7 @@ Jinja2 = "^3.1.5"
 types-requests = "^2.31.0.0"
 types-psycopg2 = "^2.9.21.20241019"
 boto3 = "^1.34.11"
-boto3-stubs = {extras = ["s3"], version = "^1.26.16"}
+boto3-stubs = {extras = ["s3", "kms"], version = "^1.26.16"}
 moto = {extras = ["server"], version = "^5.0.6"}
 backoff = "^2.2.1"
 pytest-lazy-fixture = "^0.6.3"

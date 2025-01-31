@@ -50,8 +50,9 @@ class FastImport(AbstractNeonCli):
 
     def run(
         self,
-        pg_port: int,
+        pg_port: int | None = None,
         source_connection_string: str | None = None,
+        restore_connection_string: str | None = None,
         s3prefix: str | None = None,
         interactive: bool = False,
     ) -> subprocess.CompletedProcess[str]:
@@ -60,11 +61,14 @@ class FastImport(AbstractNeonCli):
         args = [
             f"--pg-bin-dir={self.pg_bin}",
             f"--pg-lib-dir={self.pg_lib}",
-            f"--pg-port={pg_port}",
             f"--working-directory={self.workdir}",
         ]
+        if pg_port is not None:
+            args.append(f"--pg-port={pg_port}")
         if source_connection_string is not None:
             args.append(f"--source-connection-string={source_connection_string}")
+        if restore_connection_string is not None:
+            args.append(f"--restore-connection-string={restore_connection_string}")
         if s3prefix is not None:
             args.append(f"--s3-prefix={s3prefix}")
         if interactive:

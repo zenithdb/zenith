@@ -412,6 +412,7 @@ files = [
 
 [package.dependencies]
 botocore-stubs = "*"
+mypy-boto3-kms = {version = ">=1.26.0,<1.27.0", optional = true, markers = "extra == \"kms\""}
 mypy-boto3-s3 = {version = ">=1.26.0,<1.27.0", optional = true, markers = "extra == \"s3\""}
 types-s3transfer = "*"
 typing-extensions = ">=4.1.0"
@@ -2017,6 +2018,18 @@ faster-cache = ["orjson"]
 install-types = ["pip"]
 mypyc = ["setuptools (>=50)"]
 reports = ["lxml"]
+
+[[package]]
+name = "mypy-boto3-kms"
+version = "1.26.147"
+description = "Type annotations for boto3.KMS 1.26.147 service generated with mypy-boto3-builder 7.14.5"
+optional = false
+python-versions = ">=3.7"
+groups = ["main"]
+files = [
+    {file = "mypy-boto3-kms-1.26.147.tar.gz", hash = "sha256:816a4d1bb0585e1b9620a3f96c1d69a06f53b7b5621858579dd77c60dbb5fa5c"},
+    {file = "mypy_boto3_kms-1.26.147-py3-none-any.whl", hash = "sha256:493f0db674a25c88769f5cb8ab8ac00d3dda5dfc903d5cda34c990ee64689f79"},
+]
 
 [[package]]
 name = "mypy-boto3-s3"
@@ -3803,4 +3816,4 @@ cffi = ["cffi (>=1.11)"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "4dc3165fe22c0e0f7a030ea0f8a680ae2ff74561d8658c393abbe9112caaf5d7"
+content-hash = "03697c0a4d438ef088b0d397b8f0570aa3998ccf833fe612400824792498878b"
