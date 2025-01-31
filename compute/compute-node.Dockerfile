@@ -1157,6 +1157,56 @@ RUN wget https://github.com/reorg/pg_repack/archive/refs/tags/ver_1.5.2.tar.gz -
     make -j $(getconf _NPROCESSORS_ONLN) && \
     make -j $(getconf _NPROCESSORS_ONLN) install
 
+
+#########################################################################################
+#
+# Layer "pgaudit"
+# compile pgaudit extension
+#
+#########################################################################################
+
+FROM pg-build AS pgaudit-pg-build
+ARG PG_VERSION
+
+RUN case "${PG_VERSION}" in \
+      "v17") \
+        export PGAUDIT_VERSION=17.0 \
+        export PGAUDIT_CHECKSUM=7d0d08d030275d525f36cd48b38c6455f1023da863385badff0cec44965bfd8c \
+        ;; \
+    *) \
+        echo "TODO: support other versions." && exit 0;; \
+    esac && \
+    wget https://github.com/pgaudit/pgaudit/archive/refs/tags/${PGAUDIT_VERSION}.tar.gz -O pgaudit.tar.gz && \
+    echo "${PGAUDIT_CHECKSUM} pgaudit.tar.gz" | sha256sum --check && \
+    mkdir pgaudit-src && cd pgaudit-src && tar xzf ../pgaudit.tar.gz --strip-components=1 -C . && \
+    make install USE_PGXS=1 -j $(getconf _NPROCESSORS_ONLN) PG_CONFIG=/usr/local/pgsql/bin/pg_config && \
+    echo "trusted = true" >> /usr/local/pgsql/share/extension/pgaudit.control
+
+#########################################################################################
+#
+# Layer "pgauditlogtofile"
+# compile pgauditlogtofile extension
+#
+#########################################################################################
+
+FROM pg-build AS pgauditlogtofile-pg-build
+ARG PG_VERSION
+
+RUN case "${PG_VERSION}" in \
+      "v17") \
+        export PGAUDITLOGTOFILE_VERSION=v1.6.4 \
+        export PGAUDITLOGTOFILE_CHECKSUM=ef801eb09c26aaa935c0dabd92c81eb9ebe338930daa9674d420a280c6bc2d70 \
+        ;; \
+    *) \
+        echo "TODO: support other versions." && exit 0;; \
+    esac && \
+    wget https://github.com/fmbiete/pgauditlogtofile/archive/refs/tags/${PGAUDITLOGTOFILE_VERSION}.tar.gz -O pgauditlogtofile.tar.gz && \
+    echo "${PGAUDITLOGTOFILE_CHECKSUM} pgauditlogtofile.tar.gz" | sha256sum --check && \
+    mkdir pgauditlogtofile-src && cd pgauditlogtofile-src && tar xzf ../pgauditlogtofile.tar.gz --strip-components=1 -C . && \
+    make install -j $(getconf _NPROCESSORS_ONLN) && \
+    echo "trusted = true" >> /usr/local/pgsql/share/extension/pgauditlogtofile.control
+
+
 #########################################################################################
 #
 # Layer "neon-pg-ext-build"
@@ -1204,6 +1254,9 @@ COPY --from=pg-ivm-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-partman-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-mooncake-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-repack-build /usr/local/pgsql/ /usr/local/pgsql/
+COPY --from=pgaudit-pg-build /usr/local/pgsql/ /usr/local/pgsql/
+COPY --from=pgauditlogtofile-pg-build /usr/local/pgsql/ /usr/local/pgsql/
+
 COPY pgxn/ pgxn/
 
 RUN make -j $(getconf _NPROCESSORS_ONLN) \
