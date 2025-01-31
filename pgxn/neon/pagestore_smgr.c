@@ -4382,7 +4382,7 @@ neon_redo_read_buffer_filter(XLogReaderState *record, uint8 block_id)
 	uint32		hash;
 	LWLock	   *partitionLock;
 	int			buf_id;
-	bool		no_redo_needed;
+	bool		no_redo_needed = false;
 
 	if (old_redo_read_buffer_filter && old_redo_read_buffer_filter(record, block_id))
 		return true;
@@ -4394,48 +4394,50 @@ neon_redo_read_buffer_filter(XLogReaderState *record, uint8 block_id)
 	XLogRecGetBlockTag(record, block_id, &rinfo, &forknum, &blkno);
 #endif
 
-	CopyNRelFileInfoToBufTag(tag, rinfo);
-	tag.forkNum = forknum;
-	tag.blockNum = blkno;
-
-	hash = BufTableHashCode(&tag);
-	partitionLock = BufMappingPartitionLock(hash);
-
-	/*
-	 * Lock the partition of shared_buffers so that it can't be updated
-	 * concurrently.
-	 */
-	LWLockAcquire(partitionLock, LW_SHARED);
-
-	/*
-	 * Out of an abundance of caution, we always run redo on shared catalogs,
-	 * regardless of whether the block is stored in shared buffers. See also
-	 * this function's top comment.
-	 */
-	if (!OidIsValid(NInfoGetDbOid(rinfo)))
+	if (!XLogRecBlockImageApply(record, block_id))
 	{
-		no_redo_needed = false;
+		CopyNRelFileInfoToBufTag(tag, rinfo);
+		tag.forkNum = forknum;
+		tag.blockNum = blkno;
+
+		hash = BufTableHashCode(&tag);
+		partitionLock = BufMappingPartitionLock(hash);
+
+		/*
+		 * Lock the partition of shared_buffers so that it can't be updated
+		 * concurrently.
+		 */
+		LWLockAcquire(partitionLock, LW_SHARED);
+
+		/*
+		 * Out of an abundance of caution, we always run redo on shared catalogs,
+		 * regardless of whether the block is stored in shared buffers. See also
+		 * this function's top comment.
+		 */
+		if (!OidIsValid(NInfoGetDbOid(rinfo)))
+		{
+			no_redo_needed = false;
+		}
+		else
+		{
+			/* Try to find the relevant buffer */
+			buf_id = BufTableLookup(&tag, hash);
+
+			no_redo_needed = buf_id < 0;
+		}
+
+		/*
+		 * we don't have the buffer in memory, update lwLsn past this record, also
+		 * evict page from file cache
+		 */
+		if (no_redo_needed)
+		{
+			SetLastWrittenLSNForBlock(end_recptr, rinfo, forknum, blkno);
+			lfc_evict(rinfo, forknum, blkno);
+		}
+
+		LWLockRelease(partitionLock);
 	}
-	else
-	{
-		/* Try to find the relevant buffer */
-		buf_id = BufTableLookup(&tag, hash);
-
-		no_redo_needed = buf_id < 0;
-	}
-
-	/*
-	 * we don't have the buffer in memory, update lwLsn past this record, also
-	 * evict page from file cache
-	 */
-	if (no_redo_needed)
-	{
-		SetLastWrittenLSNForBlock(end_recptr, rinfo, forknum, blkno);
-		lfc_evict(rinfo, forknum, blkno);
-	}
-
-	LWLockRelease(partitionLock);
-
 	neon_extend_rel_size(rinfo, forknum, blkno, end_recptr);
 	if (forknum == MAIN_FORKNUM)
 	{
