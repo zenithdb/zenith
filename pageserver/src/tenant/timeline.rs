@@ -117,7 +117,7 @@ use pageserver_api::config::tenant_conf_defaults::DEFAULT_PITR_INTERVAL;
 use crate::config::PageServerConf;
 use crate::keyspace::{KeyPartitioning, KeySpace};
 use crate::metrics::{TimelineMetrics, DELTAS_PER_READ_GLOBAL, LAYERS_PER_READ_GLOBAL};
-use crate::pgdatadir_mapping::CalculateLogicalSizeError;
+use crate::pgdatadir_mapping::{CalculateLogicalSizeError, MetricsUpdate};
 use crate::tenant::config::TenantConfOpt;
 use pageserver_api::reltag::RelTag;
 use pageserver_api::shard::ShardIndex;
@@ -314,6 +314,7 @@ pub struct Timeline {
     // in `crate::page_service` writes these metrics.
     pub(crate) query_metrics: crate::metrics::SmgrQueryTimePerTimeline,
 
+    directory_metrics_inited: [AtomicBool; DirectoryKind::KINDS_NUM],
     directory_metrics: [AtomicU64; DirectoryKind::KINDS_NUM],
 
     /// Ensures layers aren't frozen by checkpointer between
@@ -2207,6 +2208,14 @@ impl Timeline {
             .unwrap_or(self.conf.default_tenant_conf.compaction_threshold)
     }
 
+    pub(crate) fn get_rel_size_v2_enabled(&self) -> bool {
+        let tenant_conf = self.tenant_conf.load();
+        tenant_conf
+            .tenant_conf
+            .rel_size_v2_enabled
+            .unwrap_or(self.conf.default_tenant_conf.rel_size_v2_enabled)
+    }
+
     fn get_compaction_upper_limit(&self) -> usize {
         let tenant_conf = self.tenant_conf.load();
         tenant_conf
@@ -2489,6 +2498,7 @@ impl Timeline {
                 ),
 
                 directory_metrics: array::from_fn(|_| AtomicU64::new(0)),
+                directory_metrics_inited: array::from_fn(|_| AtomicBool::new(false)),
 
                 flush_loop_state: Mutex::new(FlushLoopState::NotStarted),
 
@@ -3248,8 +3258,42 @@ impl Timeline {
         }
     }
 
-    pub(crate) fn update_directory_entries_count(&self, kind: DirectoryKind, count: u64) {
-        self.directory_metrics[kind.offset()].store(count, AtomicOrdering::Relaxed);
+    pub(crate) fn update_directory_entries_count(&self, kind: DirectoryKind, count: MetricsUpdate) {
+        // TODO: this directory metrics is not correct -- we could have multiple reldirs in the system
+        // for each of the database, but we only store one value, and therefore each pgdirmodification
+        // would overwrite the previous value if they modify different databases.
+
+        match count {
+            MetricsUpdate::Set(count) => {
+                self.directory_metrics[kind.offset()].store(count, AtomicOrdering::Relaxed);
+                self.directory_metrics_inited[kind.offset()].store(true, AtomicOrdering::Relaxed);
+            }
+            MetricsUpdate::Add(count) => {
+                // TODO: these operations are not atomic; but we only have one writer to the metrics, so
+                // it's fine.
+                if self.directory_metrics_inited[kind.offset()].load(AtomicOrdering::Relaxed) {
+                    // The metrics has been initialized with `MetricsUpdate::Set` before, so we can add/sub
+                    // the value reliably.
+                    self.directory_metrics[kind.offset()].fetch_add(count, AtomicOrdering::Relaxed);
+                }
+                // Otherwise, ignore this update
+            }
+            MetricsUpdate::Sub(count) => {
+                // TODO: these operations are not atomic; but we only have one writer to the metrics, so
+                // it's fine.
+                if self.directory_metrics_inited[kind.offset()].load(AtomicOrdering::Relaxed) {
+                    // The metrics has been initialized with `MetricsUpdate::Set` before.
+                    // The operation could overflow so we need to normalize the value.
+                    let prev_val =
+                        self.directory_metrics[kind.offset()].load(AtomicOrdering::Relaxed);
+                    let res = prev_val.saturating_sub(count);
+                    self.directory_metrics[kind.offset()].store(res, AtomicOrdering::Relaxed);
+                }
+                // Otherwise, ignore this update
+            }
+        };
+
+        // TODO: remove this, there's no place in the code that updates this aux metrics.
         let aux_metric =
             self.directory_metrics[DirectoryKind::AuxFiles.offset()].load(AtomicOrdering::Relaxed);
 
@@ -3416,7 +3460,9 @@ impl Timeline {
             // space. If that's not the case, we had at least one key encounter a gap in the image layer
             // and stop the search as a result of that.
             let mut removed = keyspace.remove_overlapping_with(&image_covered_keyspace);
-            // Do not fire missing key error for sparse keys.
+            // Do not fire missing key error and end early for sparse keys. Note that we hava already removed
+            // non-inherited keyspaces before, so we can safely do a full `SPARSE_RANGE` remove instead of
+            // figuring out what is the inherited key range and do a fine-grained pruning.
             removed.remove_overlapping_with(&KeySpace {
                 ranges: vec![SPARSE_RANGE],
             });

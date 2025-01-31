@@ -3816,6 +3816,13 @@ impl Tenant {
             .unwrap_or(self.conf.default_tenant_conf.compaction_threshold)
     }
 
+    pub fn get_rel_size_v2_enabled(&self) -> bool {
+        let tenant_conf = self.tenant_conf.load().tenant_conf.clone();
+        tenant_conf
+            .rel_size_v2_enabled
+            .unwrap_or(self.conf.default_tenant_conf.rel_size_v2_enabled)
+    }
+
     pub fn get_compaction_upper_limit(&self) -> usize {
         let tenant_conf = self.tenant_conf.load().tenant_conf.clone();
         tenant_conf
@@ -5495,7 +5502,7 @@ pub(crate) mod harness {
                 lsn_lease_length_for_ts: Some(tenant_conf.lsn_lease_length_for_ts),
                 timeline_offloading: Some(tenant_conf.timeline_offloading),
                 wal_receiver_protocol_override: tenant_conf.wal_receiver_protocol_override,
-                rel_size_v2_enabled: tenant_conf.rel_size_v2_enabled,
+                rel_size_v2_enabled: Some(tenant_conf.rel_size_v2_enabled),
                 gc_compaction_enabled: Some(tenant_conf.gc_compaction_enabled),
                 gc_compaction_initial_threshold_kb: Some(
                     tenant_conf.gc_compaction_initial_threshold_kb,
