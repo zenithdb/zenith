@@ -39,11 +39,11 @@ RUN case $DEBIAN_VERSION in \
         echo "Unknown Debian version ${DEBIAN_VERSION}" && exit 1 \
       ;; \
     esac && \
-    apt update &&  \
+    apt update && \
     apt install --no-install-recommends --no-install-suggests -y \
     ninja-build git autoconf automake libtool build-essential bison flex libreadline-dev \
     zlib1g-dev libxml2-dev libcurl4-openssl-dev libossp-uuid-dev wget ca-certificates pkg-config libssl-dev \
-    libicu-dev libxslt1-dev liblz4-dev libzstd-dev zstd \
+    libicu-dev libxslt1-dev liblz4-dev libzstd-dev zstd g++ \
     $VERSION_INSTALLS \
     && apt clean && rm -rf /var/lib/apt/lists/*
 
@@ -1143,6 +1143,45 @@ RUN wget https://github.com/Mooncake-Labs/pg_mooncake/releases/download/v0.1.1/p
 
 #########################################################################################
 #
+# Layer "pg-duckdb-pg-build"
+# compile pg_duckdb extension
+#
+#########################################################################################
+
+FROM build-deps AS pg-duckdb-pg-build
+ARG PG_VERSION
+COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
+COPY compute/patches/duckdb-v1-1-3.patch /duckdb-v1-1-3.patch
+COPY compute/patches/pg_duckdb-0-2-0.patch /pg_duckdb-0-2-0.patch
+
+ENV PATH="/usr/local/pgsql/bin/:$PATH"
+
+
+# pg_duckdb build requires source dir to be a git repo to get submodules
+# allow neon_superuser to execute some functions that in pg_duckdb are available to superuser only 
+# cache management functions duckdb.cache(), duckdb.cache_info(), duckdb.cache_delete()
+# extension management function duckdb.install_extension()
+# for debugging purposes raw query and reset ddb duckdb.raw_query(), duckdb.recycle_ddb()
+RUN git clone --depth 1 --branch v0.2.0 https://github.com/duckdb/pg_duckdb.git pg_duckdb-src && \
+    cd pg_duckdb-src && \
+    git submodule update --init --recursive && \
+    cd third_party/duckdb && \
+    patch -p1 < /duckdb-v1-1-3.patch && \
+    cd ../.. && \
+    patch -p1 < /pg_duckdb-0-2-0.patch && \
+    make install -j $(getconf _NPROCESSORS_ONLN) && \
+    echo 'trusted = true' >> /usr/local/pgsql/share/extension/pg_duckdb.control && \
+    file=/usr/local/pgsql/share/extension/pg_duckdb--0.1.0--0.2.0.sql && \
+    echo 'GRANT ALL ON FUNCTION duckdb.cache(TEXT, TEXT) TO neon_superuser;' >> $file && \
+    echo 'GRANT ALL ON FUNCTION duckdb.cache_info() TO neon_superuser;' >> $file && \
+    echo 'GRANT ALL ON FUNCTION duckdb.cache_delete(cache_key TEXT) TO neon_superuser;' >> $file && \
+    echo 'GRANT ALL ON FUNCTION duckdb.install_extension(TEXT) TO neon_superuser;' >> $file && \
+    echo 'GRANT ALL ON FUNCTION duckdb.raw_query(TEXT) TO neon_superuser;' >> $file && \
+    echo 'GRANT ALL ON PROCEDURE duckdb.recycle_ddb() TO neon_superuser;'  >> $file
+        
+
+#########################################################################################
+#
 # Layer "pg_repack"
 # compile pg_repack extension
 #
@@ -1204,6 +1243,7 @@ COPY --from=pg-ivm-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-partman-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-mooncake-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-repack-build /usr/local/pgsql/ /usr/local/pgsql/
+COPY --from=pg-duckdb-pg-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY pgxn/ pgxn/
 
 RUN make -j $(getconf _NPROCESSORS_ONLN) \

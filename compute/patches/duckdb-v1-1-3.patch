@@ -1,0 +1,122 @@
+diff --git a/src/common/virtual_file_system.cpp b/src/common/virtual_file_system.cpp
+index 74892a4e05..60e9e7af88 100644
+--- a/src/common/virtual_file_system.cpp
++++ b/src/common/virtual_file_system.cpp
+@@ -173,7 +173,9 @@ void VirtualFileSystem::SetDisabledFileSystems(const vector<string> &names) {
+ 
+ FileSystem &VirtualFileSystem::FindFileSystem(const string &path) {
+ 	auto &fs = FindFileSystemInternal(path);
+-	if (!disabled_file_systems.empty() && disabled_file_systems.find(fs.GetName()) != disabled_file_systems.end()) {
++	// we allow LocalFileSystem access to duckdb itself (by specifiying trustedContext=true) 
++	// but not to duckdb users if disabled_file_systems='LocalFileSystem'
++	if (!isTrustedContext && !disabled_file_systems.empty() && disabled_file_systems.find(fs.GetName()) != disabled_file_systems.end()) {
+ 		throw PermissionException("File system %s has been disabled by configuration", fs.GetName());
+ 	}
+ 	return fs;
+diff --git a/src/include/duckdb/common/file_system.hpp b/src/include/duckdb/common/file_system.hpp
+index 0b83c4f393..58d70889cf 100644
+--- a/src/include/duckdb/common/file_system.hpp
++++ b/src/include/duckdb/common/file_system.hpp
+@@ -256,6 +256,30 @@ public:
+ 		DynamicCastCheck<TARGET>(this);
+ 		return reinterpret_cast<const TARGET &>(*this);
+ 	}
++public:
++	DUCKDB_API virtual void setTrusted(){
++		this->isTrustedContext = true;
++	}
++	DUCKDB_API virtual void setUntrusted(){
++		this->isTrustedContext = false;
++	}
++
++public:
++  class TrustedContext {
++    public:
++        TrustedContext(FileSystem &fs) : fileSystem(fs) {
++            fileSystem.setTrusted();
++        }
++        ~TrustedContext() {
++            fileSystem.setUntrusted();
++        }
++
++    private:
++        FileSystem &fileSystem;
++    };
++
++protected:
++	bool isTrustedContext = false;
+ };
+ 
+ } // namespace duckdb
+diff --git a/src/include/duckdb/common/opener_file_system.hpp b/src/include/duckdb/common/opener_file_system.hpp
+index 2d35512b21..d1597173ee 100644
+--- a/src/include/duckdb/common/opener_file_system.hpp
++++ b/src/include/duckdb/common/opener_file_system.hpp
+@@ -143,6 +143,18 @@ public:
+ 	vector<string> ListSubSystems() override {
+ 		return GetFileSystem().ListSubSystems();
+ 	}
++
++private:
++
++	virtual void setTrusted() override {
++		this->isTrustedContext = true;
++		GetFileSystem().setTrusted();
++	}
++	
++	virtual void setUntrusted() override {
++		this->isTrustedContext = false;
++		GetFileSystem().setUntrusted();
++	}
+ };
+ 
+ } // namespace duckdb
+diff --git a/src/main/extension/extension_install.cpp b/src/main/extension/extension_install.cpp
+index 1258d95ead..def1ba71cb 100644
+--- a/src/main/extension/extension_install.cpp
++++ b/src/main/extension/extension_install.cpp
+@@ -57,6 +57,7 @@ const vector<string> ExtensionHelper::PathComponents() {
+ }
+ 
+ duckdb::string ExtensionHelper::DefaultExtensionFolder(FileSystem &fs) {
++	FileSystem::TrustedContext trusted(fs);
+ 	string home_directory = fs.GetHomeDirectory();
+ 	// exception if the home directory does not exist, don't create whatever we think is home
+ 	if (!fs.DirectoryExists(home_directory)) {
+@@ -84,6 +85,7 @@ string ExtensionHelper::ExtensionDirectory(DatabaseInstance &db, FileSystem &fs)
+ 		extension_directory = DefaultExtensionFolder(fs);
+ 	}
+ 	{
++		FileSystem::TrustedContext trusted(fs);
+ 		extension_directory = fs.ConvertSeparators(extension_directory);
+ 		// expand ~ in extension directory
+ 		extension_directory = fs.ExpandPath(extension_directory);
+@@ -107,6 +109,7 @@ string ExtensionHelper::ExtensionDirectory(DatabaseInstance &db, FileSystem &fs)
+ 
+ 	auto path_components = PathComponents();
+ 	for (auto &path_ele : path_components) {
++		FileSystem::TrustedContext trusted(fs);
+ 		extension_directory = fs.JoinPath(extension_directory, path_ele);
+ 		if (!fs.DirectoryExists(extension_directory)) {
+ 			fs.CreateDirectory(extension_directory);
+@@ -538,7 +541,7 @@ ExtensionHelper::InstallExtensionInternal(DatabaseInstance &db, FileSystem &fs,
+ 	if (!db.config.options.enable_external_access) {
+ 		throw PermissionException("Installing extensions is disabled through configuration");
+ 	}
+-
++	FileSystem::TrustedContext trusted(fs);
+ 	auto extension_name = ApplyExtensionAlias(fs.ExtractBaseName(extension));
+ 	string local_extension_path = fs.JoinPath(local_path, extension_name + ".duckdb_extension");
+ 	string temp_path = local_extension_path + ".tmp-" + UUID::ToString(UUID::GenerateRandomUUID());
+diff --git a/src/main/extension/extension_load.cpp b/src/main/extension/extension_load.cpp
+index b0282a7103..c2765f97c6 100644
+--- a/src/main/extension/extension_load.cpp
++++ b/src/main/extension/extension_load.cpp
+@@ -293,6 +293,7 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
+ 	if (!db.config.options.enable_external_access) {
+ 		throw PermissionException("Loading external extensions is disabled through configuration");
+ 	}
++	FileSystem::TrustedContext trusted(fs);
+ 	auto filename = fs.ConvertSeparators(extension);
+ 
+ 	bool direct_load;

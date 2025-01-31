@@ -1,0 +1,61 @@
+diff --git a/third_party/cached_httpfs/http_file_cache.cpp b/third_party/cached_httpfs/http_file_cache.cpp
+index 813db57..c6e4c3a 100644
+--- a/third_party/cached_httpfs/http_file_cache.cpp
++++ b/third_party/cached_httpfs/http_file_cache.cpp
+@@ -4,20 +4,22 @@ namespace duckdb {
+ 
+ CachedFile::CachedFile(const string &cache_dir, FileSystem &fs, const string &key, bool cache_file) : cache_directory(cache_dir), fs(fs) {
+ 	file_name = cache_dir + "/" + key;
+-
++	FileSystem::TrustedContext trusted1(fs);
+ 	GetDirectoryCacheLock(cache_dir);
+ 
+ 	FileOpenFlags flags =
+ 	    FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS | FileLockType::READ_LOCK;
++	FileSystem::TrustedContext trusted2(fs);
+ 	handle = fs.OpenFile(file_name, flags);
+ 	if (handle) {
+ 		initialized = true;
+ 		size = handle->GetFileSize();
+ 	} else if (cache_file) {
+ 		flags = FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE | FileLockType::WRITE_LOCK;
++		FileSystem::TrustedContext trusted3(fs);
+ 		handle = fs.OpenFile(file_name, flags);
+ 	}
+-
++	FileSystem::TrustedContext trusted4(fs);
+ 	ReleaseDirectoryCacheLock();
+ }
+ 
+@@ -30,6 +32,7 @@ void CachedFile::GetDirectoryCacheLock(const string &cache_dir) {
+ 	FileOpenFlags flags = FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE |
+ 	                      FileFlags::FILE_FLAGS_EXCLUSIVE_CREATE | FileFlags::FILE_FLAGS_NULL_IF_EXISTS |
+ 	                      FileLockType::WRITE_LOCK;
++	FileSystem::TrustedContext trusted(fs);
+ 	directory_lock_handle = fs.OpenFile(lock_file, flags);
+ 	if (directory_lock_handle == nullptr) {
+ 		flags = FileFlags::FILE_FLAGS_WRITE | FileLockType::WRITE_LOCK;
+@@ -52,6 +55,7 @@ void CachedFileHandle::WriteMetadata(const string &cache_key, const string &remo
+ 	D_ASSERT(!file->initialized);
+ 	string metadata_file_name = file->cache_directory + "/" + cache_key + ".meta";
+ 	FileOpenFlags flags = FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE | FileLockType::WRITE_LOCK;
++	FileSystem::TrustedContext trusted(file->fs);
+ 	auto handle = file->fs.OpenFile(metadata_file_name, flags);
+ 	auto cached_file_timestamp = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+ 	string metadata_info = cache_key + "," + remote_path + "," + std::to_string(total_size) + "," + std::to_string(cached_file_timestamp);
+@@ -66,6 +70,7 @@ void CachedFileHandle::SetInitialized(idx_t total_size) {
+ 	file->initialized = true;
+ 	file->handle->Close();
+ 	FileOpenFlags flags = FileFlags::FILE_FLAGS_READ | FileLockType::READ_LOCK;
++	FileSystem::TrustedContext trusted(file->fs);
+ 	file->handle = file->fs.OpenFile(file->file_name, flags);
+ }
+ 
+@@ -93,6 +98,7 @@ void CachedFileHandle::Read(void *buffer, idx_t length, idx_t offset) {
+ //! Get cache entry, create if not exists only if caching is enabled
+ shared_ptr<CachedFile> HTTPFileCache::GetCachedFile(const string &cache_dir, const string &key, bool cache_file) {
+ 	lock_guard<mutex> lock(cached_files_mutex);
++	FileSystem::TrustedContext trusted(db->GetFileSystem());
+ 	auto it = cached_files.find(key);
+ 	if (it != cached_files.end()) {
+ 		return it->second;
