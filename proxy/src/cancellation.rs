@@ -190,7 +190,7 @@ pub async fn handle_cancel_messages(
         }
 
         match client.query(pipe).await {
-            Ok(Value::Bulk(values)) if values.len() == buffer.len() => {
+            Ok(Value::Bulk(values)) if values.len() == replies.len() => {
                 debug!(n = buffer.len(), "successfully completed cancellation jobs");
                 for (value, reply) in std::iter::zip(values, replies.drain(..)) {
                     reply.send_value(value);
