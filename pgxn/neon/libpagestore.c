@@ -41,6 +41,9 @@
 #define MIN_RECONNECT_INTERVAL_USEC 1000
 #define MAX_RECONNECT_INTERVAL_USEC 1000000
 
+static uint32 local_request_counter;
+#define GENERATE_REQUEST_ID() (((NeonRequestId)MyProcPid << 32) | ++local_request_counter)
+
 /* GUCs */
 char	   *neon_timeline;
 char	   *neon_tenant;
@@ -815,6 +818,7 @@ pageserver_send(shardno_t shard_no, NeonRequest *request)
 		pageserver_conn = NULL;
 	}
 
+	request->reqid = GENERATE_REQUEST_ID();
 	req_buff = nm_pack_request(request);
 
 	/*
