@@ -887,6 +887,39 @@ USER root
 
 #########################################################################################
 #
+# Layer "rust extensions pgrx12.7"
+#
+# Essentially, this layer is the same as above, but instead of pgrx 0.12.6, it
+# uses 0.12.7. 0.12.7, specifically, is necessary for building pg_search from
+# ParadeDB, according to the ParadeDB team. Eventually, we can remove this layer
+# when ParadeDB gets various pgrx changes upstreamed.
+#
+#########################################################################################
+FROM build-deps AS rust-extensions-build-pgrx12_7
+ARG PG_VERSION
+COPY --from=pg-build /usr/local/pgsql/ /usr/local/pgsql/
+
+RUN apt update && \
+    apt install --no-install-recommends --no-install-suggests -y curl libclang-dev && \
+    apt clean && rm -rf /var/lib/apt/lists/* && \
+    useradd -ms /bin/bash nonroot -b /home
+
+ENV HOME=/home/nonroot
+ENV PATH="/home/nonroot/.cargo/bin:/usr/local/pgsql/bin/:$PATH"
+USER nonroot
+WORKDIR /home/nonroot
+
+RUN curl -sSO https://static.rust-lang.org/rustup/dist/$(uname -m)-unknown-linux-gnu/rustup-init && \
+    chmod +x rustup-init && \
+    ./rustup-init -y --no-modify-path --profile minimal --default-toolchain stable && \
+    rm rustup-init && \
+    cargo install --locked --version 0.12.7 cargo-pgrx && \
+    /bin/bash -c 'cargo pgrx init --pg${PG_VERSION:1}=/usr/local/pgsql/bin/pg_config'
+
+USER root
+
+#########################################################################################
+#
 # Layers "pg-onnx-build" and "pgrag-pg-build"
 # Compile "pgrag" extensions
 #
@@ -1159,6 +1192,24 @@ RUN wget https://github.com/reorg/pg_repack/archive/refs/tags/ver_1.5.2.tar.gz -
 
 #########################################################################################
 #
+# Layer "pg_search-build"
+# compile "pg_search" extension
+#
+#########################################################################################
+
+FROM rust-extensions-build-pgrx12_7 AS pg-search-build
+ARG PG_VERSION
+ARG PARADEDB_TAG=v0.14.1
+
+RUN --mount=type=secret,id=PG_SEARCH_ENTERPRISE_GITHUB_PAT \
+    git clone --recurse-submodules --depth 1 --branch ${PARADEDB_TAG} https://$(cat /run/secrets/PG_SEARCH_ENTERPRISE_GITHUB_PAT)@github.com/paradedb/paradedb-enterprise.git pg_search-src && \
+    cd pg_search-src && \
+    cargo pgrx install --package pg_search --no-default-features --features unsafe-postgres --release && \
+    sed -i 's/superuser = false/superuser = true/g' /usr/local/pgsql/share/extension/pg_search.control && \
+    echo "trusted = true" >> /usr/local/pgsql/share/extension/pg_search.control
+
+#########################################################################################
+#
 # Layer "neon-pg-ext-build"
 # compile neon extensions
 #
@@ -1204,6 +1255,7 @@ COPY --from=pg-ivm-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-partman-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-mooncake-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg-repack-build /usr/local/pgsql/ /usr/local/pgsql/
+COPY --from=pg-search-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY pgxn/ pgxn/
 
 RUN make -j $(getconf _NPROCESSORS_ONLN) \

@@ -664,6 +664,8 @@ jobs:
           file: compute/compute-node.Dockerfile
           cache-from: type=registry,ref=cache.neon.build/compute-node-${{ matrix.version.pg }}:cache-${{ matrix.version.debian }}-${{ matrix.arch }}
           cache-to: ${{ github.ref_name == 'main' && format('type=registry,ref=cache.neon.build/compute-node-{0}:cache-{1}-{2},mode=max', matrix.version.pg, matrix.version.debian, matrix.arch) || '' }}
+          secrets: |
+            PG_SEARCH_ENTERPRISE_GITHUB_PAT=${{ secrets.PG_SEARCH_ENTERPRISE_GITHUB_PAT }}
           tags: |
             neondatabase/compute-node-${{ matrix.version.pg }}:${{ needs.tag.outputs.build-tag }}-${{ matrix.version.debian }}-${{ matrix.arch }}
 
