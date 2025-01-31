@@ -158,8 +158,6 @@ jobs:
 
       - name: Run cargo build
         run: |
-          PQ_LIB_DIR=$(pwd)/pg_install/v16/lib
-          export PQ_LIB_DIR
           ${cov_prefix} mold -run cargo build $CARGO_FLAGS $CARGO_FEATURES --bins --tests
 
       # Do install *before* running rust tests because they might recompile the
@@ -217,8 +215,6 @@ jobs:
         env:
           NEXTEST_RETRIES: 3
         run: |
-          PQ_LIB_DIR=$(pwd)/pg_install/v16/lib
-          export PQ_LIB_DIR
           LD_LIBRARY_PATH=$(pwd)/pg_install/v17/lib
           export LD_LIBRARY_PATH
 

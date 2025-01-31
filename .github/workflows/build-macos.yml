@@ -235,7 +235,7 @@ jobs:
           echo 'CPPFLAGS=-I/usr/local/opt/openssl@3/include' >> $GITHUB_ENV
 
       - name: Run cargo build (only for v17)
-        run: PQ_LIB_DIR=$(pwd)/pg_install/v17/lib cargo build --all --release -j$(sysctl -n hw.ncpu)
+        run: cargo build --all --release -j$(sysctl -n hw.ncpu)
 
       - name: Check that no warnings are produced (only for v17)
         run: ./run_clippy.sh

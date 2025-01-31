@@ -114,7 +114,7 @@ jobs:
         run: make walproposer-lib -j$(nproc)
 
       - name: Produce the build stats
-        run: PQ_LIB_DIR=$(pwd)/pg_install/v17/lib cargo build --all --release --timings -j$(nproc)
+        run: cargo build --all --release --timings -j$(nproc)
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
