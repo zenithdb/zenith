@@ -222,6 +222,10 @@ impl LayerFileMetadata {
             shard,
         }
     }
+    /// Helper to get both generation and file size in a tuple
+    pub fn generation_file_size(&self) -> (Generation, u64) {
+        (self.generation, self.file_size)
+    }
 }
 
 /// Limited history of earlier ancestors.

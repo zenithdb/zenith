@@ -68,35 +68,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/ComputeInsights"
 
-  /installed_extensions:
-    get:
-      tags:
-      - Info
-      summary: Get installed extensions.
-      description: ""
-      operationId: getInstalledExtensions
-      responses:
-        200:
-          description: List of installed extensions
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/InstalledExtensions"
-  /info:
-    get:
-      tags:
-      - Info
-      summary: Get info about the compute pod / VM.
-      description: ""
-      operationId: getInfo
-      responses:
-        200:
-          description: Info
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Info"
-
   /dbs_and_roles:
     get:
       tags:

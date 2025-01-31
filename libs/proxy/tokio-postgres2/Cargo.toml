@@ -19,3 +19,4 @@ postgres-protocol2 = { path = "../postgres-protocol2" }
 postgres-types2 = { path = "../postgres-types2" }
 tokio = { workspace = true, features = ["io-util", "time", "net"] }
 tokio-util = { workspace = true, features = ["codec"] }
+serde = { workspace = true, features = ["derive"] }

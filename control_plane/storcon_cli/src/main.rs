@@ -10,8 +10,8 @@ use pageserver_api::{
     controller_api::{
         AvailabilityZone, NodeAvailabilityWrapper, NodeDescribeResponse, NodeShardResponse,
         SafekeeperDescribeResponse, SafekeeperSchedulingPolicyRequest, ShardSchedulingPolicy,
-        ShardsPreferredAzsRequest, SkSchedulingPolicy, TenantCreateRequest, TenantDescribeResponse,
-        TenantPolicyRequest,
+        ShardsPreferredAzsRequest, ShardsPreferredAzsResponse, SkSchedulingPolicy,
+        TenantCreateRequest, TenantDescribeResponse, TenantPolicyRequest,
     },
     models::{
         EvictionPolicy, EvictionPolicyLayerAccessThreshold, LocationConfigSecondary,
@@ -800,7 +800,7 @@ async fn main() -> anyhow::Result<()> {
                     .collect(),
             };
             storcon_client
-                .dispatch::<ShardsPreferredAzsRequest, ()>(
+                .dispatch::<ShardsPreferredAzsRequest, ShardsPreferredAzsResponse>(
                     Method::PUT,
                     "control/v1/preferred_azs".to_string(),
                     Some(req),

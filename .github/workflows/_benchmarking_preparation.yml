@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [ aws-rds-postgres, aws-aurora-serverless-v2-postgres, neon ]
+        platform: [ aws-rds-postgres, aws-aurora-serverless-v2-postgres, neon, neon_pg17 ]
         database: [ clickbench, tpch, userexample ]
 
     env:
@@ -40,6 +40,9 @@ jobs:
         case "${PLATFORM}" in
           neon)
             CONNSTR=${{ secrets.BENCHMARK_CAPTEST_CONNSTR }}
+            ;;
+          neon_pg17)
+            CONNSTR=${{ secrets.BENCHMARK_CAPTEST_CONNSTR_PG17 }}
             ;;
           aws-rds-postgres)
             CONNSTR=${{ secrets.BENCHMARK_RDS_POSTGRES_CONNSTR }}

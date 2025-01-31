@@ -1643,6 +1643,7 @@ impl TenantManager {
                         .wait_lsn(
                             *target_lsn,
                             crate::tenant::timeline::WaitLsnWaiter::Tenant,
+                            crate::tenant::timeline::WaitLsnTimeout::Default,
                             ctx,
                         )
                         .await

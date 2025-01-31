@@ -11,10 +11,13 @@ from fixtures.neon_fixtures import NeonEnvBuilder
 # Test pageserver recovery after crash
 #
 def test_pageserver_recovery(neon_env_builder: NeonEnvBuilder):
-    # Override default checkpointer settings to run it more often
+    # Override default checkpointer settings to run it more often.
+    # This also creates a bunch more L0 layers, so disable backpressure.
     env = neon_env_builder.init_start(
         initial_tenant_conf={
             "checkpoint_distance": "1048576",
+            "l0_flush_delay_threshold": "0",
+            "l0_flush_stall_threshold": "0",
         }
     )
     env.pageserver.is_testing_enabled_or_skip()

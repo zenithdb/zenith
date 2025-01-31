@@ -5,16 +5,22 @@ import os
 import shutil
 import sys
 from enum import StrEnum
+from logging import debug
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
 import requests
 import yaml
+from fixtures.endpoint.http import EndpointHttpClient
 from fixtures.log_helper import log
+from fixtures.metrics import parse_metrics
 from fixtures.paths import BASE_DIR, COMPUTE_CONFIG_DIR
+from fixtures.utils import wait_until
+from prometheus_client.samples import Sample
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from types import TracebackType
     from typing import Self, TypedDict
 
@@ -467,3 +473,88 @@ def test_perf_counters(neon_simple_env: NeonEnv):
     cur.execute("CREATE EXTENSION neon VERSION '1.5'")
     cur.execute("SELECT * FROM neon_perf_counters")
     cur.execute("SELECT * FROM neon_backend_perf_counters")
+
+
+def collect_metric(
+    client: EndpointHttpClient,
+    name: str,
+    filter: dict[str, str],
+    predicate: Callable[[list[Sample]], bool],
+) -> Callable[[], list[Sample]]:
+    """
+    Call this function as the first argument to wait_until().
+    """
+
+    def __collect_metric() -> list[Sample]:
+        resp = client.metrics()
+        debug("Metrics: %s", resp)
+        m = parse_metrics(resp)
+        samples = m.query_all(name, filter)
+        debug("Samples: %s", samples)
+        assert predicate(samples), "predicate failed"
+        return samples
+
+    return __collect_metric
+
+
+def test_compute_installed_extensions_metric(neon_simple_env: NeonEnv):
+    """
+    Test that the compute_installed_extensions properly reports accurate
+    results. Important to note that currently this metric is only gathered on
+    compute start.
+    """
+    env = neon_simple_env
+
+    endpoint = env.endpoints.create_start("main")
+
+    client = endpoint.http_client()
+
+    def __has_plpgsql(samples: list[Sample]) -> bool:
+        """
+        Check that plpgsql is installed in the template1 and postgres databases
+        """
+        return len(samples) == 1 and samples[0].value == 2
+
+    wait_until(
+        collect_metric(
+            client,
+            "compute_installed_extensions",
+            {"extension_name": "plpgsql", "version": "1.0", "owned_by_superuser": "1"},
+            __has_plpgsql,
+        ),
+        name="compute_installed_extensions",
+    )
+
+    # Install the neon extension, so we can check for it on the restart
+    endpoint.safe_psql("CREATE EXTENSION neon VERSION '1.0'")
+
+    # The metric is only gathered on compute start, so restart to check if the
+    # neon extension will now be there.
+    endpoint.stop()
+    endpoint.start()
+
+    client = endpoint.http_client()
+
+    def __has_neon(samples: list[Sample]) -> bool:
+        return len(samples) == 1 and samples[0].value == 1
+
+    wait_until(
+        collect_metric(
+            client,
+            "compute_installed_extensions",
+            {"extension_name": "neon", "version": "1.0", "owned_by_superuser": "1"},
+            __has_neon,
+        ),
+        name="compute_installed_extensions",
+    )
+
+    # Double check that we also still have plpgsql
+    wait_until(
+        collect_metric(
+            client,
+            "compute_installed_extensions",
+            {"extension_name": "plpgsql", "version": "1.0", "owned_by_superuser": "1"},
+            __has_plpgsql,
+        ),
+        name="compute_installed_extensions",
+    )

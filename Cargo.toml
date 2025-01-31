@@ -65,7 +65,7 @@ aws-smithy-types = "1.2"
 aws-credential-types = "1.2.0"
 aws-sigv4 = { version = "1.2", features = ["sign-http"] }
 aws-types = "1.3"
-axum = { version = "0.7.9", features = ["ws"] }
+axum = { version = "0.8.1", features = ["ws"] }
 base64 = "0.13.0"
 bincode = "1.3"
 bindgen = "0.70"

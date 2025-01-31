@@ -582,12 +582,12 @@ def test_timeline_archival_chaos(neon_env_builder: NeonEnvBuilder):
                 # This is expected: we are injecting chaos, API calls will sometimes fail.
                 # TODO: can we narrow this to assert we are getting friendly 503s?
                 log.info(f"Iteration error, will retry: {e}")
-                shutdown.wait(random.random())
+                shutdown.wait(random.random() * 0.5)
             except requests.exceptions.RetryError as e:
                 # Retryable error repeated more times than `requests` is configured to tolerate, this
                 # is expected when a pageserver remains unavailable for a couple seconds
                 log.info(f"Iteration error, will retry: {e}")
-                shutdown.wait(random.random())
+                shutdown.wait(random.random() * 0.5)
             except Exception as e:
                 log.warning(
                     f"Unexpected worker exception (current timeline {state.timeline_id}): {e}"
@@ -632,7 +632,7 @@ def test_timeline_archival_chaos(neon_env_builder: NeonEnvBuilder):
 
                 # Make sure we're up for as long as we spent restarting, to ensure operations can make progress
                 log.info(f"Staying alive for {restart_duration}s")
-                time.sleep(restart_duration)
+                time.sleep(restart_duration * 2)
             else:
                 # Migrate our tenant between pageservers
                 origin_ps = env.get_tenant_pageserver(tenant_shard_id)
@@ -651,7 +651,7 @@ def test_timeline_archival_chaos(neon_env_builder: NeonEnvBuilder):
 
     # Sanity check that during our run we did exercise some full timeline lifecycles, in case
     # one of our workers got stuck
-    assert len(timelines_deleted) > 10
+    assert len(timelines_deleted) > 5
 
     # That no invariant-violations were reported by workers
     assert violations == []

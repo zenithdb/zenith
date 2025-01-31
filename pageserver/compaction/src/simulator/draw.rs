@@ -160,9 +160,12 @@ pub fn draw_history<W: std::io::Write>(history: &[LayerTraceEvent], mut output: 
 
         // Fill in and thicken rectangle if it's an
         // image layer so that we can see it.
-        let mut style = Style::default();
-        style.fill = Fill::Color(rgb(0x80, 0x80, 0x80));
-        style.stroke = Stroke::Color(rgb(0, 0, 0), 0.5);
+        let mut style = Style {
+            fill: Fill::Color(rgb(0x80, 0x80, 0x80)),
+            stroke: Stroke::Color(rgb(0, 0, 0), 0.5),
+            opacity: 1.0,
+            stroke_opacity: 1.0,
+        };
 
         let y_start = lsn_max - lsn_start;
         let y_end = lsn_max - lsn_end;
@@ -213,10 +216,6 @@ pub fn draw_history<W: std::io::Write>(history: &[LayerTraceEvent], mut output: 
         }
         files_seen.insert(f);
     }
-
-    let mut record_style = Style::default();
-    record_style.fill = Fill::Color(rgb(0x80, 0x80, 0x80));
-    record_style.stroke = Stroke::None;
 
     writeln!(svg, "{}", EndSvg)?;
 

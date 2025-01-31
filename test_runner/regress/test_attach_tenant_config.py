@@ -139,6 +139,10 @@ def test_fully_custom_config(positive_env: NeonEnv):
     fully_custom_config = {
         "compaction_period": "1h",
         "compaction_threshold": 13,
+        "compaction_upper_limit": 100,
+        "l0_flush_delay_threshold": 25,
+        "l0_flush_stall_threshold": 42,
+        "l0_flush_wait_upload": True,
         "compaction_target_size": 1048576,
         "checkpoint_distance": 10000,
         "checkpoint_timeout": "13m",

@@ -22,8 +22,7 @@ use uuid::Uuid;
 
 use super::routes::{
     check_writability, configure, database_schema, dbs_and_roles, extension_server, extensions,
-    grants, info as info_route, insights, installed_extensions, metrics, metrics_json, status,
-    terminate,
+    grants, insights, metrics, metrics_json, status, terminate,
 };
 use crate::compute::ComputeNode;
 
@@ -55,17 +54,12 @@ async fn serve(port: u16, compute: Arc<ComputeNode>) {
         .route("/database_schema", get(database_schema::get_schema_dump))
         .route("/dbs_and_roles", get(dbs_and_roles::get_catalog_objects))
         .route(
-            "/extension_server/*filename",
+            "/extension_server/{*filename}",
             post(extension_server::download_extension),
         )
         .route("/extensions", post(extensions::install_extension))
         .route("/grants", post(grants::add_grant))
-        .route("/info", get(info_route::get_info))
         .route("/insights", get(insights::get_insights))
-        .route(
-            "/installed_extensions",
-            get(installed_extensions::get_installed_extensions),
-        )
         .route("/metrics", get(metrics::get_metrics))
         .route("/metrics.json", get(metrics_json::get_metrics))
         .route("/status", get(status::get_status))

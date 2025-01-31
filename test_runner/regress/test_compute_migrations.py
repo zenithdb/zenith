@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from fixtures.compute_migrations import COMPUTE_MIGRATIONS, NUM_COMPUTE_MIGRATIONS
+from fixtures.metrics import parse_metrics
+from fixtures.utils import wait_until
 
 if TYPE_CHECKING:
     from fixtures.neon_fixtures import NeonEnv
@@ -23,7 +25,26 @@ def test_compute_migrations_retry(neon_simple_env: NeonEnv, compute_migrations_d
     for i in range(1, NUM_COMPUTE_MIGRATIONS + 1):
         endpoint.start(env={"FAILPOINTS": f"compute-migration=return({i})"})
 
-        # Make sure that the migrations ran
+        # Check that migration failure is properly recorded in the metrics
+        #
+        # N.B. wait_for_migrations() only waits till the last successful
+        # migration is applied. It doesn't wait till the migration failure due
+        # to the failpoint. This opens a race for checking the metrics. To avoid
+        # this, we first wait until the migration failure metric is seen.
+        def check_migration_failure_metrics():
+            client = endpoint.http_client()
+            raw_metrics = client.metrics()
+            metrics = parse_metrics(raw_metrics)
+            failed_migration = metrics.query_all(
+                "compute_ctl_db_migration_failed_total",
+            )
+            assert len(failed_migration) == 1
+            for sample in failed_migration:
+                assert sample.value == 1
+
+        wait_until(check_migration_failure_metrics)
+
+        # Make sure that all migrations before the failed one are applied
         endpoint.wait_for_migrations(wait_for=i - 1)
 
         # Confirm that we correctly recorded that in the

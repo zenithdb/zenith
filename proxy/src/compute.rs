@@ -296,7 +296,6 @@ impl ConnCfg {
                 process_id,
                 secret_key,
             },
-            vec![], // TODO: deprecated, will be removed
             host.to_string(),
             user_info,
         );

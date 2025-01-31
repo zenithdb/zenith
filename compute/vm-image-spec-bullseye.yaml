@@ -27,6 +27,10 @@ commands:
     user: nobody
     sysvInitAction: respawn
     shell: 'DATA_SOURCE_NAME="user=cloud_admin sslmode=disable dbname=postgres application_name=postgres-exporter" /bin/postgres_exporter --config.file=/etc/postgres_exporter.yml'
+  - name: pgbouncer-exporter
+    user: postgres
+    sysvInitAction: respawn
+    shell: '/bin/pgbouncer_exporter --pgBouncer.connectionString="postgres:///pgbouncer?host=/tmp&port=6432&dbname=pgbouncer&user=pgbouncer"'
   - name: sql-exporter
     user: nobody
     sysvInitAction: respawn

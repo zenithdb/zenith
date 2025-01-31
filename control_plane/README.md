@@ -1,6 +1,10 @@
-# Control Plane and Neon Local
+# Local Development Control Plane (`neon_local`)
 
-This crate contains tools to start a Neon development environment locally. This utility can be used with the `cargo neon` command.
+This crate contains tools to start a Neon development environment locally. This utility can be used with the `cargo neon` command.  This is a convenience to invoke
+the `neon_local` binary.
+
+**Note**: this is a dev/test tool -- a minimal control plane suitable for testing
+code changes locally, but not suitable for running production systems.
 
 ## Example: Start with Postgres 16
 

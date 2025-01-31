@@ -1,0 +1,196 @@
+diff --git a/contrib/amcheck/expected/check_heap.out b/contrib/amcheck/expected/check_heap.out
+index 979e5e8..2375b45 100644
+--- a/contrib/amcheck/expected/check_heap.out
++++ b/contrib/amcheck/expected/check_heap.out
+@@ -80,12 +80,9 @@ INSERT INTO heaptest (a, b)
+ -- same transaction.  The heaptest table is smaller than the default
+ -- wal_skip_threshold, so a wal_level=minimal commit reads the table into
+ -- shared_buffers.  A transaction delays that and excludes any autovacuum.
+-SET allow_in_place_tablespaces = true;
+-CREATE TABLESPACE regress_test_stats_tblspc LOCATION '';
+ SELECT sum(reads) AS stats_bulkreads_before
+   FROM pg_stat_io WHERE context = 'bulkread' \gset
+ BEGIN;
+-ALTER TABLE heaptest SET TABLESPACE regress_test_stats_tblspc;
+ -- Check that valid options are not rejected nor corruption reported
+ -- for a non-empty table
+ SELECT * FROM verify_heapam(relation := 'heaptest', skip := 'none');
+@@ -118,14 +115,6 @@ SELECT pg_stat_force_next_flush();
+  
+ (1 row)
+ 
+-SELECT sum(reads) AS stats_bulkreads_after
+-  FROM pg_stat_io WHERE context = 'bulkread' \gset
+-SELECT :stats_bulkreads_after > :stats_bulkreads_before;
+- ?column? 
+-----------
+- t
+-(1 row)
+-
+ CREATE ROLE regress_heaptest_role;
+ -- verify permissions are checked (error due to function not callable)
+ SET ROLE regress_heaptest_role;
+@@ -233,7 +222,6 @@ ERROR:  cannot check relation "test_foreign_table"
+ DETAIL:  This operation is not supported for foreign tables.
+ -- cleanup
+ DROP TABLE heaptest;
+-DROP TABLESPACE regress_test_stats_tblspc;
+ DROP TABLE test_partition;
+ DROP TABLE test_partitioned;
+ DROP OWNED BY regress_heaptest_role; -- permissions
+diff --git a/contrib/amcheck/sql/check_heap.sql b/contrib/amcheck/sql/check_heap.sql
+index 1745bae..3b429c3 100644
+--- a/contrib/amcheck/sql/check_heap.sql
++++ b/contrib/amcheck/sql/check_heap.sql
+@@ -40,12 +40,9 @@ INSERT INTO heaptest (a, b)
+ -- same transaction.  The heaptest table is smaller than the default
+ -- wal_skip_threshold, so a wal_level=minimal commit reads the table into
+ -- shared_buffers.  A transaction delays that and excludes any autovacuum.
+-SET allow_in_place_tablespaces = true;
+-CREATE TABLESPACE regress_test_stats_tblspc LOCATION '';
+ SELECT sum(reads) AS stats_bulkreads_before
+   FROM pg_stat_io WHERE context = 'bulkread' \gset
+ BEGIN;
+-ALTER TABLE heaptest SET TABLESPACE regress_test_stats_tblspc;
+ -- Check that valid options are not rejected nor corruption reported
+ -- for a non-empty table
+ SELECT * FROM verify_heapam(relation := 'heaptest', skip := 'none');
+@@ -58,9 +55,6 @@ COMMIT;
+ --   ALTER TABLE ... SET TABLESPACE ...
+ -- causing an additional bulkread, which should be reflected in pg_stat_io.
+ SELECT pg_stat_force_next_flush();
+-SELECT sum(reads) AS stats_bulkreads_after
+-  FROM pg_stat_io WHERE context = 'bulkread' \gset
+-SELECT :stats_bulkreads_after > :stats_bulkreads_before;
+ 
+ CREATE ROLE regress_heaptest_role;
+ 
+@@ -140,7 +134,6 @@ SELECT * FROM verify_heapam('test_foreign_table',
+ 
+ -- cleanup
+ DROP TABLE heaptest;
+-DROP TABLESPACE regress_test_stats_tblspc;
+ DROP TABLE test_partition;
+ DROP TABLE test_partitioned;
+ DROP OWNED BY regress_heaptest_role; -- permissions
+diff --git a/contrib/citext/expected/create_index_acl.out b/contrib/citext/expected/create_index_acl.out
+index 33be13a..70a406c 100644
+--- a/contrib/citext/expected/create_index_acl.out
++++ b/contrib/citext/expected/create_index_acl.out
+@@ -5,9 +5,6 @@
+ -- owner having as few applicable privileges as possible.  (The privileges.sql
+ -- regress_sro_user tests look for the opposite defect; they confirm that
+ -- DefineIndex() uses the table owner userid where necessary.)
+-SET allow_in_place_tablespaces = true;
+-CREATE TABLESPACE regress_create_idx_tblspace LOCATION '';
+-RESET allow_in_place_tablespaces;
+ BEGIN;
+ CREATE ROLE regress_minimal;
+ CREATE SCHEMA s;
+@@ -49,11 +46,9 @@ ALTER TABLE s.x OWNER TO regress_minimal;
+ -- Empty-table DefineIndex()
+ CREATE UNIQUE INDEX u0rows ON s.x USING btree
+   ((s.index_this_expr(y, s.const())) COLLATE s.coll s.citext_pattern_ops)
+-  TABLESPACE regress_create_idx_tblspace
+   WHERE s.index_row_if(y);
+ ALTER TABLE s.x ADD CONSTRAINT e0rows EXCLUDE USING btree
+   ((s.index_this_expr(y, s.const())) COLLATE s.coll WITH s.=)
+-  USING INDEX TABLESPACE regress_create_idx_tblspace
+   WHERE (s.index_row_if(y));
+ -- Make the table nonempty.
+ INSERT INTO s.x VALUES ('foo'), ('bar');
+@@ -66,11 +61,9 @@ RESET search_path;
+ GRANT EXECUTE ON FUNCTION s.index_this_expr TO regress_minimal;
+ CREATE UNIQUE INDEX u2rows ON s.x USING btree
+   ((s.index_this_expr(y, s.const())) COLLATE s.coll s.citext_pattern_ops)
+-  TABLESPACE regress_create_idx_tblspace
+   WHERE s.index_row_if(y);
+ ALTER TABLE s.x ADD CONSTRAINT e2rows EXCLUDE USING btree
+   ((s.index_this_expr(y, s.const())) COLLATE s.coll WITH s.=)
+-  USING INDEX TABLESPACE regress_create_idx_tblspace
+   WHERE (s.index_row_if(y));
+ -- Shall not find s.coll via search_path, despite the s.const->public.setter
+ -- call having set search_path=s during expression planning.  Suppress the
+@@ -78,9 +71,7 @@ ALTER TABLE s.x ADD CONSTRAINT e2rows EXCLUDE USING btree
+ \set VERBOSITY sqlstate
+ ALTER TABLE s.x ADD CONSTRAINT underqualified EXCLUDE USING btree
+   ((s.index_this_expr(y, s.const())) COLLATE coll WITH s.=)
+-  USING INDEX TABLESPACE regress_create_idx_tblspace
+   WHERE (s.index_row_if(y));
+ ERROR:  42704
+ \set VERBOSITY default
+ ROLLBACK;
+-DROP TABLESPACE regress_create_idx_tblspace;
+diff --git a/contrib/citext/sql/create_index_acl.sql b/contrib/citext/sql/create_index_acl.sql
+index 10b5225..ae442e1 100644
+--- a/contrib/citext/sql/create_index_acl.sql
++++ b/contrib/citext/sql/create_index_acl.sql
+@@ -6,10 +6,6 @@
+ -- regress_sro_user tests look for the opposite defect; they confirm that
+ -- DefineIndex() uses the table owner userid where necessary.)
+ 
+-SET allow_in_place_tablespaces = true;
+-CREATE TABLESPACE regress_create_idx_tblspace LOCATION '';
+-RESET allow_in_place_tablespaces;
+-
+ BEGIN;
+ CREATE ROLE regress_minimal;
+ CREATE SCHEMA s;
+@@ -51,11 +47,9 @@ ALTER TABLE s.x OWNER TO regress_minimal;
+ -- Empty-table DefineIndex()
+ CREATE UNIQUE INDEX u0rows ON s.x USING btree
+   ((s.index_this_expr(y, s.const())) COLLATE s.coll s.citext_pattern_ops)
+-  TABLESPACE regress_create_idx_tblspace
+   WHERE s.index_row_if(y);
+ ALTER TABLE s.x ADD CONSTRAINT e0rows EXCLUDE USING btree
+   ((s.index_this_expr(y, s.const())) COLLATE s.coll WITH s.=)
+-  USING INDEX TABLESPACE regress_create_idx_tblspace
+   WHERE (s.index_row_if(y));
+ -- Make the table nonempty.
+ INSERT INTO s.x VALUES ('foo'), ('bar');
+@@ -68,11 +62,9 @@ RESET search_path;
+ GRANT EXECUTE ON FUNCTION s.index_this_expr TO regress_minimal;
+ CREATE UNIQUE INDEX u2rows ON s.x USING btree
+   ((s.index_this_expr(y, s.const())) COLLATE s.coll s.citext_pattern_ops)
+-  TABLESPACE regress_create_idx_tblspace
+   WHERE s.index_row_if(y);
+ ALTER TABLE s.x ADD CONSTRAINT e2rows EXCLUDE USING btree
+   ((s.index_this_expr(y, s.const())) COLLATE s.coll WITH s.=)
+-  USING INDEX TABLESPACE regress_create_idx_tblspace
+   WHERE (s.index_row_if(y));
+ -- Shall not find s.coll via search_path, despite the s.const->public.setter
+ -- call having set search_path=s during expression planning.  Suppress the
+@@ -80,9 +72,7 @@ ALTER TABLE s.x ADD CONSTRAINT e2rows EXCLUDE USING btree
+ \set VERBOSITY sqlstate
+ ALTER TABLE s.x ADD CONSTRAINT underqualified EXCLUDE USING btree
+   ((s.index_this_expr(y, s.const())) COLLATE coll WITH s.=)
+-  USING INDEX TABLESPACE regress_create_idx_tblspace
+   WHERE (s.index_row_if(y));
+ \set VERBOSITY default
+ ROLLBACK;
+ 
+-DROP TABLESPACE regress_create_idx_tblspace;
+diff --git a/contrib/file_fdw/expected/file_fdw.out b/contrib/file_fdw/expected/file_fdw.out
+index 86c148a..81bdb2c 100644
+--- a/contrib/file_fdw/expected/file_fdw.out
++++ b/contrib/file_fdw/expected/file_fdw.out
+@@ -4,6 +4,7 @@
+ -- directory paths are passed to us in environment variables
+ \getenv abs_srcdir PG_ABS_SRCDIR
+ -- Clean up in case a prior regression run failed
++SET compute_query_id TO 'off';
+ SET client_min_messages TO 'warning';
+ DROP ROLE IF EXISTS regress_file_fdw_superuser, regress_file_fdw_user, regress_no_priv_user;
+ RESET client_min_messages;
+diff --git a/contrib/file_fdw/sql/file_fdw.sql b/contrib/file_fdw/sql/file_fdw.sql
+index f0548e1..848a08c 100644
+--- a/contrib/file_fdw/sql/file_fdw.sql
++++ b/contrib/file_fdw/sql/file_fdw.sql
+@@ -6,6 +6,7 @@
+ \getenv abs_srcdir PG_ABS_SRCDIR
+ 
+ -- Clean up in case a prior regression run failed
++SET compute_query_id TO 'off';
+ SET client_min_messages TO 'warning';
+ DROP ROLE IF EXISTS regress_file_fdw_superuser, regress_file_fdw_user, regress_no_priv_user;
+ RESET client_min_messages;

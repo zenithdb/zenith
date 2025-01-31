@@ -182,6 +182,13 @@ pub struct CancelKeyData {
     pub cancel_key: i32,
 }
 
+pub fn id_to_cancel_key(id: u64) -> CancelKeyData {
+    CancelKeyData {
+        backend_pid: (id >> 32) as i32,
+        cancel_key: (id & 0xffffffff) as i32,
+    }
+}
+
 impl fmt::Display for CancelKeyData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let hi = (self.backend_pid as u64) << 32;

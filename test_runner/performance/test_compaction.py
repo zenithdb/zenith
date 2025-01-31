@@ -75,6 +75,7 @@ def test_compaction_l0_memory(neon_compare: NeonCompare):
             # Initially disable compaction so that we will build up a stack of L0s
             "compaction_period": "0s",
             "gc_period": "0s",
+            "compaction_upper_limit": 12,
         }
     )
     neon_compare.tenant = tenant_id
@@ -91,6 +92,7 @@ def test_compaction_l0_memory(neon_compare: NeonCompare):
     tenant_conf = pageserver_http.tenant_config(tenant_id)
     assert tenant_conf.effective_config["checkpoint_distance"] == 256 * 1024 * 1024
     assert tenant_conf.effective_config["compaction_threshold"] == 10
+    assert tenant_conf.effective_config["compaction_upper_limit"] == 12
 
     # Aim to write about 20 L0s, so that we will hit the limit on how many
     # to compact at once

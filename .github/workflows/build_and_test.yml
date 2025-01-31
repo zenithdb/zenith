@@ -242,7 +242,7 @@ jobs:
       statuses: write
       contents: write
       pull-requests: write
-    runs-on: [ self-hosted, small ]
+    runs-on: [ self-hosted, small-metal ]
     container:
       image: ${{ needs.build-build-tools-image.outputs.image }}-bookworm
       credentials:
@@ -786,6 +786,17 @@ jobs:
           username: ${{ secrets.NEON_DOCKERHUB_USERNAME }}
           password: ${{ secrets.NEON_DOCKERHUB_PASSWORD }}
 
+      - name: Get the last compute release tag
+        id: get-last-compute-release-tag
+        env:
+          GH_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
+        run: |
+          tag=$(gh api -q '[.[].tag_name | select(startswith("release-compute"))][0]'\
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${{ github.repository }}/releases")
+          echo tag=${tag} >> ${GITHUB_OUTPUT}
+
       # `neondatabase/neon` contains multiple binaries, all of them use the same input for the version into the same version formatting library.
       # Pick pageserver as currently the only binary with extra "version" features printed in the string to verify.
       # Regular pageserver version string looks like
@@ -817,11 +828,25 @@ jobs:
           TEST_VERSION_ONLY: ${{ matrix.pg_version }}
         run: ./docker-compose/docker_compose_test.sh
 
+      - name: Print logs and clean up docker-compose test
+        if: always()
+        run: |
+          docker compose --profile test-extensions -f ./docker-compose/docker-compose.yml logs || true
+          docker compose --profile test-extensions -f ./docker-compose/docker-compose.yml down
+
+      - name: Test extension upgrade
+        timeout-minutes: 20
+        if: ${{ needs.tag.outputs.build-tag == github.run_id }}
+        env:
+          NEWTAG: ${{ needs.tag.outputs.build-tag }}
+          OLDTAG: ${{ steps.get-last-compute-release-tag.outputs.tag }}
+        run: ./docker-compose/test_extensions_upgrade.sh
+
       - name: Print logs and clean up
         if: always()
         run: |
-          docker compose -f ./docker-compose/docker-compose.yml logs || 0
-          docker compose -f ./docker-compose/docker-compose.yml down
+          docker compose --profile test-extensions -f ./docker-compose/docker-compose.yml logs || true
+          docker compose --profile test-extensions -f ./docker-compose/docker-compose.yml down
 
   promote-images-dev:
     needs: [ check-permissions, tag, vm-compute-node-image, neon-image ]
@@ -859,7 +884,7 @@ jobs:
           done
 
   promote-images-prod:
-    needs: [ check-permissions, tag, test-images, vm-compute-node-image ]
+    needs: [ check-permissions, tag, test-images, promote-images-dev ]
     runs-on: ubuntu-22.04
     if: github.ref_name == 'main' || github.ref_name == 'release' || github.ref_name == 'release-proxy' || github.ref_name == 'release-compute'
 
@@ -892,14 +917,14 @@ jobs:
         run: |
           for repo in neondatabase 369495373322.dkr.ecr.eu-central-1.amazonaws.com; do
             docker buildx imagetools create -t $repo/neon:latest \
-                                               neondatabase/neon:${{ needs.tag.outputs.build-tag }}
+                                               $repo/neon:${{ needs.tag.outputs.build-tag }}
 
             for version in ${VERSIONS}; do
               docker buildx imagetools create -t $repo/compute-node-${version}:latest \
-                                                 neondatabase/compute-node-${version}:${{ needs.tag.outputs.build-tag }}
+                                                 $repo/compute-node-${version}:${{ needs.tag.outputs.build-tag }}
 
               docker buildx imagetools create -t $repo/vm-compute-node-${version}:latest \
-                                                 neondatabase/vm-compute-node-${version}:${{ needs.tag.outputs.build-tag }}
+                                                 $repo/vm-compute-node-${version}:${{ needs.tag.outputs.build-tag }}
             done
           done
           docker buildx imagetools create -t neondatabase/neon-test-extensions-v16:latest \
@@ -1050,6 +1075,7 @@ jobs:
           retries: 5
           script: |
             const tag = "${{ needs.tag.outputs.build-tag }}";
+            const branch = "${{ github.ref_name }}";
 
             try {
               const existingRef = await github.rest.git.getRef({
@@ -1092,12 +1118,48 @@ jobs:
               }
 
               console.log(`Release for tag ${tag} does not exist. Creating it...`);
+
+              // Find the PR number using the commit SHA
+              const pullRequests = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'closed',
+                base: branch,
+              });
+
+              const pr = pullRequests.data.find(pr => pr.merge_commit_sha === context.sha);
+              const prNumber = pr ? pr.number : null;
+
+              // Find the previous release on the branch
+              const releases = await github.rest.repos.listReleases({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+              });
+
+              const branchReleases = releases.data
+                .filter((release) => {
+                  const regex = new RegExp(`^${branch}-\\d+$`);
+                  return regex.test(release.tag_name) && !release.draft && !release.prerelease;
+                })
+                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+              const previousTag = branchReleases.length > 0 ? branchReleases[0].tag_name : null;
+
+              const releaseNotes = [
+                prNumber
+                  ? `Release PR https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${prNumber}.`
+                  : 'Release PR not found.',
+                previousTag
+                  ? `Diff with the previous release https://github.com/${context.repo.owner}/${context.repo.repo}/compare/${previousTag}...${tag}.`
+                  : `No previous release found on branch ${branch}.`,
+              ].join('\n\n');
+
               await github.rest.repos.createRelease({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 tag_name: tag,
-                // TODO: Automate release notes properly
-                generate_release_notes: false,
+                body: releaseNotes,
               });
               console.log(`Release for tag ${tag} created successfully.`);
             }

@@ -984,6 +984,8 @@ components:
           type: string
         compaction_threshold:
           type: string
+        compaction_upper_limit:
+          type: string
         image_creation_threshold:
           type: integer
         walreceiver_connect_timeout:

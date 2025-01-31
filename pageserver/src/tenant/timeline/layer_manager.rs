@@ -91,6 +91,7 @@ impl LayerManager {
                 layer_map,
                 layer_fmgr: LayerFileManager(hashmap),
             }) => {
+                // NB: no need to decrement layer metrics; metrics are removed on timeline shutdown.
                 let open = layer_map.open_layer.take();
                 let frozen = layer_map.frozen_layers.len();
                 let taken_writer_state = writer_state.take();
@@ -234,6 +235,7 @@ impl OpenLayerManager {
         lsn: Lsn,
         last_freeze_at: &AtomicLsn,
         write_lock: &mut tokio::sync::MutexGuard<'_, Option<TimelineWriterState>>,
+        metrics: &TimelineMetrics,
     ) -> bool {
         let Lsn(last_record_lsn) = lsn;
         let end_lsn = Lsn(last_record_lsn + 1);
@@ -241,6 +243,11 @@ impl OpenLayerManager {
         let froze = if let Some(open_layer) = &self.layer_map.open_layer {
             let open_layer_rc = Arc::clone(open_layer);
             open_layer.freeze(end_lsn).await;
+
+            // Increment the frozen layer metrics. This is decremented in `finish_flush_l0_layer()`.
+            // TODO: It would be nicer to do this via `InMemoryLayer::drop()`, but it requires a
+            // reference to the timeline metrics. Other methods use a metrics borrow as well.
+            metrics.inc_frozen_layer(open_layer);
 
             // The layer is no longer open, update the layer map to reflect this.
             // We will replace it with on-disk historics below.
@@ -298,6 +305,7 @@ impl OpenLayerManager {
             .frozen_layers
             .pop_front()
             .expect("there must be a inmem layer to flush");
+        metrics.dec_frozen_layer(&inmem);
 
         // Only one task may call this function at a time (for this
         // timeline). If two tasks tried to flush the same frozen

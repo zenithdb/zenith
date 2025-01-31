@@ -18,6 +18,7 @@ use fallible_iterator::FallibleIterator;
 use futures_util::{future, ready, TryStreamExt};
 use parking_lot::Mutex;
 use postgres_protocol2::message::{backend::Message, frontend};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -137,7 +138,7 @@ impl InnerClient {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SocketConfig {
     pub host: Host,
     pub port: u16,

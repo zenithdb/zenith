@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use enumset::EnumSet;
+use futures::future::join_all;
 use futures::StreamExt;
 use futures::TryFutureExt;
 use humantime::format_rfc3339;
@@ -40,6 +41,7 @@ use pageserver_api::models::TenantShardSplitRequest;
 use pageserver_api::models::TenantShardSplitResponse;
 use pageserver_api::models::TenantSorting;
 use pageserver_api::models::TenantState;
+use pageserver_api::models::TenantWaitLsnRequest;
 use pageserver_api::models::TimelineArchivalConfigRequest;
 use pageserver_api::models::TimelineCreateRequestMode;
 use pageserver_api::models::TimelineCreateRequestModeImportPgdata;
@@ -95,6 +97,8 @@ use crate::tenant::timeline::CompactOptions;
 use crate::tenant::timeline::CompactRequest;
 use crate::tenant::timeline::CompactionError;
 use crate::tenant::timeline::Timeline;
+use crate::tenant::timeline::WaitLsnTimeout;
+use crate::tenant::timeline::WaitLsnWaiter;
 use crate::tenant::GetTimelineError;
 use crate::tenant::OffloadedTimeline;
 use crate::tenant::{LogicalSizeCalculationCause, PageReconstructError};
@@ -1468,7 +1472,13 @@ async fn layer_download_handler(
     let downloaded = timeline
         .download_layer(&layer_name)
         .await
-        .map_err(ApiError::InternalServerError)?;
+        .map_err(|e| match e {
+            tenant::storage_layer::layer::DownloadError::TimelineShutdown
+            | tenant::storage_layer::layer::DownloadError::DownloadCancelled => {
+                ApiError::ShuttingDown
+            }
+            other => ApiError::InternalServerError(other.into()),
+        })?;
 
     match downloaded {
         Some(true) => json_response(StatusCode::OK, ()),
@@ -2790,6 +2800,63 @@ async fn secondary_download_handler(
     json_response(status, progress)
 }
 
+async fn wait_lsn_handler(
+    mut request: Request<Body>,
+    cancel: CancellationToken,
+) -> Result<Response<Body>, ApiError> {
+    let tenant_shard_id: TenantShardId = parse_request_param(&request, "tenant_shard_id")?;
+    let wait_lsn_request: TenantWaitLsnRequest = json_request(&mut request).await?;
+
+    let state = get_state(&request);
+    let tenant = state
+        .tenant_manager
+        .get_attached_tenant_shard(tenant_shard_id)?;
+
+    let mut wait_futures = Vec::default();
+    for timeline in tenant.list_timelines() {
+        let Some(lsn) = wait_lsn_request.timelines.get(&timeline.timeline_id) else {
+            continue;
+        };
+
+        let fut = {
+            let timeline = timeline.clone();
+            let ctx = RequestContext::new(TaskKind::MgmtRequest, DownloadBehavior::Error);
+            async move {
+                timeline
+                    .wait_lsn(
+                        *lsn,
+                        WaitLsnWaiter::HttpEndpoint,
+                        WaitLsnTimeout::Custom(wait_lsn_request.timeout),
+                        &ctx,
+                    )
+                    .await
+            }
+        };
+        wait_futures.push(fut);
+    }
+
+    if wait_futures.is_empty() {
+        return json_response(StatusCode::NOT_FOUND, ());
+    }
+
+    let all_done = tokio::select! {
+        results = join_all(wait_futures) => {
+            results.iter().all(|res| res.is_ok())
+        },
+        _ = cancel.cancelled() => {
+            return Err(ApiError::Cancelled);
+        }
+    };
+
+    let status = if all_done {
+        StatusCode::OK
+    } else {
+        StatusCode::ACCEPTED
+    };
+
+    json_response(status, ())
+}
+
 async fn secondary_status_handler(
     request: Request<Body>,
     _cancel: CancellationToken,
@@ -3108,12 +3175,16 @@ async fn put_tenant_timeline_import_basebackup(
 
     let ctx = RequestContext::new(TaskKind::MgmtRequest, DownloadBehavior::Warn);
 
-    let span = info_span!("import_basebackup", tenant_id=%tenant_id, timeline_id=%timeline_id, base_lsn=%base_lsn, end_lsn=%end_lsn, pg_version=%pg_version);
+    let tenant_shard_id = TenantShardId::unsharded(tenant_id);
+
+    let span = info_span!("import_basebackup",
+        tenant_id=%tenant_id, timeline_id=%timeline_id, shard_id=%tenant_shard_id.shard_slug(),
+        base_lsn=%base_lsn, end_lsn=%end_lsn, pg_version=%pg_version);
     async move {
         let state = get_state(&request);
         let tenant = state
             .tenant_manager
-            .get_attached_tenant_shard(TenantShardId::unsharded(tenant_id))?;
+            .get_attached_tenant_shard(tenant_shard_id)?;
 
         let broker_client = state.broker_client.clone();
 
@@ -3576,6 +3647,9 @@ pub fn make_router(
         })
         .post("/v1/tenant/:tenant_shard_id/secondary/download", |r| {
             api_handler(r, secondary_download_handler)
+        })
+        .post("/v1/tenant/:tenant_shard_id/wait_lsn", |r| {
+            api_handler(r, wait_lsn_handler)
         })
         .put("/v1/tenant/:tenant_shard_id/break", |r| {
             testing_api_handler("set tenant state to broken", r, handle_tenant_break)

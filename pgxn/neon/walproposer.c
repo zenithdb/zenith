@@ -1024,7 +1024,8 @@ DetermineEpochStartLsn(WalProposer *wp)
 	dth = &wp->safekeeper[wp->donor].voteResponse.termHistory;
 	wp->propTermHistory.n_entries = dth->n_entries + 1;
 	wp->propTermHistory.entries = palloc(sizeof(TermSwitchEntry) * wp->propTermHistory.n_entries);
-	memcpy(wp->propTermHistory.entries, dth->entries, sizeof(TermSwitchEntry) * dth->n_entries);
+	if (dth->n_entries > 0)
+		memcpy(wp->propTermHistory.entries, dth->entries, sizeof(TermSwitchEntry) * dth->n_entries);
 	wp->propTermHistory.entries[wp->propTermHistory.n_entries - 1].term = wp->propTerm;
 	wp->propTermHistory.entries[wp->propTermHistory.n_entries - 1].lsn = wp->propEpochStartLsn;
 

@@ -2,17 +2,16 @@ use axum::{body::Body, response::Response};
 use http::header::CONTENT_TYPE;
 use http::StatusCode;
 use metrics::proto::MetricFamily;
-use metrics::Encoder;
-use metrics::TextEncoder;
+use metrics::{Encoder, TextEncoder};
 
-use crate::{http::JsonResponse, installed_extensions};
+use crate::{http::JsonResponse, metrics::collect};
 
 /// Expose Prometheus metrics.
 pub(in crate::http) async fn get_metrics() -> Response {
     // When we call TextEncoder::encode() below, it will immediately return an
     // error if a metric family has no metrics, so we need to preemptively
     // filter out metric families with no metrics.
-    let metrics = installed_extensions::collect()
+    let metrics = collect()
         .into_iter()
         .filter(|m| !m.get_metric().is_empty())
         .collect::<Vec<MetricFamily>>();

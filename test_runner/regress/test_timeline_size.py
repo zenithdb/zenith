@@ -440,7 +440,7 @@ def test_timeline_physical_size_post_compaction(neon_env_builder: NeonEnvBuilder
     env = neon_env_builder.init_start(
         initial_tenant_conf={
             "checkpoint_distance": "100000",
-            "compaction_period": "10m",
+            "compaction_period": "0s",
         }
     )
     pageserver_http = env.pageserver.http_client()

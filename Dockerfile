@@ -64,6 +64,7 @@ ARG DEFAULT_PG_VERSION
 WORKDIR /data
 
 RUN set -e \
+    && echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
     && apt update \
     && apt install -y \
         libreadline-dev \
@@ -72,6 +73,7 @@ RUN set -e \
 	# System postgres for use with client libraries (e.g. in storage controller)
         postgresql-15 \
         openssl \
+    && rm -f /etc/apt/apt.conf.d/80-retries \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
     && useradd -d /data neon \
     && chown -R neon:neon /data

@@ -27,6 +27,7 @@ from fixtures.pageserver.utils import (
 )
 from fixtures.remote_storage import RemoteStorageKind, S3Storage, s3_storage
 from fixtures.utils import query_scalar, wait_until
+from urllib3 import Retry
 
 if TYPE_CHECKING:
     from typing import Any
@@ -676,15 +677,13 @@ def test_layer_download_cancelled_by_config_location(neon_env_builder: NeonEnvBu
             "compaction_period": "0s",
         }
     )
-    client = env.pageserver.http_client()
+
+    # Disable retries, because we'll hit code paths that can give us
+    # 503 and want to see that directly
+    client = env.pageserver.http_client(retries=Retry(status=0))
+
     failpoint = "before-downloading-layer-stream-pausable"
     client.configure_failpoints((failpoint, "pause"))
-
-    env.pageserver.allowed_errors.extend(
-        [
-            ".*downloading failed, possibly for shutdown.*",
-        ]
-    )
 
     info = client.layer_map_info(env.initial_tenant, env.initial_timeline)
     assert len(info.delta_layers()) == 1
@@ -720,12 +719,8 @@ def test_layer_download_cancelled_by_config_location(neon_env_builder: NeonEnvBu
 
         client.configure_failpoints((failpoint, "off"))
 
-        with pytest.raises(
-            PageserverApiException, match="downloading failed, possibly for shutdown"
-        ):
+        with pytest.raises(PageserverApiException, match="Shutting down"):
             download.result()
-
-        env.pageserver.assert_log_contains(".*downloading failed, possibly for shutdown.*")
 
         detach.result()
 

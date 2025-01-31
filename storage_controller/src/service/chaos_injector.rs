@@ -96,28 +96,37 @@ impl ChaosInjector {
         let batch_size = 128;
         let mut inner = self.service.inner.write().unwrap();
         let (nodes, tenants, scheduler) = inner.parts_mut();
-        let tenant_ids = tenants.keys().cloned().collect::<Vec<_>>();
 
         // Prefer to migrate tenants that are currently outside their home AZ.  This avoids the chaos injector
         // continuously pushing tenants outside their home AZ: instead, we'll tend to cycle between picking some
         // random tenants to move, and then on next chaos iteration moving them back, then picking some new
         // random tenants on the next iteration.
+        let (out_of_home_az, in_home_az): (Vec<_>, Vec<_>) = tenants
+            .values()
+            .map(|shard| {
+                (
+                    shard.tenant_shard_id,
+                    shard.is_attached_outside_preferred_az(nodes),
+                )
+            })
+            .partition(|(_id, is_outside)| *is_outside);
+
+        let mut out_of_home_az: Vec<_> = out_of_home_az.into_iter().map(|(id, _)| id).collect();
+        let mut in_home_az: Vec<_> = in_home_az.into_iter().map(|(id, _)| id).collect();
+
         let mut victims = Vec::with_capacity(batch_size);
-        for shard in tenants.values() {
-            if shard.is_attached_outside_preferred_az(nodes) {
-                victims.push(shard.tenant_shard_id);
-            }
+        if out_of_home_az.len() >= batch_size {
+            tracing::info!("Injecting chaos: found {batch_size} shards to migrate back to home AZ (total {} out of home AZ)", out_of_home_az.len());
 
-            if victims.len() >= batch_size {
-                break;
-            }
+            out_of_home_az.shuffle(&mut thread_rng());
+            victims.extend(out_of_home_az.into_iter().take(batch_size));
+        } else {
+            tracing::info!("Injecting chaos: found {} shards to migrate back to home AZ, picking {} random shards to migrate", out_of_home_az.len(), std::cmp::min(batch_size - out_of_home_az.len(), in_home_az.len()));
+
+            victims.extend(out_of_home_az);
+            in_home_az.shuffle(&mut thread_rng());
+            victims.extend(in_home_az.into_iter().take(batch_size - victims.len()));
         }
-
-        let choose_random = batch_size.saturating_sub(victims.len());
-        tracing::info!("Injecting chaos: found {} shards to migrate back to home AZ, picking {choose_random} random shards to migrate", victims.len());
-
-        let random_victims = tenant_ids.choose_multiple(&mut thread_rng(), choose_random);
-        victims.extend(random_victims);
 
         for victim in victims {
             self.maybe_migrate_to_secondary(victim, nodes, tenants, scheduler);

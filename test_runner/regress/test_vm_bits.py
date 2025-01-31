@@ -203,6 +203,9 @@ def test_vm_bit_clear_on_heap_lock_blackbox(neon_env_builder: NeonEnvBuilder):
         "checkpoint_distance": f"{128 * 1024}",
         "compaction_target_size": f"{128 * 1024}",
         "compaction_threshold": "1",
+        # disable L0 backpressure
+        "l0_flush_delay_threshold": "0",
+        "l0_flush_stall_threshold": "0",
         # create image layers eagerly, so that GC can remove some layers
         "image_creation_threshold": "1",
         # set PITR interval to be small, so we can do GC

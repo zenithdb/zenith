@@ -17,6 +17,31 @@ inputs:
   compute_units:
     description: '[Min, Max] compute units'
     default: '[1, 1]'
+  # settings below only needed if you want the project to be sharded from the beginning
+  shard_split_project:
+    description: 'by default new projects are not shard-split, specify true to shard-split'
+    required: false
+    default: 'false'
+  admin_api_key:
+    description: 'Admin API Key needed for shard-splitting. Must be specified if shard_split_project is true'
+    required: false
+  shard_count:
+    description: 'Number of shards to split the project into, only applies if shard_split_project is true'
+    required: false
+    default: '8'
+  stripe_size:
+    description: 'Stripe size, optional, in 8kiB pages.  e.g. set 2048 for 16MB stripes. Default is 128 MiB, only applies if shard_split_project is true'
+    required: false
+    default: '32768'
+  psql_path:
+    description: 'Path to psql binary - it is caller responsibility to provision the psql binary'
+    required: false
+    default: '/tmp/neon/pg_install/v16/bin/psql'
+  libpq_lib_path:
+    description: 'Path to directory containing libpq library - it is caller responsibility to provision the libpq library'
+    required: false
+    default: '/tmp/neon/pg_install/v16/lib'
+  
 
 outputs:
   dsn:
@@ -63,6 +88,23 @@ runs:
         echo "project_id=${project_id}" >> $GITHUB_OUTPUT
 
         echo "Project ${project_id} has been created"
+
+        if [ "${SHARD_SPLIT_PROJECT}" = "true" ]; then
+          # determine tenant ID
+          TENANT_ID=`${PSQL} ${dsn} -t -A -c "SHOW neon.tenant_id"`
+          
+          echo "Splitting project ${project_id} with tenant_id ${TENANT_ID} into $((SHARD_COUNT)) shards with stripe size $((STRIPE_SIZE))"
+
+          echo "Sending PUT request to https://${API_HOST}/regions/${REGION_ID}/api/v1/admin/storage/proxy/control/v1/tenant/${TENANT_ID}/shard_split"
+          echo "with body {\"new_shard_count\": $((SHARD_COUNT)), \"new_stripe_size\": $((STRIPE_SIZE))}"
+          
+          # we need an ADMIN API KEY to invoke storage controller API for shard splitting (bash -u above checks that the variable is set)
+          curl -X PUT \
+            "https://${API_HOST}/regions/${REGION_ID}/api/v1/admin/storage/proxy/control/v1/tenant/${TENANT_ID}/shard_split" \
+            -H "Accept: application/json" -H "Content-Type: application/json" -H "Authorization: Bearer ${ADMIN_API_KEY}" \
+            -d "{\"new_shard_count\": $SHARD_COUNT, \"new_stripe_size\": $STRIPE_SIZE}"
+        fi
+
       env:
         API_HOST: ${{ inputs.api_host }}
         API_KEY: ${{ inputs.api_key }}
@@ -70,3 +112,9 @@ runs:
         POSTGRES_VERSION: ${{ inputs.postgres_version }}
         MIN_CU: ${{ fromJSON(inputs.compute_units)[0] }}
         MAX_CU: ${{ fromJSON(inputs.compute_units)[1] }}
+        SHARD_SPLIT_PROJECT: ${{ inputs.shard_split_project }}
+        ADMIN_API_KEY: ${{ inputs.admin_api_key }}
+        SHARD_COUNT: ${{ inputs.shard_count }}
+        STRIPE_SIZE: ${{ inputs.stripe_size }}
+        PSQL: ${{ inputs.psql_path }}
+        LD_LIBRARY_PATH: ${{ inputs.libpq_lib_path }}

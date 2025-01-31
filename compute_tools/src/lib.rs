@@ -16,6 +16,7 @@ pub mod extension_server;
 pub mod installed_extensions;
 pub mod local_proxy;
 pub mod lsn_lease;
+pub mod metrics;
 mod migration;
 pub mod monitor;
 pub mod params;

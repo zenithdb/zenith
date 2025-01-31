@@ -143,7 +143,7 @@ def test_create_snapshot(
 
     env = neon_env_builder.init_start(
         initial_tenant_conf={
-            # Miniature layers to enable generating non-trivial layer map without writing lots of data
+            # Miniature layers to enable generating non-trivial layer map without writing lots of data.
             "checkpoint_distance": f"{128 * 1024}",
             "compaction_threshold": "1",
             "compaction_target_size": f"{128 * 1024}",

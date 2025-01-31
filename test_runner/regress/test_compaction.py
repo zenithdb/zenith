@@ -86,9 +86,9 @@ page_cache_size=10
     log.info("Checking layer access metrics ...")
 
     layer_access_metric_names = [
-        "pageserver_layers_visited_per_vectored_read_global_sum",
-        "pageserver_layers_visited_per_vectored_read_global_count",
-        "pageserver_layers_visited_per_vectored_read_global_bucket",
+        "pageserver_layers_per_read_global_sum",
+        "pageserver_layers_per_read_global_count",
+        "pageserver_layers_per_read_global_bucket",
     ]
 
     metrics = env.pageserver.http_client().get_metrics()
@@ -96,8 +96,8 @@ page_cache_size=10
         layer_access_metrics = metrics.query_all(name)
         log.info(f"Got metrics: {layer_access_metrics}")
 
-    vectored_sum = metrics.query_one("pageserver_layers_visited_per_vectored_read_global_sum")
-    vectored_count = metrics.query_one("pageserver_layers_visited_per_vectored_read_global_count")
+    vectored_sum = metrics.query_one("pageserver_layers_per_read_global_sum")
+    vectored_count = metrics.query_one("pageserver_layers_per_read_global_count")
     if vectored_count.value > 0:
         assert vectored_sum.value > 0
         vectored_average = vectored_sum.value / vectored_count.value

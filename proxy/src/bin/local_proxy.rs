@@ -7,12 +7,11 @@ use std::time::Duration;
 use anyhow::{bail, ensure, Context};
 use camino::{Utf8Path, Utf8PathBuf};
 use compute_api::spec::LocalProxySpec;
-use dashmap::DashMap;
 use futures::future::Either;
 use proxy::auth::backend::jwt::JwkCache;
 use proxy::auth::backend::local::{LocalBackend, JWKS_ROLE_MAP};
 use proxy::auth::{self};
-use proxy::cancellation::CancellationHandlerMain;
+use proxy::cancellation::CancellationHandler;
 use proxy::config::{
     self, AuthenticationConfig, ComputeConfig, HttpConfig, ProxyConfig, RetryConfig,
 };
@@ -211,12 +210,7 @@ async fn main() -> anyhow::Result<()> {
         auth_backend,
         http_listener,
         shutdown.clone(),
-        Arc::new(CancellationHandlerMain::new(
-            &config.connect_to_compute,
-            Arc::new(DashMap::new()),
-            None,
-            proxy::metrics::CancellationSource::Local,
-        )),
+        Arc::new(CancellationHandler::new(&config.connect_to_compute, None)),
         endpoint_rate_limiter,
     );
 

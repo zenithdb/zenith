@@ -16,11 +16,6 @@ pub struct GenericAPIError {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct InfoResponse {
-    pub num_cpus: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct ExtensionInstallResponse {
     pub extension: PgIdent,
     pub version: ExtVersion,

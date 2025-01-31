@@ -1,6 +1,8 @@
+from .errors import ErrorCodes as ErrorCodes
+from .settings import ChangedSetting as ChangedSetting, SettingCodes as SettingCodes, Settings as Settings
 from _typeshed import Incomplete
-
-from .settings import ChangedSetting as ChangedSetting
+from hpack import HeaderTuple as HeaderTuple
+from hyperframe.frame import Frame as Frame
 
 class Event: ...
 
@@ -53,7 +55,7 @@ class RemoteSettingsChanged(Event):
     changed_settings: Incomplete
     def __init__(self) -> None: ...
     @classmethod
-    def from_settings(cls, old_settings, new_settings): ...
+    def from_settings(cls, old_settings: Settings | dict[int, int], new_settings: dict[int, int]) -> RemoteSettingsChanged: ...
 
 class PingReceived(Event):
     ping_data: Incomplete

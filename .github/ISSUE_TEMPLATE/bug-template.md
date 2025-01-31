@@ -3,6 +3,7 @@ name: Bug Template
 about: Used for describing bugs
 title: ''
 labels: t/bug
+type: Bug
 assignees: ''
 
 ---

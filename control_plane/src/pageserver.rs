@@ -347,11 +347,31 @@ impl PageServerNode {
                 .map(|x| x.parse::<usize>())
                 .transpose()
                 .context("Failed to parse 'compaction_threshold' as an integer")?,
+            compaction_upper_limit: settings
+                .remove("compaction_upper_limit")
+                .map(|x| x.parse::<usize>())
+                .transpose()
+                .context("Failed to parse 'compaction_upper_limit' as an integer")?,
             compaction_algorithm: settings
                 .remove("compaction_algorithm")
                 .map(serde_json::from_str)
                 .transpose()
                 .context("Failed to parse 'compaction_algorithm' json")?,
+            l0_flush_delay_threshold: settings
+                .remove("l0_flush_delay_threshold")
+                .map(|x| x.parse::<usize>())
+                .transpose()
+                .context("Failed to parse 'l0_flush_delay_threshold' as an integer")?,
+            l0_flush_wait_upload: settings
+                .remove("l0_flush_wait_upload")
+                .map(|x| x.parse::<bool>())
+                .transpose()
+                .context("Failed to parse 'l0_flush_wait_upload' as a boolean")?,
+            l0_flush_stall_threshold: settings
+                .remove("l0_flush_stall_threshold")
+                .map(|x| x.parse::<usize>())
+                .transpose()
+                .context("Failed to parse 'l0_flush_stall_threshold' as an integer")?,
             gc_horizon: settings
                 .remove("gc_horizon")
                 .map(|x| x.parse::<u64>())

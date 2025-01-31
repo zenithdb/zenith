@@ -12,7 +12,7 @@ use pin_project_lite::pin_project;
 use tokio::io::{self, AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 use tracing::warn;
 
-use crate::cancellation::CancellationHandlerMain;
+use crate::cancellation::CancellationHandler;
 use crate::config::ProxyConfig;
 use crate::context::RequestContext;
 use crate::error::{io_error, ReportableError};
@@ -129,7 +129,7 @@ pub(crate) async fn serve_websocket(
     auth_backend: &'static crate::auth::Backend<'static, ()>,
     ctx: RequestContext,
     websocket: OnUpgrade,
-    cancellation_handler: Arc<CancellationHandlerMain>,
+    cancellation_handler: Arc<CancellationHandler>,
     endpoint_rate_limiter: Arc<EndpointRateLimiter>,
     hostname: Option<String>,
     cancellations: tokio_util::task::task_tracker::TaskTracker,
