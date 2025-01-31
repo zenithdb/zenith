@@ -464,6 +464,18 @@ pub fn rel_size_to_key(rel: RelTag) -> Key {
     }
 }
 
+#[inline(always)]
+pub fn rel_size_key_to_rel(key: Key) -> RelTag {
+    assert_eq!(key.field1, 0x00);
+    assert_eq!(key.field6, 0xffff_ffff);
+    RelTag {
+        forknum: key.field5,
+        spcnode: key.field2,
+        dbnode: key.field3,
+        relnode: key.field4,
+    }
+}
+
 impl Key {
     #[inline(always)]
     pub fn is_rel_size_key(&self) -> bool {
@@ -557,6 +569,15 @@ pub fn slru_segment_size_to_key(kind: SlruKind, segno: u32) -> Key {
         field5: 0,
         field6: 0xffff_ffff,
     }
+}
+
+#[inline(always)]
+pub fn slru_segment_size_key_to_segno(key: Key) -> u32 {
+    assert_eq!(key.field1, 0x01);
+    assert_eq!(key.field3, 1);
+    assert_eq!(key.field5, 0);
+    assert_eq!(key.field6, 0xffff_ffff);
+    key.field4
 }
 
 impl Key {
