@@ -57,7 +57,7 @@ impl RedisKVClient {
         match q.query(&mut self.client).await {
             Ok(t) => return Ok(t),
             Err(e) => {
-                tracing::error!("failed to set a key-value pair: {e}");
+                tracing::error!("failed to run query: {e}");
             }
         }
 
