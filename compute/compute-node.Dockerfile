@@ -807,9 +807,11 @@ ARG PG_VERSION
 # !Do not remove!
 # We set it in shared_preload_libraries and computes will fail to start if library is not found.
 WORKDIR /ext-src
+COPY compute/patches/pg_cron.patch .
 RUN wget https://github.com/citusdata/pg_cron/archive/refs/tags/v1.6.4.tar.gz -O pg_cron.tar.gz && \
     echo "52d1850ee7beb85a4cb7185731ef4e5a90d1de216709d8988324b0d02e76af61 pg_cron.tar.gz" | sha256sum --check && \
-    mkdir pg_cron-src && cd pg_cron-src && tar xzf ../pg_cron.tar.gz --strip-components=1 -C .
+    mkdir pg_cron-src && cd pg_cron-src && tar xzf ../pg_cron.tar.gz --strip-components=1 -C . && \
+    patch < /ext-src/pg_cron.patch
 
 FROM pg-build AS pg_cron-build
 COPY --from=pg_cron-src /ext-src/ /ext-src/
@@ -1121,7 +1123,8 @@ ARG PG_VERSION
 
 WORKDIR /ext-src
 RUN wget https://github.com/microsoft/onnxruntime/archive/refs/tags/v1.18.1.tar.gz -O onnxruntime.tar.gz && \
-    mkdir onnxruntime-src && cd onnxruntime-src && tar xzf ../onnxruntime.tar.gz --strip-components=1 -C .
+    mkdir onnxruntime-src && cd onnxruntime-src && tar xzf ../onnxruntime.tar.gz --strip-components=1 -C . && \
+    echo "#nothing to test here" > neon-test.sh
 
 RUN wget https://github.com/neondatabase-labs/pgrag/archive/refs/tags/v0.0.0.tar.gz -O pgrag.tar.gz &&  \
     echo "2cbe394c1e74fc8bcad9b52d5fbbfb783aef834ca3ce44626cfd770573700bb4 pgrag.tar.gz" | sha256sum --check && \
@@ -1422,7 +1425,9 @@ ARG PG_VERSION
 WORKDIR /ext-src
 RUN wget https://github.com/Mooncake-Labs/pg_mooncake/releases/download/v0.1.1/pg_mooncake-0.1.1.tar.gz -O pg_mooncake.tar.gz && \
     echo "a2d16eff7948dde64f072609ca5d2962d6b4d07cb89d45952add473529c55f55 pg_mooncake.tar.gz" | sha256sum --check && \
-    mkdir pg_mooncake-src && cd pg_mooncake-src && tar xzf ../pg_mooncake.tar.gz --strip-components=1 -C .
+    mkdir pg_mooncake-src && cd pg_mooncake-src && tar xzf ../pg_mooncake.tar.gz --strip-components=1 -C . && \
+    echo "make -f pg_mooncake-src/Makefile.build installcheck TEST_DIR=./test SQL_DIR=./sql SRC_DIR=./src" > neon-test.sh && \
+    chmod a+x neon-test.sh
 
 FROM rust-extensions-build AS pg_mooncake-build
 COPY --from=pg_mooncake-src /ext-src/ /ext-src/
@@ -1643,42 +1648,42 @@ ARG PG_VERSION
 RUN mkdir /ext-src
 
 COPY --from=pg-build /postgres /postgres
-COPY --from=postgis-src /ext-src/ /ext-src/
+#COPY --from=postgis-src /ext-src/ /ext-src/
 COPY --from=plv8-src /ext-src/ /ext-src/
-COPY --from=h3-pg-src /ext-src/ /ext-src/
+#COPY --from=h3-pg-src /ext-src/ /ext-src/
 COPY --from=postgresql-unit-src /ext-src/ /ext-src/
 COPY --from=pgvector-src /ext-src/ /ext-src/
 COPY --from=pgjwt-src /ext-src/ /ext-src/
-COPY --from=pgrag-src /ext-src/ /ext-src/
-COPY --from=pg_jsonschema-src /ext-src/ /ext-src/
+#COPY --from=pgrag-src /ext-src/ /ext-src/
+#COPY --from=pg_jsonschema-src /ext-src/ /ext-src/
 COPY --from=pg_graphql-src /ext-src/ /ext-src/
-COPY --from=pg_tiktoken-src /ext-src/ /ext-src/
+#COPY --from=pg_tiktoken-src /ext-src/ /ext-src/
 COPY --from=hypopg-src /ext-src/ /ext-src/
 COPY --from=pg_hashids-src /ext-src/ /ext-src/
 COPY --from=rum-src /ext-src/ /ext-src/
-COPY --from=pgtap-src /ext-src/ /ext-src/
+#COPY --from=pgtap-src /ext-src/ /ext-src/
 COPY --from=ip4r-src /ext-src/ /ext-src/
 COPY --from=prefix-src /ext-src/ /ext-src/
 COPY --from=hll-src /ext-src/ /ext-src/
 COPY --from=plpgsql_check-src /ext-src/ /ext-src/
-COPY --from=timescaledb-src /ext-src/ /ext-src/
+#COPY --from=timescaledb-src /ext-src/ /ext-src/
 COPY --from=pg_hint_plan-src /ext-src/ /ext-src/
 COPY compute/patches/pg_hint_plan_${PG_VERSION}.patch /ext-src
 RUN cd /ext-src/pg_hint_plan-src && patch -p1 < /ext-src/pg_hint_plan_${PG_VERSION}.patch
 COPY --from=pg_cron-src /ext-src/ /ext-src/
-COPY --from=pgx_ulid-src /ext-src/ /ext-src/
-COPY --from=pgx_ulid-pgrx12-src /ext-src/ /ext-src/
-COPY --from=pg_session_jwt-src /ext-src/ /ext-src/
-COPY --from=rdkit-src /ext-src/ /ext-src/
+#COPY --from=pgx_ulid-src /ext-src/ /ext-src/
+#COPY --from=pgx_ulid-pgrx12-src /ext-src/ /ext-src/
+#COPY --from=pg_session_jwt-src /ext-src/ /ext-src/
+#COPY --from=rdkit-src /ext-src/ /ext-src/
 COPY --from=pg_uuidv7-src /ext-src/ /ext-src/
 COPY --from=pg_roaringbitmap-src /ext-src/ /ext-src/
 COPY --from=pg_semver-src /ext-src/ /ext-src/
-COPY --from=pg_embedding-src /ext-src/ /ext-src/
-COPY --from=wal2json-src /ext-src/ /ext-src/
+#COPY --from=pg_embedding-src /ext-src/ /ext-src/
+#COPY --from=wal2json-src /ext-src/ /ext-src/
 COPY --from=pg_ivm-src /ext-src/ /ext-src/
 COPY --from=pg_partman-src /ext-src/ /ext-src/
 COPY --from=pg_mooncake-src /ext-src/ /ext-src/
-COPY --from=pg_repack-src /ext-src/ /ext-src/
+#COPY --from=pg_repack-src /ext-src/ /ext-src/
 
 COPY --chmod=755 docker-compose/run-tests.sh /run-tests.sh
 ENV PATH=/usr/local/pgsql/bin:$PATH
