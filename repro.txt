@@ -1,0 +1,56 @@
+Repro:
+
+/Users/erik/Projects/neon/target/release/safekeeper -D /Users/erik/Projects/neon/.neon/safekeepers/sk1 \
+    --id 1 --listen-pg 127.0.0.1:5454 --listen-http 127.0.0.1:7676 --availability-zone sk-1 \
+    --broker-endpoint http://127.0.0.1:50051/ --wal-reader-fanout
+
+(patch neon_local.rs to add `--wal-reader-fanout` for sk and `--split-threshold` for storcon)
+
+/Users/erik/Projects/neon/target/release/pageserver -D /Users/erik/Projects/neon/.neon/pageserver_1
+
+.neon/pageserver_1/pageserver.toml:
+pg_distrib_dir ='/Users/erik/Projects/neon/pg_install'
+broker_endpoint ='http://127.0.0.1:50051/'
+control_plane_api ='http://127.0.0.1:1234/upcall/v1/'
+remote_storage ={local_path='../local_fs_remote_storage/pageserver'}
+listen_pg_addr = "127.0.0.1:64000"
+listen_http_addr = "127.0.0.1:9898"
+pg_auth_type = "Trust"
+http_auth_type = "Trust"
+no_sync = true
+page_cache_size = 65536
+max_file_descriptors = 500000
+timeline_offloading = true
+ephemeral_bytes_per_memory_kb = 1024
+[l0_flush]
+mode = "direct"
+max_concurrency = 8
+[page_service_pipelining]
+mode = "pipelined"
+execution = "concurrent-futures"
+max_batch_size = 32
+[get_vectored_concurrent_io]
+mode = "sidecar-task"
+[wal_receiver_protocol]
+type = "interpreted"
+[wal_receiver_protocol.args]
+format = "protobuf"
+[wal_receiver_protocol.args.compression.zstd]
+level = 1
+
+Patch postgresql.conf to bump shared_buffers, effective_io_concurrency, and enable LFC:
+
+shared_buffers=1GB
+effective_io_concurrency=100
+neon.file_cache_path = "file_cache"
+neon.max_file_cache_size = 10GB
+neon.file_cache_size_limit = 10GB
+
+Tweaks:
+- 8 GB split threshold instead of 10 GB
+- scale factor 500 instead of 1762
+- drop pgbench vacuum (no --init-steps=v)
+
+Look for: "could not find data for key" or PANIC
+
+Run repro.sh

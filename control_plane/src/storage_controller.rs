@@ -516,6 +516,8 @@ impl StorageController {
             &humantime::Duration::from(self.config.heartbeat_interval).to_string(),
             "--address-for-peers",
             &address_for_peers.to_string(),
+            "--split-threshold",
+            "8589934592",
         ]
         .into_iter()
         .map(|s| s.to_string())

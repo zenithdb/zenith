@@ -151,6 +151,7 @@ impl SafekeeperNode {
             listen_http,
             "--availability-zone".to_owned(),
             availability_zone,
+            "--wal-reader-fanout".to_owned(),
         ];
         if let Some(pg_tenant_only_port) = self.conf.pg_tenant_only_port {
             let listen_pg_tenant_only = format!("{}:{}", self.listen_addr, pg_tenant_only_port);
