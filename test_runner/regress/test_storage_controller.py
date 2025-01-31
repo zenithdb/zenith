@@ -373,6 +373,7 @@ def test_storage_controller_onboarding(neon_env_builder: NeonEnvBuilder, warm_up
     but imports the generation number.
     """
 
+    neon_env_builder.num_azs = 3
     env, origin_ps, tenant_id, generation = prepare_onboarding_env(neon_env_builder)
 
     virtual_ps_http = PageserverHttpClient(env.storage_controller_port, lambda: True)
@@ -408,6 +409,9 @@ def test_storage_controller_onboarding(neon_env_builder: NeonEnvBuilder, warm_up
         warm_up_ps = env.storage_controller.tenant_describe(tenant_id)["shards"][0][
             "node_secondary"
         ][0]
+
+        # Check that the secondary's scheduling is stable
+        assert env.storage_controller.reconcile_all() == 0
 
     # Call into storage controller to onboard the tenant
     generation += 1
@@ -459,6 +463,9 @@ def test_storage_controller_onboarding(neon_env_builder: NeonEnvBuilder, warm_up
         },
     )
     assert len(r["shards"]) == 1
+
+    # Check that onboarding did not result in an unstable scheduling state
+    assert env.storage_controller.reconcile_all() == 0
 
     # We should see the tenant is now attached to the pageserver managed
     # by the sharding service

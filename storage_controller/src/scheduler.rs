@@ -774,8 +774,9 @@ impl Scheduler {
 
         if !matches!(context.mode, ScheduleMode::Speculative) {
             tracing::info!(
-            "scheduler selected node {node_id} (elegible nodes {:?}, hard exclude: {hard_exclude:?}, soft exclude: {context:?})",
-            scores.iter().map(|i| i.node_id().0).collect::<Vec<_>>()
+            "scheduler selected node {node_id} (elegible nodes {:?}, hard exclude: {hard_exclude:?}, soft exclude: {context:?}, preferred_az: {:?})",
+            scores.iter().map(|i| i.node_id().0).collect::<Vec<_>>(),
+            preferred_az,
        );
         }
 
