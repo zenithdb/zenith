@@ -6,6 +6,11 @@ on:
       - ready_for_review
   workflow_call:
 
+  workflow_run:
+    workflows: ["Build and Test"]
+    types:
+      - completed
+
 defaults:
   run:
     shell: bash -euxo pipefail {0}
