@@ -208,7 +208,7 @@ const reportSummary = async (params) => {
 }
 
 const parseCoverageSummary = async ({ summaryJsonUrl, coverageUrl, fetch }) => {
-    let summary = `\n### Code coverage* ([full report](${coverageUrl}))\n`
+    let summary = `\n### Code coverage ([full report](${coverageUrl}))\n`
 
     const coverage = await (await fetch(summaryJsonUrl)).json()
     for (const covType of Object.keys(coverage).sort()) {
@@ -218,7 +218,7 @@ const parseCoverageSummary = async ({ summaryJsonUrl, coverageUrl, fetch }) => {
 
         summary += `- \`${covType}s\`: \`${coverage[covType]["_summary"]}\`\n`
     }
-    summary += "\n\\* collected from Rust tests only\n"
+
     summary += `\n___\n`
 
     return summary

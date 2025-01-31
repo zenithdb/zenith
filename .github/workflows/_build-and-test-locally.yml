@@ -322,10 +322,6 @@ jobs:
           PAGESERVER_GET_VECTORED_CONCURRENT_IO: sidecar-task
           USE_LFC: ${{ matrix.lfc_state == 'with-lfc' && 'true' || 'false' }}
 
-      # Temporary disable this step until we figure out why it's so flaky
-      # Ref https://github.com/neondatabase/neon/issues/4540
       - name: Merge and upload coverage data
-        if: |
-          false &&
-          inputs.build-type == 'debug' && matrix.pg_version == 'v16'
+        if: inputs.build-type == 'debug' && matrix.pg_version == 'v16'
         uses: ./.github/actions/save-coverage-data
