@@ -191,15 +191,12 @@ async fn start_monitor(
     .await;
     let mut monitor = match monitor {
         Ok(Ok(monitor)) => monitor,
-        Ok(Err(error)) => {
-            error!(?error, "failed to create monitor");
+        Ok(Err(e)) => {
+            error!(error = format_args!("{e:#}"), "failed to create monitor");
             return;
         }
         Err(_) => {
-            error!(
-                ?timeout,
-                "creating monitor timed out (probably waiting to receive protocol range)"
-            );
+            error!(?timeout, "creating monitor timed out");
             return;
         }
     };
@@ -207,6 +204,9 @@ async fn start_monitor(
 
     match monitor.run().await {
         Ok(()) => info!("monitor was killed due to new connection"),
-        Err(e) => error!(error = ?e, "monitor terminated unexpectedly"),
+        Err(e) => error!(
+            error = format_args!("{e:#}"),
+            "monitor terminated unexpectedly"
+        ),
     }
 }

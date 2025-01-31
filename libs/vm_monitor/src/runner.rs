@@ -370,12 +370,16 @@ impl Runner {
                 }),
             InboundMsgKind::InvalidMessage { error } => {
                 warn!(
-                    %error, id, "received notification of an invalid message we sent"
+                    error = format_args!("{error:#}"),
+                    id, "received notification of an invalid message we sent"
                 );
                 Ok(None)
             }
             InboundMsgKind::InternalError { error } => {
-                warn!(error, id, "agent experienced an internal error");
+                warn!(
+                    error = format_args!("{error:#}"),
+                    id, "agent experienced an internal error"
+                );
                 Ok(None)
             }
             InboundMsgKind::HealthCheck {} => {
@@ -476,7 +480,7 @@ impl Runner {
                                         // gives the outermost cause, and the debug impl
                                         // pretty-prints the error, whereas {:#} contains all the
                                         // causes, but is compact (no newlines).
-                                        warn!(error = format!("{e:#}"), "error handling message");
+                                        warn!(error = format_args!("{e:#}"), "error handling message");
                                         OutboundMsg::new(
                                             OutboundMsgKind::InternalError {
                                                 error: e.to_string(),
@@ -492,7 +496,7 @@ impl Runner {
                                     .context("failed to send message")?;
                             }
                             Err(e) => warn!(
-                                error = format!("{e}"),
+                                error = format_args!("{e:#}"),
                                 msg = ?msg,
                                 "received error message"
                             ),
