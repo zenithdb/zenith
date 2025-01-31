@@ -95,7 +95,8 @@ jobs:
   # - conclusion
   # - neon-cloud-e2e
   conclusion:
-    if: always()
+    # Do not run job on Pull Requests as it interferes with the `conclusion` job from the `build_and_test` workflow
+    if: always() && github.event_name == 'merge_group'
     permissions:
       statuses: write # for `github.repos.createCommitStatus(...)`
       contents: write
