@@ -65,7 +65,7 @@ CARGO_CMD_PREFIX += $(if $(filter n,$(MAKEFLAGS)),,+)
 # Force cargo not to print progress bar
 CARGO_CMD_PREFIX += CARGO_TERM_PROGRESS_WHEN=never CI=1
 # Set PQ_LIB_DIR to make sure `storage_controller` get linked with bundled libpq (through diesel)
-CARGO_CMD_PREFIX += PQ_LIB_DIR=$(POSTGRES_INSTALL_DIR)/v16/lib
+CARGO_CMD_PREFIX += PQ_LIB_DIR=$(POSTGRES_INSTALL_DIR)/v17/lib
 
 CACHEDIR_TAG_CONTENTS := "Signature: 8a477f597d28d172789f06886806bc55"
 
