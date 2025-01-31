@@ -1,0 +1,116 @@
+version: 2
+
+updates:
+  - directory: /
+    package-ecosystem: cargo
+    schedule:
+      interval: daily
+    rebase-strategy: auto
+
+  - directory: /
+    package-ecosystem: docker
+    schedule:
+      interval: daily
+    rebase-strategy: auto
+
+  - directory: /
+    package-ecosystem: github-actions
+    schedule:
+      interval: daily
+    rebase-strategy: auto
+
+  - directory: /
+    package-ecosystem: pip
+    schedule:
+      interval: daily
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/csharp/npgsql
+    package-ecosystem: docker
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/csharp/npgsql
+    package-ecosystem: nuget
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/java/jdbc/
+    package-ecosystem: docker
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/python/asyncpg/
+    package-ecosystem: pip
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/python/pg8000/
+    package-ecosystem: pip
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/rust/tokio-postgres/
+    package-ecosystem: cargo
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/rust/tokio-postgres/
+    package-ecosystem: docker
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/swift/PostgresNIOExample/
+    package-ecosystem: docker
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/swift/PostgresNIOExample/
+    package-ecosystem: swift
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/swift/PostgresClientKitExample/
+    package-ecosystem: docker
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/swift/PostgresClientKitExample/
+    package-ecosystem: swift
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/typescript/postgresql-client/
+    package-ecosystem: docker
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/typescript/postgresql-client/
+    package-ecosystem: npm
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/typescript/serverless-driver/
+    package-ecosystem: docker
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
+
+  - directory: test_runner/pg_clients/typescript/serverless-driver/
+    package-ecosystem: npm
+    schedule:
+      interval: weekly
+    rebase-strategy: auto
