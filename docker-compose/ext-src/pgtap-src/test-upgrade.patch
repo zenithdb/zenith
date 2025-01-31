@@ -1,0 +1,15 @@
+diff --git a/test/schedule/create.sql b/test/schedule/create.sql
+index ba355ed..7e250f5 100644
+--- a/test/schedule/create.sql
++++ b/test/schedule/create.sql
+@@ -1,3 +1,2 @@
+ \unset ECHO
+ \i test/psql.sql
+-CREATE EXTENSION pgtap;
+diff --git a/test/schedule/main.sch b/test/schedule/main.sch
+index a8a5fbc..0463fc4 100644
+--- a/test/schedule/main.sch
++++ b/test/schedule/main.sch
+@@ -1,2 +1 @@
+-test: build
+ test: create

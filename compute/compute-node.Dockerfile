@@ -1358,7 +1358,7 @@ COPY --from=hypopg-pg-build /hypopg.tar.gz /ext-src
 COPY --from=pg-hashids-pg-build /pg_hashids.tar.gz /ext-src
 COPY --from=rum-pg-build /rum.tar.gz /ext-src
 COPY compute/patches/rum.patch /ext-src
-#COPY --from=pgtap-pg-build /pgtap.tar.gz /ext-src
+COPY --from=pgtap-pg-build /pgtap.tar.gz /ext-src
 COPY --from=ip4r-pg-build /ip4r.tar.gz /ext-src
 COPY --from=prefix-pg-build /prefix.tar.gz /ext-src
 COPY --from=hll-pg-build /hll.tar.gz /ext-src
