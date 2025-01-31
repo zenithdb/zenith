@@ -14,7 +14,7 @@
 set -eux -o pipefail
 
 COMPOSE_FILE='docker-compose.yml'
-cd $(dirname $0)
+cd "$(dirname ${0})"
 COMPUTE_CONTAINER_NAME=docker-compose-compute-1
 TEST_CONTAINER_NAME=docker-compose-neon-test-extensions-1
 PSQL_OPTION="-h localhost -U cloud_admin -p 55433 -d postgres"
@@ -37,15 +37,15 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
     cnt=0
     while sleep 3; do
         # check timeout
-        cnt=`expr $cnt + 3`
-        if [ $cnt -gt 60 ]; then
+        (( cnt+=3 ))
+        if [ ${cnt} -gt 60 ]; then
             echo "timeout before the compute is ready."
             exit 1
         fi
-        if docker compose --profile test-extensions -f $COMPOSE_FILE logs "compute_is_ready" | grep -q "accepting connections"; then
+        if docker compose --profile test-extensions -f "${COMPOSE_FILE}" logs "compute_is_ready" | grep -q "accepting connections"; then
             echo "OK. The compute is ready to connect."
             echo "execute simple queries."
-            docker exec $COMPUTE_CONTAINER_NAME /bin/bash -c "psql $PSQL_OPTION"
+            docker exec "${COMPUTE_CONTAINER_NAME}" /bin/bash -c "psql ${PSQL_OPTION}"
             break
         fi
     done
@@ -58,37 +58,37 @@ for pg_version in ${TEST_VERSION_ONLY-14 15 16 17}; do
         docker exec $COMPUTE_CONTAINER_NAME touch /var/db/postgres/compute/compute_ctl_temp_override.conf
         # The following block copies the files for the pg_hintplan test to the compute node for the extension test in an isolated docker-compose environment
         TMPDIR=$(mktemp -d)
-        docker cp $TEST_CONTAINER_NAME:/ext-src/pg_hint_plan-src/data $TMPDIR/data
-        docker cp $TMPDIR/data $COMPUTE_CONTAINER_NAME:/ext-src/pg_hint_plan-src/
-        rm -rf $TMPDIR
+        docker cp ${TEST_CONTAINER_NAME}:/ext-src/pg_hint_plan-src/data "${TMPDIR}/data"
+        docker cp "${TMPDIR}/data" $COMPUTE_CONTAINER_NAME:/ext-src/pg_hint_plan-src/
+        rm -rf "${TMPDIR}"
         # The following block does the same for the contrib/file_fdw test
         TMPDIR=$(mktemp -d)
-        docker cp $TEST_CONTAINER_NAME:/postgres/contrib/file_fdw/data $TMPDIR/data
-        docker cp $TMPDIR/data $COMPUTE_CONTAINER_NAME:/postgres/contrib/file_fdw/data
-        rm -rf $TMPDIR
+        docker cp ${TEST_CONTAINER_NAME}:/postgres/contrib/file_fdw/data "${TMPDIR}/data"
+        docker cp "${TMPDIR}/data" $COMPUTE_CONTAINER_NAME:/postgres/contrib/file_fdw/data
+        rm -rf "${TMPDIR}"
         # Apply patches
         cat ../compute/patches/contrib_pg${pg_version}.patch | docker exec -i $TEST_CONTAINER_NAME bash -c "(cd /postgres && patch -p1)"
         # We are running tests now
         rm -f testout.txt testout_contrib.txt
         docker exec -e USE_PGXS=1 -e SKIP=timescaledb-src,rdkit-src,postgis-src,pgx_ulid-src,pgtap-src,pg_tiktoken-src,pg_jsonschema-src,kq_imcx-src,wal2json_2_5-src \
-        $TEST_CONTAINER_NAME /run-tests.sh /ext-src | tee testout.txt && EXT_SUCCESS=1 || EXT_SUCCESS=0
+        ${TEST_CONTAINER_NAME} /run-tests.sh /ext-src | tee testout.txt && EXT_SUCCESS=1 || EXT_SUCCESS=0
         docker exec -e SKIP=start-scripts,postgres_fdw,ltree_plpython,jsonb_plpython,jsonb_plperl,hstore_plpython,hstore_plperl,dblink,bool_plperl \
-        $TEST_CONTAINER_NAME /run-tests.sh /postgres/contrib | tee testout_contrib.txt && CONTRIB_SUCCESS=1 || CONTRIB_SUCCESS=0
-        if [ $EXT_SUCCESS -eq 0 ] || [ $CONTRIB_SUCCESS -eq 0 ]; then
+        ${TEST_CONTAINER_NAME} /run-tests.sh /postgres/contrib | tee testout_contrib.txt && CONTRIB_SUCCESS=1 || CONTRIB_SUCCESS=0
+        if [ ${EXT_SUCCESS} -eq 0 ] || [ ${CONTRIB_SUCCESS} -eq 0 ]; then
             CONTRIB_FAILED=
             FAILED=
-            [ $EXT_SUCCESS -eq 0 ] && FAILED=$(tail -1 testout.txt | awk '{for(i=1;i<=NF;i++){print "/ext-src/"$i;}}')
-            [ $CONTRIB_SUCCESS -eq 0 ] && CONTRIB_FAILED=$(tail -1 testout_contrib.txt | awk '{for(i=0;i<=NF;i++){print "/postgres/contrib/"$i;}}')
-            for d in $FAILED $CONTRIB_FAILED; do
+            [ ${EXT_SUCCESS} -eq 0 ] && FAILED=$(tail -1 testout.txt | awk '{for(i=1;i<=NF;i++){print "/ext-src/"$i;}}')
+            [ ${CONTRIB_SUCCESS} -eq 0 ] && CONTRIB_FAILED=$(tail -1 testout_contrib.txt | awk '{for(i=0;i<=NF;i++){print "/postgres/contrib/"$i;}}')
+            for d in ${FAILED} ${CONTRIB_FAILED}; do
                 dn="$(basename $d)"
-                rm -rf $dn
-                mkdir $dn
-                docker cp $TEST_CONTAINER_NAME:$d/regression.diffs $dn || [ $? -eq 1 ]
-                docker cp $TEST_CONTAINER_NAME:$d/regression.out $dn || [ $? -eq 1 ]
-                cat $dn/regression.out $dn/regression.diffs || true
-                rm -rf $dn
+                rm -rf ${dn}
+                mkdir ${dn}
+                docker cp ${TEST_CONTAINER_NAME}:${d}/regression.diffs ${dn} || [ $? -eq 1 ]
+                docker cp $TEST_CONTAINER_NAME:${d}/regression.out ${dn} || [ $? -eq 1 ]
+                cat ${dn}/regression.out ${dn}/regression.diffs || true
+                rm -rf ${dn}
             done
-        rm -rf $FAILED
+        rm -rf "${FAILED}"
         exit 1
         fi
     fi
