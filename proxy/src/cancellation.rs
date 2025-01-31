@@ -2,10 +2,12 @@ use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
+use anyhow::Context;
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use postgres_client::tls::MakeTlsConnect;
 use postgres_client::CancelToken;
 use pq_proto::CancelKeyData;
+use redis::{Cmd, FromRedisValue};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::net::TcpStream;
@@ -52,6 +54,84 @@ pub enum CancelKeyOp {
     },
 }
 
+// Message types for sending through mpsc channel
+pub enum CancelReplyOp {
+    StoreCancelKey {
+        resp_tx: Option<oneshot::Sender<anyhow::Result<()>>>,
+        _guard: CancelChannelSizeGuard<'static>,
+    },
+    GetCancelData {
+        resp_tx: oneshot::Sender<anyhow::Result<Vec<(String, String)>>>,
+        _guard: CancelChannelSizeGuard<'static>,
+    },
+    RemoveCancelKey {
+        resp_tx: Option<oneshot::Sender<anyhow::Result<()>>>,
+        _guard: CancelChannelSizeGuard<'static>,
+    },
+}
+
+impl CancelReplyOp {
+    fn send_err(self, e: anyhow::Error) {
+        match self {
+            CancelReplyOp::StoreCancelKey { resp_tx, _guard } => {
+                if let Some(resp_tx) = resp_tx {
+                    resp_tx
+                        .send(Err(e))
+                        .inspect_err(|_| tracing::debug!("could not send reply"))
+                        .ok();
+                }
+            }
+            CancelReplyOp::GetCancelData { resp_tx, _guard } => {
+                resp_tx
+                    .send(Err(e))
+                    .inspect_err(|_| tracing::debug!("could not send reply"))
+                    .ok();
+            }
+            CancelReplyOp::RemoveCancelKey { resp_tx, _guard } => {
+                if let Some(resp_tx) = resp_tx {
+                    resp_tx
+                        .send(Err(e))
+                        .inspect_err(|_| tracing::debug!("could not send reply"))
+                        .ok();
+                }
+            }
+        }
+    }
+
+    fn send_value(self, v: redis::Value) {
+        match self {
+            CancelReplyOp::StoreCancelKey { resp_tx, _guard } => {
+                if let Some(resp_tx) = resp_tx {
+                    let send =
+                        FromRedisValue::from_owned_redis_value(v).context("could not parse value");
+                    resp_tx
+                        .send(send)
+                        .inspect_err(|_| tracing::debug!("could not send reply"))
+                        .ok();
+                }
+            }
+            CancelReplyOp::GetCancelData { resp_tx, _guard } => {
+                let send =
+                    FromRedisValue::from_owned_redis_value(v).context("could not parse value");
+                resp_tx
+                    .send(send)
+                    .inspect_err(|_| tracing::debug!("could not send reply"))
+                    .ok();
+            }
+            CancelReplyOp::RemoveCancelKey { resp_tx, _guard } => {
+                let send =
+                    FromRedisValue::from_owned_redis_value(v).context("could not parse value");
+                if let Some(resp_tx) = resp_tx {
+                    resp_tx
+                        .send(send)
+                        .inspect_err(|_| tracing::debug!("could not send reply"))
+                        .ok();
+                }
+            }
+        }
+    }
+}
+
 // Running as a separate task to accept messages through the rx channel
 // In case of problems with RTT: switch to recv_many() + redis pipeline
 pub async fn handle_cancel_messages(
@@ -60,7 +140,8 @@ pub async fn handle_cancel_messages(
 ) -> anyhow::Result<Infallible> {
     loop {
         if let Some(msg) = rx.recv().await {
-            match msg {
+            #[allow(clippy::used_underscore_binding)]
+            let (cmd, reply) = match msg {
                 CancelKeyOp::StoreCancelKey {
                     key,
                     field,
@@ -68,43 +149,33 @@ pub async fn handle_cancel_messages(
                     resp_tx,
                     _guard,
                     expire: _,
-                } => {
-                    if let Some(resp_tx) = resp_tx {
-                        resp_tx
-                            .send(client.hset(key, field, value).await)
-                            .inspect_err(|e| {
-                                tracing::debug!("failed to send StoreCancelKey response: {:?}", e);
-                            })
-                            .ok();
-                    } else {
-                        drop(client.hset(key, field, value).await);
-                    }
-                }
+                } => (
+                    Cmd::hset(key, field, value),
+                    CancelReplyOp::StoreCancelKey { resp_tx, _guard },
+                ),
                 CancelKeyOp::GetCancelData {
                     key,
                     resp_tx,
                     _guard,
-                } => {
-                    drop(resp_tx.send(client.hget_all(key).await));
-                }
+                } => (
+                    Cmd::hgetall(key),
+                    CancelReplyOp::GetCancelData { resp_tx, _guard },
+                ),
                 CancelKeyOp::RemoveCancelKey {
                     key,
                     field,
                     resp_tx,
                     _guard,
-                } => {
-                    if let Some(resp_tx) = resp_tx {
-                        resp_tx
-                            .send(client.hdel(key, field).await)
-                            .inspect_err(|e| {
-                                tracing::debug!("failed to send StoreCancelKey response: {:?}", e);
-                            })
-                            .ok();
-                    } else {
-                        drop(client.hdel(key, field).await);
-                    }
-                }
-            }
+                } => (
+                    Cmd::hdel(key, field),
+                    CancelReplyOp::RemoveCancelKey { resp_tx, _guard },
+                ),
+            };
+
+            match client.query(cmd).await {
+                Ok(v) => reply.send_value(v),
+                Err(e) => reply.send_err(e),
+            };
         }
     }
 }
