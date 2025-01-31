@@ -50,7 +50,7 @@ impl RedisKVClient {
         q: impl Queryable,
     ) -> anyhow::Result<T> {
         if !self.limiter.check() {
-            tracing::info!("Rate limit exceeded. Skipping hset");
+            tracing::info!("Rate limit exceeded. Skipping query");
             return Err(anyhow::anyhow!("Rate limit exceeded"));
         }
 

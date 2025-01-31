@@ -30,6 +30,7 @@ type IpSubnetKey = IpNet;
 
 const CANCEL_KEY_TTL: i64 = 1_209_600; // 2 weeks cancellation key expire time
 const REDIS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(10);
+const BATCH_SIZE: usize = 8;
 
 // Message types for sending through mpsc channel
 pub enum CancelKeyOp {
@@ -55,7 +56,7 @@ pub enum CancelKeyOp {
 }
 
 impl CancelKeyOp {
-    fn register(self, pipe: &mut Pipeline) -> CancelReplyOp {
+    fn register(self, pipe: &mut Pipeline) -> Option<CancelReplyOp> {
         #[allow(clippy::used_underscore_binding)]
         match self {
             CancelKeyOp::StoreCancelKey {
@@ -67,7 +68,8 @@ impl CancelKeyOp {
                 expire: _,
             } => {
                 pipe.hset(key, field, value);
-                CancelReplyOp::StoreCancelKey { resp_tx, _guard }
+                let resp_tx = resp_tx?;
+                Some(CancelReplyOp::StoreCancelKey { resp_tx, _guard })
             }
             CancelKeyOp::GetCancelData {
                 key,
@@ -75,7 +77,7 @@ impl CancelKeyOp {
                 _guard,
             } => {
                 pipe.hgetall(key);
-                CancelReplyOp::GetCancelData { resp_tx, _guard }
+                Some(CancelReplyOp::GetCancelData { resp_tx, _guard })
             }
             CancelKeyOp::RemoveCancelKey {
                 key,
@@ -84,7 +86,8 @@ impl CancelKeyOp {
                 _guard,
             } => {
                 pipe.hdel(key, field);
-                CancelReplyOp::RemoveCancelKey { resp_tx, _guard }
+                let resp_tx = resp_tx?;
+                Some(CancelReplyOp::RemoveCancelKey { resp_tx, _guard })
             }
         }
     }
@@ -93,7 +96,7 @@ impl CancelKeyOp {
 // Message types for sending through mpsc channel
 pub enum CancelReplyOp {
     StoreCancelKey {
-        resp_tx: Option<oneshot::Sender<anyhow::Result<()>>>,
+        resp_tx: oneshot::Sender<anyhow::Result<()>>,
         _guard: CancelChannelSizeGuard<'static>,
     },
     GetCancelData {
@@ -101,7 +104,7 @@ pub enum CancelReplyOp {
         _guard: CancelChannelSizeGuard<'static>,
     },
     RemoveCancelKey {
-        resp_tx: Option<oneshot::Sender<anyhow::Result<()>>>,
+        resp_tx: oneshot::Sender<anyhow::Result<()>>,
         _guard: CancelChannelSizeGuard<'static>,
     },
 }
@@ -110,12 +113,10 @@ impl CancelReplyOp {
     fn send_err(self, e: anyhow::Error) {
         match self {
             CancelReplyOp::StoreCancelKey { resp_tx, _guard } => {
-                if let Some(resp_tx) = resp_tx {
-                    resp_tx
-                        .send(Err(e))
-                        .inspect_err(|_| tracing::debug!("could not send reply"))
-                        .ok();
-                }
+                resp_tx
+                    .send(Err(e))
+                    .inspect_err(|_| tracing::debug!("could not send reply"))
+                    .ok();
             }
             CancelReplyOp::GetCancelData { resp_tx, _guard } => {
                 resp_tx
@@ -124,12 +125,10 @@ impl CancelReplyOp {
                     .ok();
             }
             CancelReplyOp::RemoveCancelKey { resp_tx, _guard } => {
-                if let Some(resp_tx) = resp_tx {
-                    resp_tx
-                        .send(Err(e))
-                        .inspect_err(|_| tracing::debug!("could not send reply"))
-                        .ok();
-                }
+                resp_tx
+                    .send(Err(e))
+                    .inspect_err(|_| tracing::debug!("could not send reply"))
+                    .ok();
             }
         }
     }
@@ -137,14 +136,12 @@ impl CancelReplyOp {
     fn send_value(self, v: redis::Value) {
         match self {
             CancelReplyOp::StoreCancelKey { resp_tx, _guard } => {
-                if let Some(resp_tx) = resp_tx {
-                    let send =
-                        FromRedisValue::from_owned_redis_value(v).context("could not parse value");
-                    resp_tx
-                        .send(send)
-                        .inspect_err(|_| tracing::debug!("could not send reply"))
-                        .ok();
-                }
+                let send =
+                    FromRedisValue::from_owned_redis_value(v).context("could not parse value");
+                resp_tx
+                    .send(send)
+                    .inspect_err(|_| tracing::debug!("could not send reply"))
+                    .ok();
             }
             CancelReplyOp::GetCancelData { resp_tx, _guard } => {
                 let send =
@@ -157,62 +154,68 @@ impl CancelReplyOp {
             CancelReplyOp::RemoveCancelKey { resp_tx, _guard } => {
                 let send =
                     FromRedisValue::from_owned_redis_value(v).context("could not parse value");
-                if let Some(resp_tx) = resp_tx {
-                    resp_tx
-                        .send(send)
-                        .inspect_err(|_| tracing::debug!("could not send reply"))
-                        .ok();
-                }
+                resp_tx
+                    .send(send)
+                    .inspect_err(|_| tracing::debug!("could not send reply"))
+                    .ok();
             }
         }
     }
 }
 
 // Running as a separate task to accept messages through the rx channel
-// In case of problems with RTT: switch to recv_many() + redis pipeline
 pub async fn handle_cancel_messages(
     client: &mut RedisKVClient,
     mut rx: mpsc::Receiver<CancelKeyOp>,
 ) -> anyhow::Result<Infallible> {
-    let mut buffer = Vec::new();
+    let mut batch = Vec::new();
     let mut replies = vec![];
 
     loop {
-        if rx.recv_many(&mut buffer, 8).await == 0 {
+        if rx.recv_many(&mut batch, BATCH_SIZE).await == 0 {
             warn!("shutting down cancellation queue");
             break std::future::pending().await;
         }
-        debug!(n = buffer.len(), "running cancellation jobs");
+
+        let batch_size = batch.len();
+        debug!(batch_size, "running cancellation jobs");
 
         let mut pipe = pipe();
-        for msg in buffer.drain(..) {
-            replies.push(msg.register(&mut pipe));
+        for msg in batch.drain(..) {
+            if let Some(reply) = msg.register(&mut pipe) {
+                replies.push(reply);
+            } else {
+                pipe.ignore();
+            }
         }
 
+        let responses = replies.len();
+
         match client.query(pipe).await {
-            Ok(Value::Bulk(values)) if values.len() == replies.len() => {
-                debug!(n = buffer.len(), "successfully completed cancellation jobs");
+            // for each reply, we expect that many values.
+            Ok(Value::Bulk(values)) if values.len() == responses => {
+                debug!(
+                    batch_size,
+                    responses, "successfully completed cancellation jobs",
+                );
                 for (value, reply) in std::iter::zip(values, replies.drain(..)) {
                     reply.send_value(value);
                 }
             }
             Ok(value) => {
                 debug!(?value, "unexpected redis return value");
-
                 for reply in replies.drain(..) {
-                    reply.send_err(anyhow!(
-                        "could not send cmd to redis: incorrect response type"
-                    ));
+                    reply.send_err(anyhow!("incorrect response type from redis"));
                 }
             }
             Err(err) => {
-                debug!(?err, "failed to run batched query");
-
                 for reply in replies.drain(..) {
                     reply.send_err(anyhow!("could not send cmd to redis: {err}"));
                 }
             }
         };
+
+        replies.clear();
     }
 }
 
