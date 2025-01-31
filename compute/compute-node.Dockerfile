@@ -1377,6 +1377,7 @@ COPY --from=pg-semver-pg-build /pg_semver.tar.gz /ext-src
 #COPY --from=wal2json-pg-build /wal2json_2_5.tar.gz /ext-src
 COPY --from=pg-ivm-build /pg_ivm.tar.gz /ext-src
 COPY --from=pg-partman-build /pg_partman.tar.gz /ext-src
+RUN apt update && apt install -y libtap-parser-sourcehandler-pgtap-perl
 RUN cd /ext-src/ && for f in *.tar.gz; \
     do echo $f; dname=$(echo $f | sed 's/\.tar.*//')-src; \
     rm -rf $dname; mkdir $dname; tar xzf $f --strip-components=1 -C $dname \
