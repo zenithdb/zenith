@@ -250,6 +250,9 @@ def test_pageserver_gc_compaction_idempotent(
     workload.churn_rows(row_count, env.pageserver.id)
     # compact 3 times if mode is before_restart
     n_compactions = 3 if compaction_mode == "before_restart" else 1
+    ps_http.timeline_compact(
+        tenant_id, timeline_id, force_l0_compaction=True, wait_until_uploaded=True
+    )
     for _ in range(n_compactions):
         # Force refresh gc info to have gc_cutoff generated
         ps_http.timeline_gc(tenant_id, timeline_id, None)
