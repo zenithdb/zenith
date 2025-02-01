@@ -402,6 +402,7 @@ impl RemoteStorage for AzureBlobStorage {
                     .map(|k| ListingObject{
                         key: self.name_to_relative_path(&k.name),
                         last_modified: k.properties.last_modified.into(),
+                        etag: k.properties.etag.clone(),
                         size: k.properties.content_length,
                     }
                 );
@@ -467,6 +468,7 @@ impl RemoteStorage for AzureBlobStorage {
         Ok(ListingObject {
             key: key.to_owned(),
             last_modified: SystemTime::from(properties.last_modified),
+            etag: properties.etag,
             size: properties.content_length,
         })
     }

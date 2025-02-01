@@ -620,39 +620,17 @@ async fn gc_timeline(
             let warn = if warnings.is_empty() {
                 false
             } else {
-                // Verify that the manifest hasn't changed. If it has, a potential racing change could have been cause for our troubles.
-                match list_tenant_manifests(remote_client, ttid.tenant_shard_id, target).await? {
-                    ListTenantManifestResult::WithErrors {
-                        errors,
-                        unknown_keys: _,
-                    } => {
-                        for (_key, error) in errors {
-                            tracing::warn!(%ttid, "list_tenant_manifests in gc_timeline: {error}");
-                        }
-                        true
-                    }
-                    ListTenantManifestResult::NoErrors {
-                        latest_generation,
-                        manifests: _,
-                    } => {
-                        if let Some(new_latest_gen) = latest_generation {
-                            let manifest_changed = (
-                                new_latest_gen.generation,
-                                new_latest_gen.listing_object.last_modified,
-                            ) == (
-                                tenant_manifest_info.generation,
-                                tenant_manifest_info.listing_object.last_modified,
-                            );
-                            if manifest_changed {
-                                tracing::debug!(%ttid, "tenant manifest changed since it was loaded, suppressing {} warnings", warnings.len());
-                            }
-                            manifest_changed
-                        } else {
-                            // The latest generation is gone. This timeline is in the progress of being deleted?
-                            false
-                        }
-                    }
-                }
+                // Verify that the manifest hasn't changed.
+                // If it hasn't, then we have measured at two time points A and C that the manifest
+                // was the same, so we can be sure it was that also at time point B, where A < B < C.
+                manifest_has_changed_on_remote(
+                    remote_client,
+                    target,
+                    ttid,
+                    tenant_manifest_info,
+                    warnings.len(),
+                )
+                .await?
             };
             if warn {
                 for warning in warnings {
@@ -671,6 +649,41 @@ async fn gc_timeline(
     }
 
     Ok(summary)
+}
+
+async fn manifest_has_changed_on_remote(
+    remote_client: &GenericRemoteStorage,
+    target: &RootTarget,
+    ttid: TenantShardTimelineId,
+    tenant_manifest_info: &RemoteTenantManifestInfo,
+    warnings_count: usize,
+) -> anyhow::Result<bool> {
+    match list_tenant_manifests(remote_client, ttid.tenant_shard_id, target).await? {
+        ListTenantManifestResult::WithErrors {
+            errors,
+            unknown_keys: _,
+        } => {
+            for (_key, error) in errors {
+                tracing::warn!(%ttid, "list_tenant_manifests in gc_timeline: {error}");
+            }
+            Ok(true)
+        }
+        ListTenantManifestResult::NoErrors {
+            latest_generation,
+            manifests: _,
+        } => {
+            if let Some(new_latest_gen) = latest_generation {
+                let manifest_changed = !new_latest_gen.eq_fast(tenant_manifest_info);
+                if manifest_changed {
+                    tracing::debug!(%ttid, "tenant manifest changed since it was loaded, suppressing {warnings_count} warnings");
+                }
+                Ok(manifest_changed)
+            } else {
+                // The latest generation is gone. This timeline is in the progress of being deleted?
+                Ok(false)
+            }
+        }
+    }
 }
 
 fn validate_index_part_with_offloaded(
