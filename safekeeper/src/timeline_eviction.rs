@@ -18,7 +18,6 @@ use crate::{
     metrics::{
         EvictionEvent, EVICTION_EVENTS_COMPLETED, EVICTION_EVENTS_STARTED, NUM_EVICTED_TIMELINES,
     },
-    rate_limit::rand_duration,
     timeline_manager::{Manager, StateSnapshot},
     wal_backup,
     wal_backup_partial::{self, PartialRemoteSegment},
@@ -131,8 +130,7 @@ impl Manager {
             return;
         }
 
-        self.evict_not_before =
-            tokio::time::Instant::now() + rand_duration(&self.conf.eviction_min_resident);
+        self.update_evict_not_before();
 
         info!("successfully restored evicted timeline");
         NUM_EVICTED_TIMELINES.dec();

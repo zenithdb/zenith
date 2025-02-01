@@ -426,12 +426,12 @@ pub async fn main_task(
     cancel: CancellationToken,
 ) -> Option<PartialRemoteSegment> {
     debug!("started");
-    let await_duration = conf.partial_backup_timeout;
     let mut first_iteration = true;
 
     let mut commit_lsn_rx = tli.get_commit_lsn_watch_rx();
     let mut flush_lsn_rx = tli.get_term_flush_lsn_watch_rx();
 
+    let partial_backup_timeout = conf.partial_backup_timeout;
     let mut backup = PartialBackup::new(tli, conf).await;
 
     debug!("state: {:?}", backup.state);
@@ -489,9 +489,9 @@ pub async fn main_task(
         // if this is not the first iteration, we will wait for the full await_duration
         let await_duration = if first_iteration {
             first_iteration = false;
-            rand_duration(&await_duration)
+            partial_backup_timeout + rand_duration(&partial_backup_timeout)
         } else {
-            await_duration
+            partial_backup_timeout
         };
 
         // fixing the segno and waiting some time to prevent reuploading the same segment too often

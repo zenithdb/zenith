@@ -181,6 +181,7 @@ struct Args {
     #[arg(long)]
     walsenders_keep_horizon: bool,
     /// Controls how long backup will wait until uploading the partial segment.
+    /// The actual waiting time is passed value + rand of it to add some jitter.
     #[arg(long, value_parser = humantime::parse_duration, default_value = DEFAULT_PARTIAL_BACKUP_TIMEOUT, verbatim_doc_comment)]
     partial_backup_timeout: Duration,
     /// Disable task to push messages to broker every second. Supposed to
@@ -205,6 +206,7 @@ struct Args {
     /// if it weren't for `eviction_min_resident` preventing that.
     ///
     /// Also defines interval for eviction retries.
+    /// The actual waiting time is passed value + rand of it to add some jitter.
     #[arg(long, value_parser = humantime::parse_duration, default_value = DEFAULT_EVICTION_MIN_RESIDENT)]
     eviction_min_resident: Duration,
     /// Enable fanning out WAL to different shards from the same reader
