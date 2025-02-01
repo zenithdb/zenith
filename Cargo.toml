@@ -218,10 +218,10 @@ postgres-types = { git = "https://github.com/neondatabase/rust-postgres.git", br
 tokio-postgres = { git = "https://github.com/neondatabase/rust-postgres.git", branch = "neon" }
 
 ## Azure SDK crates
-azure_core = { git = "https://github.com/neondatabase/azure-sdk-for-rust.git", branch = "neon", default-features = false, features = ["enable_reqwest_rustls", "hmac_rust"] }
-azure_identity = { git = "https://github.com/neondatabase/azure-sdk-for-rust.git", branch = "neon", default-features = false, features = ["enable_reqwest_rustls"] }
-azure_storage = { git = "https://github.com/neondatabase/azure-sdk-for-rust.git", branch = "neon", default-features = false, features = ["enable_reqwest_rustls"] }
-azure_storage_blobs = { git = "https://github.com/neondatabase/azure-sdk-for-rust.git", branch = "neon", default-features = false, features = ["enable_reqwest_rustls"] }
+azure_core = { git = "https://github.com/neondatabase/azure-sdk-for-rust.git", branch = "arpad/blob_batch", default-features = false, features = ["enable_reqwest_rustls", "hmac_rust"] }
+azure_identity = { git = "https://github.com/neondatabase/azure-sdk-for-rust.git", branch = "arpad/blob_batch", default-features = false, features = ["enable_reqwest_rustls"] }
+azure_storage = { git = "https://github.com/neondatabase/azure-sdk-for-rust.git", branch = "arpad/blob_batch", default-features = false, features = ["enable_reqwest_rustls"] }
+azure_storage_blobs = { git = "https://github.com/neondatabase/azure-sdk-for-rust.git", branch = "arpad/blob_batch", default-features = false, features = ["enable_reqwest_rustls"] }
 
 ## Local libraries
 compute_api = { version = "0.1", path = "./libs/compute_api/" }

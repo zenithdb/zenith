@@ -573,7 +573,7 @@ impl RemoteStorage for AzureBlobStorage {
         let op = async {
             // TODO batch requests are not supported by the SDK
             // https://github.com/Azure/azure-sdk-for-rust/issues/1068
-            for path in paths {
+            for path_chunk in paths.chunks(256) {
                 #[derive(Debug)]
                 enum AzureOrTimeout {
                     AzureError(azure_core::Error),
@@ -589,13 +589,20 @@ impl RemoteStorage for AzureBlobStorage {
                 let max_retries = 5;
                 backoff::retry(
                     || async {
-                        let blob_client = self.client.blob_client(self.relative_path_to_name(path));
+                        let mut batch_client = self.client.blob_batch();
+                        for path in path_chunk {
+                            batch_client = match batch_client.delete(self.relative_path_to_name(path)) {
+                                Ok(batch_client) => batch_client,
+                                Err(e) => return Err(AzureOrTimeout::AzureError(e)),
+                            };
+                        }
 
-                        let request = blob_client.delete().into_future();
+                        let request = batch_client.into_future();
 
                         let res = tokio::time::timeout(self.timeout, request).await;
 
                         match res {
+                            // TODO: validate that all deletions were successful
                             Ok(Ok(_v)) => Ok(()),
                             Ok(Err(azure_err)) => {
                                 if let Some(http_err) = azure_err.as_http_error() {

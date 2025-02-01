@@ -767,7 +767,7 @@ dependencies = [
 [[package]]
 name = "azure_core"
 version = "0.21.0"
-source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#66e77bdd87bf87e773acf3b0c84b532c1124367d"
+source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=arpad%2Fblob_batch#e34e9d277391a394dce6bd016db8d50991462f72"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -796,7 +796,7 @@ dependencies = [
 [[package]]
 name = "azure_identity"
 version = "0.21.0"
-source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#66e77bdd87bf87e773acf3b0c84b532c1124367d"
+source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=arpad%2Fblob_batch#e34e9d277391a394dce6bd016db8d50991462f72"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -815,7 +815,7 @@ dependencies = [
 [[package]]
 name = "azure_storage"
 version = "0.21.0"
-source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#66e77bdd87bf87e773acf3b0c84b532c1124367d"
+source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=arpad%2Fblob_batch#e34e9d277391a394dce6bd016db8d50991462f72"
 dependencies = [
  "RustyXML",
  "async-lock",
@@ -833,7 +833,7 @@ dependencies = [
 [[package]]
 name = "azure_storage_blobs"
 version = "0.21.0"
-source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#66e77bdd87bf87e773acf3b0c84b532c1124367d"
+source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=arpad%2Fblob_batch#e34e9d277391a394dce6bd016db8d50991462f72"
 dependencies = [
  "RustyXML",
  "azure_core",
@@ -853,7 +853,7 @@ dependencies = [
 [[package]]
 name = "azure_svc_blobstorage"
 version = "0.21.0"
-source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=neon#66e77bdd87bf87e773acf3b0c84b532c1124367d"
+source = "git+https://github.com/neondatabase/azure-sdk-for-rust.git?branch=arpad%2Fblob_batch#e34e9d277391a394dce6bd016db8d50991462f72"
 dependencies = [
  "azure_core",
  "bytes",
