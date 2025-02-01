@@ -24,9 +24,20 @@ https://docs.pytest.org/en/6.2.x/logging.html
 # log format is specified in pytest.ini file
 LOGGING = {
     "version": 1,
+    "filters": {
+        "wzfilter": {
+            "()": "fixtures.log_helper_internal.WerkzeugNoiseFilter",
+        },
+    },
     "loggers": {
         "root": {"level": "INFO"},
         "root.safekeeper_async": {"level": "INFO"},  # a lot of logs on DEBUG level
+
+        # Use a custom filter to make werkzeug's messages less verbose.
+        "werkzeug": {
+            "filters": ["wzfilter"],
+            "level": "INFO",
+        },
     },
 }
 
