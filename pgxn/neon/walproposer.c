@@ -44,6 +44,7 @@
 #include "neon_utils.h"
 
 /* Prototypes for private functions */
+static void ApplyMergeSKConfigs(WalProposer *wp, WalProposerConfig *config);
 static void WalProposerLoop(WalProposer *wp);
 static void ShutdownConnection(Safekeeper *sk);
 static void ResetConnection(Safekeeper *sk);
@@ -82,6 +83,23 @@ static void AssertEventsOkForState(uint32 events, Safekeeper *sk);
 static char *FormatEvents(WalProposer *wp, uint32 events);
 static void UpdateDonorShmem(WalProposer *wp);
 
+static void
+UpdateConnInfo(WalProposer *wp, Safekeeper *sk, WalProposerConfig *config)
+{
+	int			written = 0;
+
+	written = snprintf((char *) &sk->conninfo, MAXCONNINFO,
+					   "host=%s port=%s dbname=replication options='-c timeline_id=%s tenant_id=%s'",
+					   sk->host, sk->port, config->neon_timeline, config->neon_tenant);
+	if (written > MAXCONNINFO || written < 0)
+		wp_log(FATAL, "could not create connection string for safekeeper %s:%s", sk->host, sk->port);
+}
+
+/*
+ * Create a WalProposer.
+ *
+ * This is assumed to run in the same MemCxt as WalProposerUpdateConfigs.
+ */
 WalProposer *
 WalProposerCreate(WalProposerConfig *config, walproposer_api api)
 {
@@ -96,6 +114,7 @@ WalProposerCreate(WalProposerConfig *config, walproposer_api api)
 
 	for (host = wp->config->safekeepers_list; host != NULL && *host != '\0'; host = sep)
 	{
+		Safekeeper *sk;
 		port = strchr(host, ':');
 		if (port == NULL)
 		{
@@ -109,26 +128,20 @@ WalProposerCreate(WalProposerConfig *config, walproposer_api api)
 		{
 			wp_log(FATAL, "too many safekeepers");
 		}
-		wp->safekeeper[wp->n_safekeepers].host = host;
-		wp->safekeeper[wp->n_safekeepers].port = port;
-		wp->safekeeper[wp->n_safekeepers].state = SS_OFFLINE;
-		wp->safekeeper[wp->n_safekeepers].active_state = SS_ACTIVE_SEND;
-		wp->safekeeper[wp->n_safekeepers].wp = wp;
+		sk = &wp->safekeeper[wp->n_safekeepers];
+		sk->host = host;
+		sk->port = port;
+		sk->state = SS_OFFLINE;
+		sk->reconfigureState = SRS_CHANGES_APPLIED;
+		sk->active_state = SS_ACTIVE_SEND;
+		sk->wp = wp;
 
-		{
-			Safekeeper *sk = &wp->safekeeper[wp->n_safekeepers];
-			int			written = 0;
+		UpdateConnInfo(wp, sk, wp->config);
 
-			written = snprintf((char *) &sk->conninfo, MAXCONNINFO,
-							   "host=%s port=%s dbname=replication options='-c timeline_id=%s tenant_id=%s'",
-							   sk->host, sk->port, wp->config->neon_timeline, wp->config->neon_tenant);
-			if (written > MAXCONNINFO || written < 0)
-				wp_log(FATAL, "could not create connection string for safekeeper %s:%s", sk->host, sk->port);
-		}
+		initStringInfo(&sk->outbuf);
+		sk->startStreamingAt = InvalidXLogRecPtr;
+		sk->streamingAt = InvalidXLogRecPtr;
 
-		initStringInfo(&wp->safekeeper[wp->n_safekeepers].outbuf);
-		wp->safekeeper[wp->n_safekeepers].startStreamingAt = InvalidXLogRecPtr;
-		wp->safekeeper[wp->n_safekeepers].streamingAt = InvalidXLogRecPtr;
 		wp->n_safekeepers += 1;
 	}
 	if (wp->n_safekeepers < 1)
@@ -136,6 +149,7 @@ WalProposerCreate(WalProposerConfig *config, walproposer_api api)
 		wp_log(FATAL, "safekeepers addresses are not specified");
 	}
 	wp->quorum = wp->n_safekeepers / 2 + 1;
+	wp->pendingReconnects = 0;
 
 	/* Fill the greeting package */
 	wp->greetRequest.tag = 'g';
@@ -160,6 +174,257 @@ WalProposerCreate(WalProposerConfig *config, walproposer_api api)
 	wp->api.init_event_set(wp);
 
 	return wp;
+}
+
+/*
+ * Update the configuration of the WalProposer and get the state ready to
+ * start processing these changes once we enter the main loop again.
+ *
+ * Note: We can allocate and deallocate memory here, so the caller has
+ * to make sure it switched to the right memory context.
+ *
+ * TODO: restarting through FATAL is stupid and introduces 1s delay before
+ * next bgw start. We should refactor walproposer to allow graceful exit and
+ * thus remove this delay.
+ */
+void
+WalProposerUpdateConfig(WalProposer *wp, WalProposerConfig *config)
+{
+	WalProposerConfig *old = wp->config;
+	bool		changed,
+				reconnect;
+
+	if (config == old)
+		return;
+
+	changed = reconnect = false;
+
+	if (strcmp(old->neon_tenant, config->neon_tenant) != 0)
+	{
+		wp_log(FATAL, "Tenant changed from \"%s\" to \"%s\"",
+			   old->neon_tenant, config->neon_tenant);
+	}
+
+	/*
+	 * Maybe in the future we could support changing the timeline of the node
+	 * on replicas, following timeline's branch point. That's complicated,
+	 * though, so don't bother for now.
+	 */
+	if (strcmp(old->neon_timeline, config->neon_timeline) != 0)
+	{
+		wp_log(FATAL, "Timeline changed from \"%s\" to \"%s\"",
+			   old->neon_tenant, config->neon_tenant);
+	}
+
+	/*
+	 * Maybe in the future we could support changing the timeline of the node
+	 * on replicas, following timeline's branch point. That's complicated,
+	 * though, so don't bother for now.
+	 */
+	if (strcmp(old->safekeepers_list, config->safekeepers_list) != 0)
+	{
+		reconnect = true;
+		changed = true;
+		wp_log(LOG, "Changing safekeepers from [%s] to [%s]",
+			   old->safekeepers_list, config->safekeepers_list);
+	}
+
+	if (old->safekeeper_reconnect_timeout != config->safekeeper_reconnect_timeout)
+	{
+		changed = true;
+	}
+
+	if (old->safekeeper_connection_timeout != config->safekeeper_connection_timeout)
+	{
+		changed = true;
+	}
+
+	if (old->wal_segment_size != config->wal_segment_size)
+	{
+		wp_log(FATAL, "Segment size of running cluster changed");
+	}
+	
+	if (old->syncSafekeepers != config->syncSafekeepers)
+	{
+		/* TODO: Check if this is an interesting workable use case or not */
+	}
+
+	if (old->systemId != config->systemId)
+	{
+		wp_log(FATAL, "System ID of running cluster changed");
+	}
+
+	if (old->pgTimeline != config->pgTimeline)
+	{
+		wp_log(LOG, "PostgreSQL timeline of running cluster changed");
+	}
+
+	/* If nothing changed, don't do anything. */
+	if (!changed)
+	{
+		Assert(!reconnect);
+		return;
+	}
+
+	if (!reconnect)
+	{
+		/*
+		 * We don't store computed results that are based on
+		 * safekeeper_connection_timeout or safekeeper_reconnect_timeout,
+		 * so changes to those values don't need special processing.
+		 *
+		 * If that changes we need to add code here that handles that.
+		 */
+		return;
+	}
+
+	ApplyMergeSKConfigs(wp, config);
+}
+/*
+ * Apply the changes to wp->safekeeper[] slots
+ * We merge configurations into existing safekeepers where possible,
+ * and if they don't map 
+ */
+static void
+ApplyMergeSKConfigs(WalProposer *wp, WalProposerConfig *config)
+{
+	int			len_new = 0;
+	int			found = 0;
+	char	   *new_sk_hosts[MAX_SAFEKEEPERS];
+	int16		map_sk_to_new[MAX_SAFEKEEPERS];
+	int16		map_new_to_sk[MAX_SAFEKEEPERS];
+	int16		sk_reconfig_status[MAX_SAFEKEEPERS];
+
+	len_new = split_safekeepers_list(wp, config->safekeepers_list, new_sk_hosts);
+
+	/* For now, we reboot WP whenever the quorum size changes */
+	if (len_new != wp->n_safekeepers)
+	{
+		wp_log(FATAL,
+			   "Reconfigure: size of SK list changed from %d to %d; restarting",
+			   wp->n_safekeepers, len_new);
+	}
+
+	qsort(new_sk_hosts, len_new, sizeof(char *), pg_qsort_strcmp);
+
+	/* clear mapping state */
+	for (int i = 0; i < len_new; i++)
+	{
+		map_new_to_sk[i] = -1;
+		map_sk_to_new[i] = -1;
+		sk_reconfig_status[i] = SRS_NONE;
+	}
+
+	/* Create mapping for the new config's sk_host -> wp->safekeeper slots */
+	for (int i = 0; i < len_new; i++)
+	{
+		Safekeeper *sk = &wp->safekeeper[i];
+		Size		host_len;
+		Size		port_len;
+
+		host_len = strlen(sk->host);
+		port_len = strlen(sk->port);
+
+		for (int j = 0; j < len_new; j++)
+		{
+			/* already mapped */
+			if (map_new_to_sk[j] != -1)
+				continue;
+
+			/* new_sk_hosts[j] == "%sk->host:%sk->port\0" ? */
+			if (strncmp(new_sk_hosts[j], sk->host, host_len) == 0
+				&& *(new_sk_hosts[j] + host_len) == ':'
+				&& strncmp(new_sk_hosts[j] + host_len + 1, sk->port,
+						   port_len + 1) == 0)
+			{
+				map_new_to_sk[j] = (int16) i;
+				map_sk_to_new[i] = (int16) j;
+				sk_reconfig_status[i] = SRS_CHANGES_APPLIED;
+				found++;
+				break;
+			}
+		}
+	}
+
+	/*
+	 * While this is O(n^2), that is on 32 elements max, and likely 3
+	 * elements. It's actually more expensive to specialize a binary search
+	 * here.
+	 */
+	if (found != len_new)
+	{
+		/* We didn't find a match for every newly configured SK */
+		for (int i = 0; i < len_new; i++)
+		{
+			/* This new config was already mapped */
+			if (map_new_to_sk[i] != -1)
+				continue;
+
+			for (int j = 0; j < len_new; j++)
+			{
+				if (map_sk_to_new[j] == -1)
+				{
+					/* empty mapping, use it for this SK */
+					map_new_to_sk[i] = (int16) j;
+					map_sk_to_new[j] = (int16) i;
+					sk_reconfig_status[j] = SRS_HOST_UPDATED;
+				}
+			}
+		}
+	}
+
+	wp->pendingReconnects = 0;
+
+	for (int i = 0; i < len_new; i++)
+	{
+		Safekeeper *sk = &wp->safekeeper[i];
+		int		host_port_idx;
+		char   *host_port;
+		char   *host;
+		char   *port;
+
+		Assert(map_new_to_sk[i] != -1);
+		Assert(map_sk_to_new[i] != -1);
+		Assert(sk_reconfig_status[i] != SRS_NONE);
+
+		host_port_idx = map_sk_to_new[i];
+
+		Assert(map_new_to_sk[host_port_idx] == i);
+
+		host_port = new_sk_hosts[host_port_idx];
+		host = host_port;
+		port = strchr(host, ':');
+
+		if (port == NULL)
+		{
+			/* if SRS_CHANGES_APPLIED, we must've found a ':' in the string */
+			Assert(sk_reconfig_status[i] == SRS_HOST_UPDATED);
+
+			wp_log(FATAL, "No port specifified in WP \"%s\"", host_port);
+		}
+
+		*port++ = '\0';
+
+		sk->host = host;
+		sk->port = port;
+
+		/*
+		 * It's possible we're updating twice in a row, while the previous
+		 * reconfiguration hasn't permeated to actual state. Make sure we don't
+		 * miss that.
+		 */
+		if (sk_reconfig_status[i] == SRS_HOST_UPDATED)
+		{
+			UpdateConnInfo(wp, sk, config);
+			sk->reconfigureState = sk_reconfig_status[i];
+		}
+
+		if (sk->reconfigureState == SRS_HOST_UPDATED)
+			wp->pendingReconnects++;
+	}
+
+	pfree(wp->config->safekeepers_list);
+	wp->config->safekeepers_list = config->safekeepers_list;
 }
 
 void
@@ -210,6 +475,19 @@ WalProposerPoll(WalProposer *wp)
 		TimestampTz now = wp->api.get_current_timestamp(wp);
 		long		timeout = TimeToReconnect(wp, now);
 
+		/* Handle any pending reconnections */
+		if (wp->pendingReconnects > 0)
+		{
+			for (int i = 0; i < wp->n_safekeepers; i++)
+			{
+				if (wp->safekeeper[i].reconfigureState == SRS_HOST_UPDATED)
+				{
+					ResetConnection(&wp->safekeeper[i]);
+				}
+			}
+		}
+
+		/* handle connection data */
 		rc = wp->api.wait_event_set(wp, timeout, &sk, &events);
 
 		/* Exit loop if latch is set (we got new WAL) */
@@ -331,6 +609,9 @@ ResetConnection(Safekeeper *sk)
 	{
 		ShutdownConnection(sk);
 	}
+	sk->reconfigureState = SRS_CHANGES_APPLIED;
+
+	wp_log(LOG, "connecting with node %s:%s", sk->host, sk->port);
 
 	/*
 	 * Try to establish new connection, it will update sk->conn.
@@ -377,7 +658,6 @@ ResetConnection(Safekeeper *sk)
 	 * (see libpqrcv_connect, defined in
 	 * src/backend/replication/libpqwalreceiver/libpqwalreceiver.c)
 	 */
-	wp_log(LOG, "connecting with node %s:%s", sk->host, sk->port);
 
 	sk->state = SS_CONNECTING_WRITE;
 	sk->latestMsgReceivedAt = wp->api.get_current_timestamp(wp);
